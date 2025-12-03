@@ -4,6 +4,7 @@ import torch
 import math
 from pyroaring import BitMap
 import time
+from vllm import LLM, SamplingParams
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -107,25 +108,45 @@ class TokenPredictor:
 
         # Load tokenizer and model from cache or download
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
+        self.args = args
 
         # Pick dtype based on model name
         if "FP8" in args.model_name.upper():
-            dtype = torch.float8_e4m3fn
+            dtype = "auto"  # Use FP8 for FP8 models
         else:
             dtype = "auto"  # Let HF auto-detect dtype for non-FP8 models
 
-        self.model = AutoModelForCausalLM.from_pretrained(
-            args.model_name,
-            cache_dir=".cache",
-            torch_dtype=dtype,
-            device_map="auto"
-        )
+        if args.engine == "transformer":
+            self.model = AutoModelForCausalLM.from_pretrained(
+                args.model_name,
+                cache_dir=".cache",
+                torch_dtype=dtype,
+                device_map="auto"
+            )
 
-        # If FP8 model, enable Transformer Engine acceleration
-        if dtype == torch.float8_e4m3fn:
-            self.model = self.model.to_bettertransformer()
+            # If FP8 model, enable Transformer Engine acceleration
+            # try:
+            #     self.model = self.model.to_bettertransformer()
+            # except AttributeError:
+            #     print("BetterTransformer built-in not found, TE might handle FP8 automatically.")
 
-        self.model.eval()
+            print(f"Model {args.model_name} loaded with dtype {self.model.dtype}.")
+
+            self.model.eval()
+            # Move model to GPU if available
+            if torch.cuda.is_available():
+                self.model.to('cuda')
+                print("Model moved to GPU.")
+            else:
+                print("GPU not available, using CPU.")
+        elif args.engine == "vllm":
+            self.llm = LLM(
+                model=args.model_name,
+                task="generate",
+            )
+            print(f"vLLM Model {args.model_name} loaded.")
+        else:
+            raise ValueError(f"Unsupported engine: {args.engine}")
 
         # --- If bitmap_data is provided, reconstruct tokens_list & index_tensor ---
         if bitmap_data is not None:
@@ -137,13 +158,6 @@ class TokenPredictor:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.index_tensor = torch.tensor(self.tokens_list, dtype=torch.long, device=device)
         self.reduce_tokens = args.reduce_tokens
-
-        # Move model to GPU if available
-        if torch.cuda.is_available():
-            self.model.to('cuda')
-            print("Model moved to GPU.")
-        else:
-            print("GPU not available, using CPU.")
 
     def _set_active_chunk(self, chunk_index):
         """
@@ -194,7 +208,68 @@ class TokenPredictor:
         return self.tokens_list
 
     def run_batched_inference(self, prompts, enable_kv_cache=True):
-        # TODO: Add documentation for this method
+        """
+        Run one-step batched inference and return token scores along with timing data.
+
+        This method supports two backends, controlled by ``self.args.engine``:
+
+        - ``"transformer"``: uses a local HuggingFace-style model (``self.model``).
+        - If ``enable_kv_cache=False``:
+            * Runs the full prompt on every call (no caching).
+            * Clears any existing KV cache.
+        - If ``enable_kv_cache=True``:
+            * Maintains an internal KV cache (``self._past_kv``) and cached context length.
+            * If the new prompt is shorter than the cached context, the cache is rebuilt
+            from the full prompt.
+            * Otherwise, only the last token of each prompt is fed to the model with
+            the existing ``past_key_values`` for incremental decoding.
+
+        - ``"vllm"``: uses vLLM (``self.llm``) for inference.
+        - ``prompts`` (list of token ID lists) are decoded to strings.
+        - Calls vLLM with greedy sampling (temperature=0.0, max_tokens=1).
+        - Collects per-request logits into a single tensor of shape
+            ``(batch_size, vocab_size_or_reduced)``.
+
+        Args:
+            prompts (List[List[int]]):
+                Batched tokenized prompts. Each element is a list of token IDs for
+                one sequence; all sequences in the batch must have the same length.
+            enable_kv_cache (bool, optional):
+                Whether to use and maintain KV cache for incremental decoding when
+                ``self.args.engine == "transformer"``. Ignored for vLLM backend.
+
+        Returns:
+            Tuple[
+                List[int],
+                torch.Tensor,
+                float,
+                float
+            ]:
+                A 4-tuple:
+                - ``tokens_list`` (List[int]):
+                The list of token IDs corresponding to the (possibly reduced)
+                vocabulary used in this run. If ``self.reduce_tokens`` is True,
+                this is the reduced token set.
+                - ``scores`` (torch.Tensor):
+                If ``self.args.encoding == "AC"``:
+                    Probability tensor (after softmax) on CPU,
+                    shape ``(batch_size, vocab_size_or_reduced)``.
+                If ``self.args.encoding in {"bitpacked", "huffman"}``:
+                    Raw logits tensor (no softmax), kept on the current device,
+                    shape ``(batch_size, vocab_size_or_reduced)``.
+                - ``data_copy_time`` (float):
+                Total time in seconds spent on data transfer between host and device
+                within this call (e.g., moving tensors to GPU or back to CPU).
+                - ``softmax_time`` (float):
+                Time in seconds spent computing the softmax over logits
+                (non-zero only when ``encoding == "AC"``).
+
+        Notes:
+            - For arithmetic coding (``encoding="AC"``), the method returns
+            probabilities on CPU to be consumed by the arithmetic compressor.
+            - For rank-based schemes (``"bitpacked"`` or ``"huffman"``), callers
+            are expected to compute ranks directly from the returned logits.
+        """
 
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -204,51 +279,85 @@ class TokenPredictor:
 
         data_copy_time = 0
         with torch.inference_mode():
-            if not enable_kv_cache:
-                # If not using cache, run the model on the full prompt every time.
-                t0_data_copy = time.perf_counter()
-                input_ids = torch.tensor(prompts, device=device)
-                data_copy_time += time.perf_counter() - t0_data_copy
-                outputs = self.model(input_ids, use_cache=enable_kv_cache)
-                # Ensure cache is cleared when not in use.
-                self._past_kv = None
-                self._cached_context_len = 0
-            else:
-                # Check if the cache needs to be reset. This happens if the external
-                # context management has shortened the prompt.
-                reset_cache = len(prompts[0]) < self._cached_context_len
-
-                if self._past_kv is None or reset_cache:
-                    # Rebuild the cache from the full prompt.
+            if self.args.engine == "transformer":
+                # Use local HF-style model for inference
+                if not enable_kv_cache:
+                    # If not using cache, run the model on the full prompt every time.
                     t0_data_copy = time.perf_counter()
                     input_ids = torch.tensor(prompts, device=device)
                     data_copy_time += time.perf_counter() - t0_data_copy
-                    outputs = self.model(input_ids, use_cache=True)
-                    self._past_kv = outputs.past_key_values
+                    outputs = self.model(input_ids, use_cache=enable_kv_cache)
+                    # Ensure cache is cleared when not in use.
+                    self._past_kv = None
                     self._cached_context_len = 0
                 else:
-                    # Incremental step: process only the last token using the existing cache.
-                    delta = [row[-1:] for row in prompts]
-                    t0_data_copy = time.perf_counter()
-                    delta = torch.tensor(delta, device=device, dtype=torch.long)
-                    data_copy_time += time.perf_counter() - t0_data_copy
+                    # Check if the cache needs to be reset. This happens if the external
+                    # context management has shortened the prompt.
+                    reset_cache = len(prompts[0]) < self._cached_context_len
 
-                    outputs = self.model(delta, past_key_values=self._past_kv, use_cache=True)
-                    self._past_kv = outputs.past_key_values
-                    self._cached_context_len += 1
+                    if self._past_kv is None or reset_cache:
+                        # Rebuild the cache from the full prompt.
+                        t0_data_copy = time.perf_counter()
+                        input_ids = torch.tensor(prompts, device=device)
+                        data_copy_time += time.perf_counter() - t0_data_copy
+                        outputs = self.model(input_ids, use_cache=True)
+                        self._past_kv = outputs.past_key_values
+                        self._cached_context_len = 0
+                    else:
+                        # Incremental step: process only the last token using the existing cache.
+                        delta = [row[-1:] for row in prompts]
+                        # print()
+                        # print(f"{self._past_kv=}")
+                        t0_data_copy = time.perf_counter()
+                        delta = torch.tensor(delta, device=device, dtype=torch.long)
+                        data_copy_time += time.perf_counter() - t0_data_copy
 
-            logits = outputs.logits[:, -1, :]
+                        outputs = self.model(delta, past_key_values=self._past_kv, use_cache=True)
+                        self._past_kv = outputs.past_key_values
+                        self._cached_context_len += 1
+                logits = outputs.logits[:, -1, :]
+            elif self.args.engine == "vllm":
+                # Use vLLM for inference
+                t0_data_copy = time.perf_counter()
+                prompts_str = [self.tokenizer.decode(ids) for ids in prompts]
+                data_copy_time += time.perf_counter() - t0_data_copy
+
+                sampling_params = SamplingParams(
+                    temperature=0.0,  # greedy
+                    max_tokens=1,
+                )
+
+                request_output = self.llm.generate(prompts_str, sampling_params)
+                output_list = []
+                for i, output in enumerate(request_output):
+                    output_list.append(output.logits)
+                logits = torch.stack(output_list, dim=0)
+
+                print(f"vLLM logits shape: {logits.shape}")
+            else:
+                raise ValueError(f"Unsupported engine: {self.args.engine}")
+
+            # print(f"logits shape: {logits.shape}")
             if getattr(self, "reduce_tokens", False):
                 logits = logits.index_select(1, self.index_tensor.to(logits.device))
-            t0_softmax = time.perf_counter()
-            probs = torch.softmax(logits, dim=-1)
-            softmax_time = time.perf_counter() - t0_softmax
 
-        t0_data_copy = time.perf_counter()
-        probs = probs.cpu()
-        data_copy_time += time.perf_counter() - t0_data_copy
+            softmax_time = 0.0
+            if self.args.encoding == "AC":
+                # For arithmetic coding, convert logits to probabilities on CPU
+                t0_softmax = time.perf_counter()
+                probs = torch.softmax(logits, dim=-1)
+                softmax_time = time.perf_counter() - t0_softmax
 
-        return self.tokens_list, probs, data_copy_time, softmax_time
+                t0_data_copy = time.perf_counter()
+                probs_cpu = probs.cpu()
+                data_copy_time += time.perf_counter() - t0_data_copy
+
+                return self.tokens_list, probs_cpu, data_copy_time, softmax_time
+            elif self.args.encoding in ("bitpacked", "huffman"):
+                # For rank-based schemes, return raw logits on the current device
+                return self.tokens_list, logits, data_copy_time, softmax_time
+            else:
+                raise NotImplementedError(f"Encoding method '{self.args.encoding}' is not implemented.")
 
     def get_token_info(self, prompt_tokens):
         """

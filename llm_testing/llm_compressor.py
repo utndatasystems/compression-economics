@@ -2,6 +2,118 @@ from string import printable
 import numpy as np
 import random
 import math
+from collections import Counter
+import heapq
+from dataclasses import dataclass
+from typing import Optional, Dict, Any, List
+
+@dataclass
+class HuffmanNode:
+    symbol: Optional[int]
+    left: Optional["HuffmanNode"]
+    right: Optional["HuffmanNode"]
+
+def build_huffman_code(rank_list: List[int]) -> Dict[int, str]:
+    """
+    Given a rank_list, e.g., [3,5,3,1,5,...]
+    Returns a dict: { symbol -> bitstring code }
+    """
+    if not rank_list:
+        return {}
+
+    freq = Counter(rank_list)
+
+    # Special case: if there is only one symbol, assign it the code "0"
+    if len(freq) == 1:
+        only_symbol = next(iter(freq))
+        return {only_symbol: "0"}
+
+    # Min-heap: (freq, counter, node)
+    heap: List[Any] = []
+    counter = 0
+    for sym, f in freq.items():
+        node = HuffmanNode(symbol=sym, left=None, right=None)
+        heap.append((f, counter, node))
+        counter += 1
+
+    heapq.heapify(heap)
+
+    # Repeatedly merge the two nodes with the smallest frequencies
+    while len(heap) > 1:
+        f1, _, n1 = heapq.heappop(heap)
+        f2, _, n2 = heapq.heappop(heap)
+        parent = HuffmanNode(symbol=None, left=n1, right=n2)
+        heapq.heappush(heap, (f1 + f2, counter, parent))
+        counter += 1
+
+    # The last remaining node is the root
+    [(_, _, root)] = heap
+
+    # DFS generate codebook
+    codebook: Dict[int, str] = {}
+
+    def dfs(node: HuffmanNode, prefix: str):
+        if node.symbol is not None:
+            # leaf node
+            codebook[node.symbol] = prefix or "0"
+            return
+        if node.left is not None:
+            dfs(node.left, prefix + "0")
+        if node.right is not None:
+            dfs(node.right, prefix + "1")
+
+    dfs(root, "")
+    return codebook
+
+def huffman_encode(rank_list: List[int], codebook: Dict[int, str]) -> str:
+    """
+    Use the codebook to convert the rank_list into a continuous bit string ('0100111...')
+    """
+    # This is O(n) and much faster than concatenating strings one by one
+    bit_chunks = [codebook[sym] for sym in rank_list]
+    bit_string = "".join(bit_chunks)
+    return bit_string
+
+def build_tree_from_codebook(codebook: Dict[int, str]) -> HuffmanNode:
+    """
+    Given a codebook {symbol: bitstring}, reconstruct the Huffman tree.
+    """
+    root = HuffmanNode(symbol=None, left=None, right=None)
+    for sym, code in codebook.items():
+        node = root
+        for bit in code:
+            if bit == "0":
+                if node.left is None:
+                    node.left = HuffmanNode(symbol=None, left=None, right=None)
+                node = node.left
+            else:  # bit == "1"
+                if node.right is None:
+                    node.right = HuffmanNode(symbol=None, left=None, right=None)
+                node = node.right
+        node.symbol = sym
+    return root
+
+
+def huffman_decode(bit_string: str, codebook: Dict[int, str]) -> List[int]:
+    """
+    Use bit_string + codebook to decode and return rank_list
+    """
+    root = build_tree_from_codebook(codebook)
+    result: List[int] = []
+    node = root
+
+    for bit in bit_string:
+        if bit == "0":
+            node = node.left
+        else:
+            node = node.right
+
+        # When reaching a leaf node, output a symbol
+        if node.symbol is not None:
+            result.append(node.symbol)
+            node = root
+
+    return result
 
 class ArithmeticCoderBase(object):
     # Constructs an arithmetic coder, which initializes the code range.
@@ -291,7 +403,7 @@ def build_cumul(prob_vec: np.ndarray, total: int = 1048576) -> np.ndarray:
                 break
 
     # print(f"freq.sum: {freq.sum()}, total: {total}")
-    assert freq.sum() == total
+    assert freq.sum() == total, f"freq.sum={freq.sum()} != total={total}"
     assert np.all(freq >= 1)
 
     cumul = np.empty(alphabet_size + 1, dtype=np.int64)
@@ -317,9 +429,30 @@ class LLMCompressor:
         self.token_count += 1
         self.encoder.write(build_cumul(probs), correct_token_idx)
 
-    def compress(self):
-        self.encoder.finish()
-        return self.bitout.get_bits()
+    def compress(self, encoding="AC", rank_list=None):
+        if encoding == "AC":
+            self.encoder.finish()
+            return self.bitout.get_bits()
+        elif encoding == "bitpacked":
+            assert rank_list is not None, "rank_list must be provided for bitpacked encoding"
+            # bitpack encoding depend on max rank
+            max_rank = max(rank_list) if rank_list else 0
+            num_bits = max_rank.bit_length()
+
+            # print(f"max_rank = {max_rank}, num_bits = {num_bits}")
+
+            bit_chunks = [format(rank, f'0{num_bits}b') for rank in rank_list]
+            bit_string = "".join(bit_chunks)
+            # print(f"length of bit string: {len(bit_string)}")
+            return bit_string
+        elif encoding == "huffman":
+            assert rank_list is not None, "rank_list must be provided for huffman encoding"
+            codebook = build_huffman_code(rank_list)
+            bit_string = huffman_encode(rank_list, codebook)
+            print("encoded bit length:", len(bit_string))
+            return bit_string, codebook
+        else:
+            raise NotImplementedError(f"Encoding method '{encoding}' is not implemented.")
 
     def get_cross_entropy(self):
         return self.cross_entropy_sum

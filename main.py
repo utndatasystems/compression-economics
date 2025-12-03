@@ -23,7 +23,7 @@ def save_results(results):
 def make_key(args):
     """Generate a unique key for experiment settings."""
     filename = os.path.basename(args.input_path)
-    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}"
+    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}"
 
 def main():
     # ========================
@@ -34,16 +34,19 @@ def main():
                         help="Mode: compress or decompress")
     parser.add_argument("--input_path", type=str, help="Input path: For compress mode, dataset path. For decompress mode, compression file path.")
     parser.add_argument("--output_path", type=str, help="Output path: For compress mode, compression file path. For decompress mode, reconstruction text file path.")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B", help="Model name")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3-0.6B", help="Model name")
     parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
     parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length exceeded (only with KV cache)")
-    parser.add_argument("--first_n_tokens", type=int, default=10000, help="Number of tokens to compress")
+    parser.add_argument("--first_n_tokens", type=int, default=None, help="Number of tokens to compress")
     parser.add_argument("--use_kv_cache", action="store_true", help="Enable KV cache for compression")
+    parser.set_defaults(use_kv_cache=True)
     parser.add_argument("--text_input", type=str, required=False, help="The direct text input for LLM inference.")
     parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size for LLM inference")
+    parser.add_argument("--engine", type=str, choices=["transformer", "vllm"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
 
     args = parser.parse_args()
 
@@ -76,6 +79,7 @@ def main():
         print(f"  First n tokens   : {args.first_n_tokens}")
         print(f"  Use KV cache     : {args.use_kv_cache}")
         print(f"  Batch size       : {args.batch_size}")
+        print(f"  Encoding         : {args.encoding}")
 
         if False:
             from transformers import AutoTokenizer, AutoModelForCausalLM
