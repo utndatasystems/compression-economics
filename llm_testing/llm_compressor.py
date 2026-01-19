@@ -6,6 +6,7 @@ from collections import Counter
 import heapq
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
+import zstandard as zstd
 
 @dataclass
 class HuffmanNode:
@@ -451,6 +452,14 @@ class LLMCompressor:
             bit_string = huffman_encode(rank_list, codebook)
             print("encoded bit length:", len(bit_string))
             return bit_string, codebook
+        elif encoding == "zstd":
+            assert rank_list is not None, "rank_list must be provided for zstd encoding"
+            ranks_arr = np.asarray(rank_list, dtype=np.uint32)
+            raw_bytes = ranks_arr.tobytes()
+            cctx = zstd.ZstdCompressor()
+            compressed = cctx.compress(raw_bytes)
+            bit_string = "".join(f"{b:08b}" for b in compressed)
+            return bit_string
         else:
             raise NotImplementedError(f"Encoding method '{encoding}' is not implemented.")
 

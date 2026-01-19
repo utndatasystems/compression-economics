@@ -325,15 +325,18 @@ class TokenPredictor:
                 sampling_params = SamplingParams(
                     temperature=0.0,  # greedy
                     max_tokens=1,
+                    logprobs=255
                 )
 
-                request_output = self.llm.generate(prompts_str, sampling_params)
+                request_output = self.llm.generate(prompts_str, sampling_params, use_tqdm=False)
                 output_list = []
                 for i, output in enumerate(request_output):
-                    output_list.append(output.logits)
-                logits = torch.stack(output_list, dim=0)
+                    # output_list.append(output.logits)
+                    output_list.append(output.outputs[0].logprobs[0])
+                # logits = torch.stack(output_list, dim=0)
 
-                print(f"vLLM logits shape: {logits.shape}")
+                # print(f"vLLM logits shape: {logits.shape}")
+                return self.tokens_list, output_list, data_copy_time, 0.0
             else:
                 raise ValueError(f"Unsupported engine: {self.args.engine}")
 

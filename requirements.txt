@@ -5,3 +5,5 @@ matplotlib
 seaborn
 pyroaring
 accelerate
+vllm
+zstandard

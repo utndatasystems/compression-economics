@@ -5,6 +5,7 @@ import numpy as np
 from collections import defaultdict
 import pandas as pd
 import json
+import seaborn as sns
 
 # --------------------------------------------------------
 # (Optional LaTeX config - commented out)
@@ -390,6 +391,43 @@ def results_plot_2(datasets, dataset_order):
     print("Plots saved as compression_speed_plot.png and decompression_speed_plot.png")
 
 
+def result_plot_3(path):
+
+    BATCH_SIZES = [1, 4, 16, 64, 256]
+    CONTEXT_LENGTHS = [128, 256, 512, 1024]
+
+    # Load the JSON data
+    with open(path, "r") as f:
+        data = json.load(f)
+
+    rows = []
+
+    for batch_size in BATCH_SIZES:
+        for context_length in CONTEXT_LENGTHS:
+            m = data[f"text8:Qwen/Qwen2.5-0.5B|ctx={context_length}|ret={context_length // 10}|n=100000|kv=True|batch={batch_size}"]
+            throughput = float(m["compression"]["original_size_bits"]) / float(m["compression"]["inference_time_sec"]) / 1024 / 8  # Convert to KB/s
+            rows.append({
+                "context_len": context_length,
+                "batch_size": batch_size,
+                "throughput": throughput
+            })
+
+    df = (
+        pd.DataFrame(rows)
+        .groupby(["context_len", "batch_size"])["throughput"]
+        .mean()
+        .unstack()
+    )
+
+    plt.figure(figsize=(8, 5))
+    sns.heatmap(df, annot=True, fmt=".2f", linewidths=.5, cbar_kws={"label": "kB/s"})
+    plt.xlabel("Batch size")
+    plt.ylabel("Context length")
+    plt.title("Processed kB/s")
+    plt.tight_layout()
+    # os.makedirs("figures", exist_ok=True)
+    plt.savefig(f"kb_heatmap.png")
+
 if __name__ == "__main__":
     # ===== Example Usage =====
     dataset_order = ["text8", "combined_100mb.py"]
@@ -413,6 +451,9 @@ if __name__ == "__main__":
     )
 
     print("Loaded model data:", json.dumps(model_data, indent=2))
+    # write data to JSON
+    with open("compression_results_plot.json", "w") as f:
+        json.dump(model_data, f, indent=2)
 
     # Merge results (model + baselines)
     final_data = merge_results(model_data, baseline_text8)
@@ -421,3 +462,4 @@ if __name__ == "__main__":
     # Plot results
     results_plot_1(final_data, dataset_order)
     results_plot_2(final_data, dataset_order)
+    result_plot_3("compression_results.json")
