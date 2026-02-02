@@ -1,4 +1,4 @@
-from llm_compressor import LLMCompressor, LLMDecompressor
+from src.llm_compressor import LLMCompressor, LLMDecompressor
 from llm_testing.prediction_pincpu import TokenDataPreparer, TokenPredictor
 from itertools import chain
 import numpy as np

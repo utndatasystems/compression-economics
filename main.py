@@ -1,10 +1,10 @@
 import argparse
 import json
 import os
-from llm_testing.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
+from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
 from llm_testing.utils import save_global_mask_file, load_global_mask_file
 
-RESULTS_FILE = "compression_results_rank.json"
+RESULTS_FILE = "compression_results.json"
 COMPRESSION_FILE = "compression_data.bin"
 DECOMPRESSION_FILE = "text_results.txt"
 

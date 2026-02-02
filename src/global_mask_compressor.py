@@ -1,5 +1,5 @@
-from llm_testing.llm_compressor import LLMCompressor, LLMDecompressor
-from llm_testing.prediction import TokenDataPreparer, TokenPredictor
+from src.llm_compressor import LLMCompressor, LLMDecompressor
+from src.prediction import TokenDataPreparer, TokenPredictor
 from itertools import chain
 import numpy as np
 import time

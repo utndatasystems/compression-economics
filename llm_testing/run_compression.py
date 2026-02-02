@@ -1,8 +1,8 @@
 import argparse
 import numpy as np
 import torch
-from prediction import TokenPredictor
-from llm_compressor import LLMCompressor
+from src.prediction import TokenPredictor
+from src.llm_compressor import LLMCompressor
 
 
 

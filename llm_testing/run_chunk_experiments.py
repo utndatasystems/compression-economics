@@ -4,9 +4,9 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import math
-from prediction import TokenPredictor
-from llm_compressor import LLMCompressor
-from global_mask_compressor import run_global_mask_compression
+from src.prediction import TokenPredictor
+from src.llm_compressor import LLMCompressor
+from src.global_mask_compressor import run_global_mask_compression
 
 
 
