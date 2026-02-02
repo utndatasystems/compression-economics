@@ -3,7 +3,7 @@ import tempfile
 import filecmp
 import json
 
-from compressor import compress, decompress
+from test_scripts.compressor import compress, decompress
 
 DATA_DIR = "data"
 TEMP_DIR = "tmp"
