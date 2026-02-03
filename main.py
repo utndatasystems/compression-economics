@@ -2,28 +2,11 @@ import argparse
 import json
 import os
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
-from src.utils import save_global_mask_file, load_global_mask_file
+from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key
 
 RESULTS_FILE = "compression_results.json"
 COMPRESSION_FILE = "compression_data.bin"
 DECOMPRESSION_FILE = "text_results.txt"
-
-def load_results():
-    """Load previous results from JSON file (if exists)."""
-    if os.path.exists(RESULTS_FILE):
-        with open(RESULTS_FILE, "r") as f:
-            return json.load(f)
-    return {}
-
-def save_results(results):
-    """Save updated results to JSON file."""
-    with open(RESULTS_FILE, "w") as f:
-        json.dump(results, f, indent=4)
-
-def make_key(args):
-    """Generate a unique key for experiment settings."""
-    filename = os.path.basename(args.input_path)
-    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}"
 
 def main():
     # ========================
@@ -45,8 +28,9 @@ def main():
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size for LLM inference")
-    parser.add_argument("--engine", type=str, choices=["transformer", "vllm"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
+    parser.add_argument("--print_results", action="store_true", help="Print detailed results")
 
     args = parser.parse_args()
 
@@ -61,7 +45,7 @@ def main():
         # ========================
         # Check if experiment already exists
         # ========================
-        results_db = load_results()
+        results_db = load_results(RESULTS_FILE)
         exp_key = make_key(args)
         if exp_key in results_db:
             print(f"\n⚠️ Experiment already exists for {exp_key}, skipping run.")
@@ -89,12 +73,12 @@ def main():
         # ========================
         # Save results (JSON stats)
         # ========================
-        results_db = load_results()
+        results_db = load_results(RESULTS_FILE)
         exp_key = make_key(args)
         if exp_key not in results_db:
             results_db[exp_key] = {}
         results_db[exp_key]["compression"] = comp_stats
-        save_results(results_db)
+        save_results(results_db, RESULTS_FILE)
 
         # ========================
         # Save binary compression file
@@ -109,15 +93,22 @@ def main():
         # ========================
         # Output compression results
         # ========================
-        print("\n\n===== Compression Results =====")
-        for k, v in comp_stats.items():
-            print(f"{k}: {v}")
+        if args.print_results:
+            print("\n\n===== Compression Results =====")
+            for k, v in comp_stats.items():
+                print(f"{k}: {v}")
+        print("\n\n===== Compression Complete =====")
+        print(f"Compression stats saved to: {RESULTS_FILE}")
+        print(f"Compression data saved to: {args.output_path}")
 
     elif args.mode == "decompress":
         # ========================
         # Validate input paths
         # ========================
+        
         if not args.input_path:
+            args.input_path = COMPRESSION_FILE
+        elif not args.input_path.endswith(".bin"):
             args.input_path = COMPRESSION_FILE
         if not args.output_path:
             args.output_path = DECOMPRESSION_FILE
@@ -148,21 +139,25 @@ def main():
         # ========================
         # Save results (JSON stats)
         # ========================
-        results_db = load_results()
+        results_db = load_results(RESULTS_FILE)
         exp_key = make_key(args)
         if exp_key not in results_db:
             results_db[exp_key] = {}
         results_db[exp_key]["decompression"] = decomp_stats
-        save_results(results_db)
+        save_results(results_db, RESULTS_FILE)
 
-        print("\n\n===== Decompression Results =====")
-        for k, v in decomp_stats.items():
-            print(f"{k}: {v}")
-        # print(f"{results[:100]} ... (truncated)")
+        if args.print_results:
+            print("\n\n===== Decompression Results =====")
+            for k, v in decomp_stats.items():
+                print(f"{k}: {v}")
 
         # Save the reconstructed text to a file
         with open(args.output_path, "w") as f:
             f.write(results)
+
+        print("\n\n===== Decompression Complete =====")
+        print(f"Decompression stats saved to: {RESULTS_FILE}")
+        print(f"Reconstructed text saved to: {args.output_path}")
         
 
 if __name__ == "__main__":

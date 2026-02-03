@@ -82,8 +82,6 @@ class TokenDataPreparer:
         Returns:
             BitMap: A BitMap object representing the reduced token set.
         """
-        # if not self.reduce_tokens:
-        #     print("Warning: Bitmap only available when reduce_tokens is True.")
 
         # Create a BitMap from the tokens list
         bitmap = BitMap(self.tokens_list)
@@ -129,15 +127,9 @@ class TokenPredictor:
             self.model = AutoModelForCausalLM.from_pretrained(
                 args.model_name,
                 cache_dir=".cache",
-                torch_dtype=dtype,
+                dtype=dtype,
                 device_map="auto"
             )
-
-            # If FP8 model, enable Transformer Engine acceleration
-            # try:
-            #     self.model = self.model.to_bettertransformer()
-            # except AttributeError:
-            #     print("BetterTransformer built-in not found, TE might handle FP8 automatically.")
 
             print(f"Model {args.model_name} loaded with dtype {self.model.dtype}.")
 
@@ -300,8 +292,6 @@ class TokenPredictor:
                     else:
                         # Incremental step: process only the last token using the existing cache.
                         delta = [row[-1:] for row in prompts]
-                        # print()
-                        # print(f"{self._past_kv=}")
                         t0_data_copy = time.perf_counter()
                         delta = torch.tensor(delta, device=self.device, dtype=torch.long)
                         data_copy_time += time.perf_counter() - t0_data_copy
@@ -335,145 +325,6 @@ class TokenPredictor:
             else:
                 raise NotImplementedError(f"Encoding method '{self.args.encoding}' is not implemented.")
 
-    def get_token_info(self, prompt_tokens):
-        """
-        Given a list of prompt tokens, return the list of candidate token IDs and their probabilities.
-
-        Args:
-            prompt_tokens (list[int]): Tokenized prompt input.
-
-        Returns:
-            tuple: (List of candidate token IDs, list of corresponding probabilities)
-        """
-        input_ids = torch.tensor([prompt_tokens], device=self.device)
-
-        with torch.inference_mode():
-            outputs = self.model(input_ids)
-            logits = outputs.logits[:, -1, :]  # Get logits for the last token
-
-            logits = logits[0]  # Shape: (vocab_size,)
-
-            if self.reduce_tokens:
-                # Select only logits for reduced token set
-                selected_logits = torch.index_select(logits, dim=0, index=self.index_tensor)
-            else:
-                selected_logits = logits
-
-            # Convert logits to probabilities using softmax
-            probs = torch.nn.functional.softmax(selected_logits, dim=0)
-
-        return self.tokens_list, probs.cpu()
-
-    def get_token_info_cache(self, prompt_tokens, use_kv_cache=True):
-        """
-        Returns candidate token IDs and their probabilities, using KV caching for efficiency.
-
-        This function handles the model's key-value cache to speed up inference.
-        The calling function is responsible for managing the context window (slicing).
-        This function detects if the prompt has been shortened, which implies a cache reset.
-
-        Args:
-            prompt_tokens (list[int]): The list of token IDs for the prompt.
-            use_kv_cache (bool): If True, enables the KV cache mechanism.
-
-        Returns:
-            tuple: A tuple containing:
-                - list[int]: The list of candidate token IDs.
-                - list[float]: The corresponding probabilities for each candidate token.
-        """
-
-        # Initialize cache state if it doesn't exist.
-        if not hasattr(self, "_past_kv"):
-            self._past_kv = None
-            self._cached_context_len = 0
-
-        if not use_kv_cache:
-            # If not using cache, run the model on the full prompt every time.
-            input_ids = torch.tensor([prompt_tokens], device=self.device)
-            with torch.no_grad():
-                outputs = self.model(input_ids, use_cache=False)
-            # Ensure cache is cleared when not in use.
-            self._past_kv = None
-            self._cached_context_len = 0
-        else:
-            # Check if the cache needs to be reset. This happens if the external
-            # context management has shortened the prompt.
-            reset_cache = len(prompt_tokens) < self._cached_context_len
-
-            if self._past_kv is None or reset_cache:
-                # Rebuild the cache from the full prompt.
-                input_ids = torch.tensor([prompt_tokens], device=self.device)
-                with torch.inference_mode():
-                    outputs = self.model(input_ids, use_cache=True)
-                    self._past_kv = outputs.past_key_values
-                    self._cached_context_len = len(prompt_tokens)
-            else:
-                # Incremental step: process only the last token using the existing cache.
-                new_token_id = prompt_tokens[-1]
-                input_ids = torch.tensor([[new_token_id]], device=self.device)
-                with torch.inference_mode():
-                    outputs = self.model(
-                        input_ids,
-                        past_key_values=self._past_kv,
-                        use_cache=True
-                    )
-                    self._past_kv = outputs.past_key_values
-                    self._cached_context_len += 1
-
-        with torch.inference_mode():
-            # Extract logits for the next token prediction.
-            logits = outputs.logits[:, -1, :]
-            logits = logits[0]
-
-            # Filter logits based on the allowed token mask if token reduction is enabled.
-            if self.reduce_tokens:
-                selected_logits = torch.index_select(logits, dim=0, index=self.index_tensor)
-            else:
-                selected_logits = logits
-
-            # Convert logits to probabilities.
-            probs = torch.nn.functional.softmax(selected_logits, dim=0)
-        return self.tokens_list, probs
-
-    def get_full_token_info(self, prompt_tokens):
-        """
-        Given a list of prompt tokens, return the list of all token IDs and their probabilities
-        (full vocabulary), regardless of the reduce_tokens setting.
-
-        Args:
-            prompt_tokens (list[int]): Tokenized prompt input.
-
-        Returns:
-            tuple: (List of all token IDs, list of corresponding probabilities)
-        """
-        input_ids = torch.tensor([prompt_tokens], device=self.device)
-
-        with torch.no_grad():
-            outputs = self.model(input_ids)
-            logits = outputs.logits[:, -1, :]  # Get logits for the last token
-
-        logits = logits[0]  # Shape: (vocab_size,)
-
-        # Convert logits to probabilities using softmax for the full vocabulary
-        probs = torch.nn.functional.softmax(logits, dim=0).tolist()
-
-        return list(range(self.tokenizer.vocab_size)), probs
-
-    def get_ids_probs(self, prompt_tokens, next_token):
-        """
-        Get the index and probability of the next token from the list of predicted tokens.
-
-        Args:
-            prompt_tokens (list[int]): Tokenized input prompt.
-            next_token (int): Token ID to look for in the prediction.
-
-        Returns:
-            tuple: (Index of the next_token in the token list, probability score)
-        """
-        token_ids, probs = self.get_token_info(prompt_tokens)
-        next_index = token_ids.index(next_token)
-        return next_index, probs
-
     def detokenize(self, token_ids):
         """
         Convert a list of token IDs back to a string.
@@ -497,72 +348,3 @@ class TokenPredictor:
             int: Token ID corresponding to the given index.
         """
         return self.tokens_list[token_id]
-
-    def _get_bitmap(self, compression='none', ranking=None):
-        """
-        Get the bitmap and size with optional compression.
-
-        Args:
-            compression (str): Type of compression ('none', 'rle', 'sparse').
-
-        Returns:
-            tuple: (bitmap_representation, size_in_bytes)
-        """
-        if not self.reduce_tokens:
-            raise ValueError("Bitmap only available when reduce_tokens is True.")
-
-        if compression == 'none':
-            size_bytes = (len(self.token_bitmap) + 7) // 8
-            return self.token_bitmap.clone(), size_bytes
-
-        elif compression == 'rle':
-            rle = []
-            current_bit = self.token_bitmap[0].item()
-            count = 1
-            count_max = 0
-            for bit in self.token_bitmap[1:]:
-                bit = bit.item()
-                if bit == current_bit:
-                    count += 1
-                else:
-                    if count > count_max:
-                        count_max = count
-                    rle.append((current_bit, count))
-                    current_bit = bit
-                    count = 1
-            if count > count_max:
-                count_max = count
-            rle.append((current_bit, count))
-            
-            size_bits = len(rle) * (1 + math.log2(count_max))  # 1 bit for value, log2 for count
-            size_bytes = (size_bits + 7) // 8
-            return rle, size_bytes
-
-        elif compression == 'sparse':
-            indices = self.tokens_list
-            size_bytes = len(indices) * 4  # 4 bytes per int index
-            return indices, size_bytes
-        
-        elif compression == 'roaring':
-            bitmap = BitMap(self.tokens_list)
-            binary_data = bitmap.serialize()
-            # The result of serialize() is a bytes object, so its length is the size in bytes.
-            size_bytes = len(binary_data)
-            # Verification step
-            deserialized_bitmap = BitMap.deserialize(binary_data)
-            assert self.tokens_list == list(deserialized_bitmap)
-            return binary_data, size_bytes
-        
-        elif compression == 'roaring_ranking':
-            assert ranking is not None
-            bitmap = BitMap(ranking)
-            binary_data = bitmap.serialize()
-            # The result of serialize() is a bytes object, so its length is the size in bytes.
-            size_bytes = len(binary_data)
-            # Verification step
-            deserialized_bitmap = BitMap.deserialize(binary_data)
-            assert ranking == list(deserialized_bitmap)
-            return binary_data, size_bytes
-
-        else:
-            raise ValueError(f"Unsupported compression type: {compression}")

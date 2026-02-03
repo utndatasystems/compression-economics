@@ -155,17 +155,9 @@ def run_global_mask_compression(args):
     if args.engine == "transformer":
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")
-            with open("probs_list.txt", "w", encoding="utf-8") as f:
-                for prob in probs_list:
-                    f.write(f"{prob}\n")
         elif args.encoding == "bitpacked":
             print(f"len of rank list: {len(rank_list)}")
             print(f"max rank: {max(rank_list)}")
-            bit_string = ""
-            # write the rank in a file
-            with open("rank_list.txt", "w", encoding="utf-8") as f:
-                for rank in rank_list:
-                    f.write(f"{rank}\n")
             bit_string = llm_compressor.compress(encoding="bitpacked", rank_list=rank_list)
         elif args.encoding == "huffman":
             print(f"len of rank list: {len(rank_list)}")
@@ -173,11 +165,6 @@ def run_global_mask_compression(args):
             bit_string, codebook = llm_compressor.compress(encoding="huffman", rank_list=rank_list)
         else:
             raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
-    elif args.engine == "vllm":
-        bit_string = llm_compressor.compress(encoding="zstd", rank_list=rank_list)
-        with open("vllm_rank_list.txt", "w", encoding="utf-8") as f:
-            for rank in rank_list:
-                f.write(f"{rank}\n")
     else:
         raise ValueError(f"Unsupported engine: {args.engine}")
     
@@ -328,85 +315,3 @@ def run_global_mask_decompression(
         "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
         "inference_throughput_kibibytes_per_sec": len(detoken_string) / 1024 / inference_time,
     }
-
-def run_global_mask_compression_decompression_test(
-    input_path,
-    model_name="Qwen/Qwen2.5-0.5B",
-    context_length=1000,
-    first_n_tokens=1000,
-    use_kv_cache=True,
-    retain_tokens=100,
-    batch_size=1
-):
-    """
-    Runs a full compression and decompression cycle and verifies the result.
-
-    This function is a test utility to ensure that the compression is lossless by
-    comparing the original tokens with the reconstructed tokens.
-
-    Args:
-        input_path (str): Path to the data file.
-        model_name (str): Name of the language model.
-        context_length (int): Maximum context length.
-        first_n_tokens (int): Number of tokens to process.
-        use_kv_cache (bool): Whether to use the KV cache.
-        retain_tokens (int): Number of tokens to retain in the context.
-        batch_size (int): The batch size for inference.
-
-    Returns:
-        dict: A dictionary containing the compression results and a verification status.
-    """
-    print(f"\n===== Running Compression + Decompression Test (kv_cache={use_kv_cache}) =====")
-    
-    # Create a mock args object to pass to the functions.
-    class Args:
-        pass
-    args = Args()
-    args.input_path = input_path
-    args.text_input = None
-    args.model_name = model_name
-    args.context_length = context_length
-    args.first_n_tokens = first_n_tokens
-    args.use_kv_cache = use_kv_cache
-    args.retain_tokens = retain_tokens
-    args.batch_size = batch_size
-    args.reduce_tokens = True
-    
-    # Step 1: Compress the data.
-    first_token, bit_string, bitmask_data, compression_result, args = run_global_mask_compression(args)
-    
-    print("\nCompression complete.")
-    print(f"Compression Ratio: {compression_result['compression_ratio_percent']:.2f}%")
-    print(f"Compression Time: {compression_result['inference_time_sec']:.2f} sec")
-
-    # Step 2: Decompress the data.
-    reconstructed_tokens, _, _ = run_global_mask_decompression(
-        args,
-        first_token,
-        bit_string,
-        bitmask_data
-    )
-    
-    print("\nDecompression complete.")
-
-    # Step 3: Verify that the reconstructed tokens match the original ones.
-    token_data_preparer = TokenDataPreparer(args)
-    original_tokens = token_data_preparer.get_data_tokens()
-    
-    match = reconstructed_tokens == original_tokens
-    print(f"Verification: {'✅ PASS' if match else '❌ FAIL'}")
-    
-    return {
-        "compression_result": compression_result,
-        "verification_passed": match
-    }
-
-if __name__ == "__main__":
-    run_global_mask_compression_decompression_test(
-        input_path="../data/text8",
-        first_n_tokens=100000,
-        context_length=1000,
-        use_kv_cache=True,
-        retain_tokens=100,
-        batch_size=32
-    )

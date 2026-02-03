@@ -374,7 +374,7 @@ class BitInputStream:
 # ------------------------------------------------------------------
 # Utility – convert probabilities → integer cumulative vector
 # ------------------------------------------------------------------
-def build_cumul(prob_vec: np.ndarray, total: int = 1048576) -> np.ndarray:
+def build_cumul(prob_vec: np.ndarray, total: int = 16384) -> np.ndarray:
     """
     Turn a length-N probability vector that sums to 1 into the length-(N+1)
     cumulative-frequency array expected by ArithmeticCoder.  Ensures every

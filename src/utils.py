@@ -86,3 +86,20 @@ def load_global_mask_file(args):
     args.input_path = header["input_path"]
 
     return args, first_token, bit_string, bitmask_data
+
+def load_results(RESULTS_FILE):
+    """Load previous results from JSON file (if exists)."""
+    if os.path.exists(RESULTS_FILE):
+        with open(RESULTS_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_results(results, RESULTS_FILE):
+    """Save updated results to JSON file."""
+    with open(RESULTS_FILE, "w") as f:
+        json.dump(results, f, indent=4)
+
+def make_key(args):
+    """Generate a unique key for experiment settings."""
+    filename = os.path.basename(args.input_path)
+    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}"
