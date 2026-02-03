@@ -3,4 +3,4 @@ zstandard
 transformers
 torch
 pyroaring
-vllm
+accelerate

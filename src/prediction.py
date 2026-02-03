@@ -4,7 +4,6 @@ import torch
 import math
 from pyroaring import BitMap
 import time
-from vllm import LLM, SamplingParams
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -109,6 +108,16 @@ class TokenPredictor:
         # Load tokenizer and model from cache or download
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
         self.args = args
+        self.device = None
+        if torch.cuda.is_available():
+            self.device = torch.device("cuda")
+            print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+            print("Using Apple Silicon GPU (MPS).")
+        else:
+            self.device = torch.device("cpu")
+            print("GPU not available, using CPU.")
 
         # Pick dtype based on model name
         if "FP8" in args.model_name.upper():
@@ -133,18 +142,8 @@ class TokenPredictor:
             print(f"Model {args.model_name} loaded with dtype {self.model.dtype}.")
 
             self.model.eval()
-            # Move model to GPU if available
-            if torch.cuda.is_available():
-                self.model.to('cuda')
-                print("Model moved to GPU.")
-            else:
-                print("GPU not available, using CPU.")
-        elif args.engine == "vllm":
-            self.llm = LLM(
-                model=args.model_name,
-                task="generate",
-            )
-            print(f"vLLM Model {args.model_name} loaded.")
+            # Move model to device
+            self.model.to(self.device)
         else:
             raise ValueError(f"Unsupported engine: {args.engine}")
 
@@ -155,8 +154,7 @@ class TokenPredictor:
         else:
             self.tokens_list = list(range(self.tokenizer.vocab_size))
 
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        self.index_tensor = torch.tensor(self.tokens_list, dtype=torch.long, device=device)
+        self.index_tensor = torch.tensor(self.tokens_list, dtype=torch.long, device=self.device)
         self.reduce_tokens = args.reduce_tokens
 
     def _set_active_chunk(self, chunk_index):
@@ -192,7 +190,7 @@ class TokenPredictor:
         Updates the index tensor and bitmap for the current self.tokens_list.
         """
         self.index_tensor = torch.tensor(
-            self.tokens_list, dtype=torch.long, device='cuda' if torch.cuda.is_available() else 'cpu'
+            self.tokens_list, dtype=torch.long, device=self.device
         )
         vocab_size = self.tokenizer.vocab_size
         self.token_bitmap = torch.zeros(vocab_size, dtype=torch.bool)
@@ -224,9 +222,7 @@ class TokenPredictor:
             * Otherwise, only the last token of each prompt is fed to the model with
             the existing ``past_key_values`` for incremental decoding.
 
-        - ``"vllm"``: uses vLLM (``self.llm``) for inference.
         - ``prompts`` (list of token ID lists) are decoded to strings.
-        - Calls vLLM with greedy sampling (temperature=0.0, max_tokens=1).
         - Collects per-request logits into a single tensor of shape
             ``(batch_size, vocab_size_or_reduced)``.
 
@@ -236,7 +232,7 @@ class TokenPredictor:
                 one sequence; all sequences in the batch must have the same length.
             enable_kv_cache (bool, optional):
                 Whether to use and maintain KV cache for incremental decoding when
-                ``self.args.engine == "transformer"``. Ignored for vLLM backend.
+                ``self.args.engine == "transformer"``. 
 
         Returns:
             Tuple[
@@ -271,8 +267,6 @@ class TokenPredictor:
             are expected to compute ranks directly from the returned logits.
         """
 
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-
         if not hasattr(self, "_past_kv"):
             self._past_kv = None
             self._cached_context_len = 0
@@ -284,7 +278,7 @@ class TokenPredictor:
                 if not enable_kv_cache:
                     # If not using cache, run the model on the full prompt every time.
                     t0_data_copy = time.perf_counter()
-                    input_ids = torch.tensor(prompts, device=device)
+                    input_ids = torch.tensor(prompts, device=self.device)
                     data_copy_time += time.perf_counter() - t0_data_copy
                     outputs = self.model(input_ids, use_cache=enable_kv_cache)
                     # Ensure cache is cleared when not in use.
@@ -298,7 +292,7 @@ class TokenPredictor:
                     if self._past_kv is None or reset_cache:
                         # Rebuild the cache from the full prompt.
                         t0_data_copy = time.perf_counter()
-                        input_ids = torch.tensor(prompts, device=device)
+                        input_ids = torch.tensor(prompts, device=self.device)
                         data_copy_time += time.perf_counter() - t0_data_copy
                         outputs = self.model(input_ids, use_cache=True)
                         self._past_kv = outputs.past_key_values
@@ -309,34 +303,13 @@ class TokenPredictor:
                         # print()
                         # print(f"{self._past_kv=}")
                         t0_data_copy = time.perf_counter()
-                        delta = torch.tensor(delta, device=device, dtype=torch.long)
+                        delta = torch.tensor(delta, device=self.device, dtype=torch.long)
                         data_copy_time += time.perf_counter() - t0_data_copy
 
                         outputs = self.model(delta, past_key_values=self._past_kv, use_cache=True)
                         self._past_kv = outputs.past_key_values
                         self._cached_context_len += 1
                 logits = outputs.logits[:, -1, :]
-            elif self.args.engine == "vllm":
-                # Use vLLM for inference
-                t0_data_copy = time.perf_counter()
-                prompts_str = [self.tokenizer.decode(ids) for ids in prompts]
-                data_copy_time += time.perf_counter() - t0_data_copy
-
-                sampling_params = SamplingParams(
-                    temperature=0.0,  # greedy
-                    max_tokens=1,
-                    logprobs=255
-                )
-
-                request_output = self.llm.generate(prompts_str, sampling_params, use_tqdm=False)
-                output_list = []
-                for i, output in enumerate(request_output):
-                    # output_list.append(output.logits)
-                    output_list.append(output.outputs[0].logprobs[0])
-                # logits = torch.stack(output_list, dim=0)
-
-                # print(f"vLLM logits shape: {logits.shape}")
-                return self.tokens_list, output_list, data_copy_time, 0.0
             else:
                 raise ValueError(f"Unsupported engine: {self.args.engine}")
 
@@ -372,9 +345,7 @@ class TokenPredictor:
         Returns:
             tuple: (List of candidate token IDs, list of corresponding probabilities)
         """
-        input_ids = torch.tensor([prompt_tokens])
-        if torch.cuda.is_available():
-            input_ids = input_ids.to('cuda')
+        input_ids = torch.tensor([prompt_tokens], device=self.device)
 
         with torch.inference_mode():
             outputs = self.model(input_ids)
@@ -410,7 +381,6 @@ class TokenPredictor:
                 - list[int]: The list of candidate token IDs.
                 - list[float]: The corresponding probabilities for each candidate token.
         """
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
         # Initialize cache state if it doesn't exist.
         if not hasattr(self, "_past_kv"):
@@ -419,7 +389,7 @@ class TokenPredictor:
 
         if not use_kv_cache:
             # If not using cache, run the model on the full prompt every time.
-            input_ids = torch.tensor([prompt_tokens], device=device)
+            input_ids = torch.tensor([prompt_tokens], device=self.device)
             with torch.no_grad():
                 outputs = self.model(input_ids, use_cache=False)
             # Ensure cache is cleared when not in use.
@@ -432,7 +402,7 @@ class TokenPredictor:
 
             if self._past_kv is None or reset_cache:
                 # Rebuild the cache from the full prompt.
-                input_ids = torch.tensor([prompt_tokens], device=device)
+                input_ids = torch.tensor([prompt_tokens], device=self.device)
                 with torch.inference_mode():
                     outputs = self.model(input_ids, use_cache=True)
                     self._past_kv = outputs.past_key_values
@@ -440,7 +410,7 @@ class TokenPredictor:
             else:
                 # Incremental step: process only the last token using the existing cache.
                 new_token_id = prompt_tokens[-1]
-                input_ids = torch.tensor([[new_token_id]], device=device)
+                input_ids = torch.tensor([[new_token_id]], device=self.device)
                 with torch.inference_mode():
                     outputs = self.model(
                         input_ids,
@@ -476,9 +446,7 @@ class TokenPredictor:
         Returns:
             tuple: (List of all token IDs, list of corresponding probabilities)
         """
-        input_ids = torch.tensor([prompt_tokens])
-        if torch.cuda.is_available():
-            input_ids = input_ids.to('cuda')
+        input_ids = torch.tensor([prompt_tokens], device=self.device)
 
         with torch.no_grad():
             outputs = self.model(input_ids)
