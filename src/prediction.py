@@ -1,3 +1,13 @@
+"""
+Token preparation and next-token prediction helpers for compression experiments.
+
+This module provides:
+- TokenDataPreparer: loads raw text, tokenizes, and optionally reduces the vocabulary
+  to the set of tokens observed in the input (for bitmap-based masking).
+- TokenPredictor: runs batched, one-step LLM inference with optional KV caching and
+  returns logits or probabilities depending on the encoding scheme.
+"""
+
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import os
 import torch
@@ -8,17 +18,25 @@ import time
 class TokenDataPreparer:
     def __init__(self, args):
         """
-        Initialize the TokenDataPreparer class.
+        Initialize the data preparer and tokenize the input.
+
+        Args:
+            args (argparse.Namespace): Experiment configuration. Expected fields:
+                input_path (str | None): Path to the input text file.
+                text_input (str | None): Raw text input (exclusive with input_path).
+                model_name (str): HuggingFace model name (tokenizer source).
+                first_n_tokens (int | None): Optional token limit.
+                reduce_tokens (bool): Whether to reduce vocab to observed tokens.
         """
         if args.input_path is None and args.text_input is None:
             raise ValueError("Either input_path or text_input must be provided.")
         if args.input_path and args.text_input:
             raise ValueError("Only one of input_path or text_input can be provided.")
 
-        # Load tokenizer and model from cache or download
+        # Load tokenizer (from cache or download) for consistent tokenization.
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
 
-        # Load and tokenize input data
+        # Load and tokenize input data.
         if args.input_path:
             self.data = self._get_data_from_file(args.input_path)
         else:
@@ -26,7 +44,7 @@ class TokenDataPreparer:
 
         self.args = args
 
-        # Tokenize the text
+        # Tokenize the text (optionally truncating to first_n_tokens).
         print("Starting tokenization...")
         start_time = time.time()
         if args.first_n_tokens is not None:
@@ -42,6 +60,7 @@ class TokenDataPreparer:
 
         self.reduce_tokens = self.args.reduce_tokens
 
+        # Optionally reduce the vocabulary to only tokens observed in the data.
         if self.reduce_tokens:
             # Original behavior: mask based on the first_n_tokens
             self.tokens_list = sorted(list(set(self.data_tokens)))
@@ -100,10 +119,18 @@ class TokenDataPreparer:
 class TokenPredictor:
     def __init__(self, args, bitmap_data):
         """
-        Initialize the TokenPredictor class.
+        Initialize the predictor and load the model.
+
+        Args:
+            args (argparse.Namespace): Experiment configuration. Expected fields:
+                model_name (str): HuggingFace model name.
+                engine (str): Backend engine ("transformer" supported).
+                reduce_tokens (bool): Whether to use a reduced token list.
+                encoding (str): "AC", "bitpacked", or "huffman".
+            bitmap_data (bytes | None): Serialized roaring bitmap of allowed tokens.
         """
 
-        # Load tokenizer and model from cache or download
+        # Load tokenizer and model (from cache or download).
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
         self.args = args
         self.device = None
@@ -117,7 +144,7 @@ class TokenPredictor:
             self.device = torch.device("cpu")
             print("GPU not available, using CPU.")
 
-        # Pick dtype based on model name
+        # Pick dtype based on model name (FP8 models opt into auto).
         if "FP8" in args.model_name.upper():
             dtype = "auto"  # Use FP8 for FP8 models
         else:
@@ -139,13 +166,14 @@ class TokenPredictor:
         else:
             raise ValueError(f"Unsupported engine: {args.engine}")
 
-        # --- If bitmap_data is provided, reconstruct tokens_list & index_tensor ---
+        # If bitmap_data is provided, reconstruct the reduced token list.
         if bitmap_data is not None:
             bitmap = BitMap.deserialize(bitmap_data)
             self.tokens_list = list(bitmap)
         else:
             self.tokens_list = list(range(self.tokenizer.vocab_size))
 
+        # Cache indices for fast vocab reduction via index_select.
         self.index_tensor = torch.tensor(self.tokens_list, dtype=torch.long, device=self.device)
         self.reduce_tokens = args.reduce_tokens
 
@@ -158,6 +186,7 @@ class TokenPredictor:
             print("Warning: set_active_chunk is only effective when reduce_tokens is True and chunk_size is set.")
             return None, 0
 
+        # Derive the token range for this chunk and update the mask.
         start_index = chunk_index * self.chunk_size
         end_index = min(start_index + self.chunk_size, len(self.data_tokens))
         chunk_tokens = self.data_tokens[start_index:end_index]
@@ -181,6 +210,7 @@ class TokenPredictor:
         """
         Updates the index tensor and bitmap for the current self.tokens_list.
         """
+        # Build a boolean bitmap and index tensor for fast filtering.
         self.index_tensor = torch.tensor(
             self.tokens_list, dtype=torch.long, device=self.device
         )
@@ -252,13 +282,14 @@ class TokenPredictor:
                 Time in seconds spent computing the softmax over logits
                 (non-zero only when ``encoding == "AC"``).
 
-        Notes:
+            Notes:
             - For arithmetic coding (``encoding="AC"``), the method returns
             probabilities on CPU to be consumed by the arithmetic compressor.
             - For rank-based schemes (``"bitpacked"`` or ``"huffman"``), callers
             are expected to compute ranks directly from the returned logits.
         """
 
+        # Lazily initialize KV-cache state.
         if not hasattr(self, "_past_kv"):
             self._past_kv = None
             self._cached_context_len = 0
@@ -279,10 +310,11 @@ class TokenPredictor:
                 else:
                     # Check if the cache needs to be reset. This happens if the external
                     # context management has shortened the prompt.
+                    # Reset if external context management shortened the prompt.
                     reset_cache = len(prompts[0]) < self._cached_context_len
 
                     if self._past_kv is None or reset_cache:
-                        # Rebuild the cache from the full prompt.
+                        # Rebuild the cache from the full prompt (first step or reset).
                         t0_data_copy = time.perf_counter()
                         input_ids = torch.tensor(prompts, device=self.device)
                         data_copy_time += time.perf_counter() - t0_data_copy
@@ -290,7 +322,7 @@ class TokenPredictor:
                         self._past_kv = outputs.past_key_values
                         self._cached_context_len = 0
                     else:
-                        # Incremental step: process only the last token using the existing cache.
+                        # Incremental step: process only the last token with cache.
                         delta = [row[-1:] for row in prompts]
                         t0_data_copy = time.perf_counter()
                         delta = torch.tensor(delta, device=self.device, dtype=torch.long)
@@ -304,12 +336,13 @@ class TokenPredictor:
                 raise ValueError(f"Unsupported engine: {self.args.engine}")
 
             # print(f"logits shape: {logits.shape}")
+            # Optionally reduce logits to the active token subset.
             if getattr(self, "reduce_tokens", False):
                 logits = logits.index_select(1, self.index_tensor.to(logits.device))
 
             softmax_time = 0.0
             if self.args.encoding == "AC":
-                # For arithmetic coding, convert logits to probabilities on CPU
+                # For arithmetic coding, convert logits to probabilities on CPU.
                 t0_softmax = time.perf_counter()
                 probs = torch.softmax(logits, dim=-1)
                 softmax_time = time.perf_counter() - t0_softmax
@@ -320,7 +353,7 @@ class TokenPredictor:
 
                 return self.tokens_list, probs_cpu, data_copy_time, softmax_time
             elif self.args.encoding in ("bitpacked", "huffman"):
-                # For rank-based schemes, return raw logits on the current device
+                # For rank-based schemes, return raw logits on the current device.
                 return self.tokens_list, logits, data_copy_time, softmax_time
             else:
                 raise NotImplementedError(f"Encoding method '{self.args.encoding}' is not implemented.")

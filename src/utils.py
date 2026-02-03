@@ -1,16 +1,43 @@
+"""
+Utility helpers for bitstream packing and experiment metadata persistence.
+
+This module provides:
+- bit/byte conversion helpers for compact storage of bit strings
+- save/load routines for global-mask compression artifacts
+- JSON utilities for aggregating experiment results
+"""
+
 import struct
 import json
 import os
 
 def bits_to_bytes(bits):
-    """Convert list of bits (ints) to bytes."""
+    """
+    Convert a list of bits (0/1 ints) into a bytes object.
+
+    Returns:
+        tuple: (byte_data, padding_bits)
+            - byte_data (bytes): Packed bytes, MSB-first.
+            - padding_bits (int): Number of zero bits appended to fill the last byte.
+    """
+    # Build a contiguous bit string and pad to full-byte boundary.
     bit_str = ''.join(str(b) for b in bits)
     padding = (8 - len(bit_str) % 8) % 8  # Pad to full byte
     bit_str = bit_str + '0' * padding
     return int(bit_str, 2).to_bytes(len(bit_str) // 8, 'big'), padding
 
 def bytes_to_bits(byte_data, padding):
-    """Convert bytes back to list of bits."""
+    """
+    Convert a bytes object back to a list of bits (0/1 ints).
+
+    Args:
+        byte_data (bytes): Packed bytes, MSB-first.
+        padding (int): Number of zero bits appended during packing.
+
+    Returns:
+        list[int]: Bit list with padding removed.
+    """
+    # Recover the full bit string and drop any padding zeros.
     bit_str = bin(int.from_bytes(byte_data, 'big'))[2:].zfill(len(byte_data) * 8)
     bit_str = bit_str[:-padding] if padding > 0 else bit_str
     return [int(b) for b in bit_str]
@@ -22,7 +49,19 @@ def save_global_mask_file(
     bitmask_data
 ):
     """
-    Save compression results to file with binary-encoded bit_string.
+    Save global-mask compression artifacts to a binary file.
+
+    File layout (binary):
+        1) JSON header line (UTF-8) + newline
+        2) first_token values (batch_size * uint32)
+        3) bit_string bytes length (uint32), padding (uint8), bit_string bytes
+        4) bitmask_data length (uint32), bitmask_data bytes
+
+    Args:
+        args (argparse.Namespace): Experiment configuration with output_path.
+        first_token (list[int]): First token for each batch.
+        bit_string (list[int]): Bit list to be packed and stored.
+        bitmask_data (bytes): Serialized bitmap describing allowed vocabulary.
     """
     file_path = args.output_path
     header = {
@@ -39,31 +78,34 @@ def save_global_mask_file(
         header_str = json.dumps(header) + "\n"
         f.write(header_str.encode("utf-8"))
 
-        # Write first_token values (batch_size tokens)
+        # Write first_token values (batch_size tokens) as uint32.
         for tok in first_token:
             f.write(struct.pack("I", tok))
 
-        # Convert bit_string list to bytes
+        # Convert bit_string list to bytes with padding metadata.
         bit_bytes, padding = bits_to_bytes(bit_string)
         f.write(struct.pack("I", len(bit_bytes)))
         f.write(struct.pack("B", padding))  # store padding
         f.write(bit_bytes)
 
-        # Write bitmask_data
+        # Write the serialized bitmap blob.
         f.write(struct.pack("I", len(bitmask_data)))
         f.write(bitmask_data)
 
 def load_global_mask_file(args):
     """
-    Load compression results from file.
+    Load global-mask compression artifacts from a binary file.
+
     Returns:
         header, first_token, bit_string(list[int]), bitmask_data
     """
     file_path = args.input_path
     with open(file_path, "rb") as f:
+        # Header line precedes the binary payload.
         header_line = f.readline().decode("utf-8").strip()
         header = json.loads(header_line)
 
+        # Read batch start tokens (uint32).
         first_token = [struct.unpack("I", f.read(4))[0] for _ in range(header["batch_size"])]
 
         # Read bit_string
@@ -76,7 +118,7 @@ def load_global_mask_file(args):
         bitmask_len = struct.unpack("I", f.read(4))[0]
         bitmask_data = f.read(bitmask_len)
 
-    # Update args with loaded header values
+    # Update args with loaded header values (ensures decompression settings match).
     args.model_name = header["model_name"]
     args.context_length = header["context_length"]
     args.first_n_tokens = header["first_n_tokens"]
@@ -88,18 +130,33 @@ def load_global_mask_file(args):
     return args, first_token, bit_string, bitmask_data
 
 def load_results(RESULTS_FILE):
-    """Load previous results from JSON file (if exists)."""
+    """
+    Load previous experiment results from JSON (if present).
+
+    Returns:
+        dict: Parsed JSON contents, or empty dict when missing.
+    """
     if os.path.exists(RESULTS_FILE):
         with open(RESULTS_FILE, "r") as f:
             return json.load(f)
     return {}
 
 def save_results(results, RESULTS_FILE):
-    """Save updated results to JSON file."""
+    """
+    Save experiment results to JSON.
+
+    Args:
+        results (dict): Results payload to persist.
+        RESULTS_FILE (str): Destination path.
+    """
     with open(RESULTS_FILE, "w") as f:
         json.dump(results, f, indent=4)
 
 def make_key(args):
-    """Generate a unique key for experiment settings."""
+    """
+    Generate a stable key string describing an experiment configuration.
+
+    The key captures dataset name and core settings so runs can be indexed in a dict.
+    """
     filename = os.path.basename(args.input_path)
     return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}"
