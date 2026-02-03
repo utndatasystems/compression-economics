@@ -9,7 +9,7 @@ transformer engine. Decompression mirrors compression using the same model and
 bitmap to reconstruct tokens from the bitstream.
 """
 
-from src.llm_compressor import LLMCompressor, LLMDecompressor
+from src.encoding import LLMCompressor, LLMDecompressor
 from src.prediction import TokenDataPreparer, TokenPredictor
 from itertools import chain
 import numpy as np

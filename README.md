@@ -1,42 +1,70 @@
-# summer-offsite
-Why Compress When You Have an Oracle? LLM-Powered Text Compression
+# compression-economics
+LLM-guided text compression experiments with global token masks.
 
-## Enviroment Setup
+This repo explores how a language model can act as a probabilistic oracle to compress
+text. A single bitmap (global mask) reduces the effective vocabulary, and the model's
+next-token probabilities are encoded using arithmetic coding or rank-based schemes.
+
+## How it works (high level)
+- Tokenize input text with the chosen LLM tokenizer.
+- Optionally reduce the vocabulary to only tokens seen in the input (global mask).
+- Run batched, one-step LLM inference to predict next-token distributions.
+- Encode each next token via:
+  - `AC` (arithmetic coding), or
+  - `bitpacked` / `huffman` (rank-based coding).
+- Persist a compact binary artifact with header + bitstream + bitmap.
+
+## Project layout
+- `main.py`: CLI entry point for compression and decompression.
+- `src/prediction.py`: tokenization, masking, and batched inference.
+- `src/global_mask_compressor.py`: core compression/decompression loops.
+- `src/encoding.py`: various encoding schemes (AC, bitpacked, Huffman).
+- `src/utils.py`: binary IO helpers and experiment result storage.
+- `data/text8`: sample dataset used in experiments.
+
+## Setup
+1. Clone the repo:
 ```
-python3 -m venv .venv
+git clone https://github.com/utndatasystems/summer-offsite.git
+cd summer-offsite
+```
+2. Run the setup script to download the text8 dataset, create a virtual environment, and install dependencies:
+```
+./setup.sh
 source .venv/bin/activate
-pip install -r requirements.txt
 ```
 
-## Dataset Download
-```
-python3 datasets_download.py
-```
-
-## Basic Usage
+## Basic usage
 ### Compression
 ```
 python main.py \
-  --mode compress \
-  --input_path data/text8 \
-  --model_name Qwen/Qwen3-0.6B \
-  --first_n_tokens 500000 \
-  --batch_size 128
+  --mode compress
 ```
-Arguments:
-- --mode
-Must be compress or decompress. Use compress to encode a text file.
-- --input_path
-Path to the input text file to be compressed.
-- --model_name
-Name of the LLM used for compression, e.g. Qwen/Qwen3-0.6B or Qwen/Qwen3-8B.
-- --first_n_tokens
-Only compress the first N tokens of the input. Useful to limit experiment size.
-- --batch_size
-Batch size for LLM inference during compression.
 
-### Deompression
+### Decompression
 ```
-python3 main.py --mode decompress --input_path compression_data.bin
+python main.py \
+  --mode decompress \
+  --input_path compression_data.bin
 ```
-In decompression mode you only need to give the compressed file, the other information are stored in the header
+
+Decompression reads all required settings from the binary header, so only the
+compressed file path is required.
+
+## Key options
+- `--input_path`: Text file to compress (compress mode) or `.bin` to decompress.
+- `--output_path`: Override default output file path.
+- `--model_name`: HuggingFace model name (tokenizer + LLM). Default: `Qwen/Qwen2.5-0.5B`.
+- `--context_length`: Max context length for inference. Default: 1000.
+- `--retain_tokens`: Context tail length when trimming. Default: 100.
+- `--first_n_tokens`: Limit number of tokens processed. Default: 1000.
+- `--batch_size`: Number of parallel sequences per step. Default: 1.
+- `--use_kv_cache`: Enable KV cache for faster incremental inference. Default: enabled.
+- `--reduce_tokens/--no_reduce_tokens`: Toggle global vocabulary reduction. Default: enabled.
+- `--encoding`: `AC`, `bitpacked`, or `huffman`. Default: `AC`.
+- `--print_results`: Print detailed stats to stdout. Default: disabled.
+
+## Outputs
+- `compression_results.json`: Aggregated metrics keyed by experiment settings.
+- `compression_data.bin`: Binary artifact (header + bitstream + bitmap).
+- `text_results.txt`: Reconstructed text from decompression (default output).
