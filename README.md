@@ -1,4 +1,4 @@
-# compression-economics
+# LLM Compression
 LLM-guided text compression experiments with global token masks.
 
 This repo explores how a language model can act as a probabilistic oracle to compress
@@ -12,7 +12,6 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - Encode each next token via:
   - `AC` (arithmetic coding), or
   - `bitpacked` / `huffman` (rank-based coding).
-- Persist a compact binary artifact with header + bitstream + bitmap.
 
 ## Project layout
 - `main.py`: CLI entry point for compression and decompression.
