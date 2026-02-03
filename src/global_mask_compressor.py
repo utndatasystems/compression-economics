@@ -1,3 +1,14 @@
+"""
+Global-mask LLM compression/decompression.
+
+This module implements a compression experiment that uses a single global bitmap of
+allowed tokens to reduce the LLM prediction space. Tokens are processed in batches
+to amortize inference, and the resulting probability distributions are encoded via
+arithmetic coding ("AC") or rank-based schemes ("bitpacked", "huffman") for the
+transformer engine. Decompression mirrors compression using the same model and
+bitmap to reconstruct tokens from the bitstream.
+"""
+
 from src.llm_compressor import LLMCompressor, LLMDecompressor
 from src.prediction import TokenDataPreparer, TokenPredictor
 from itertools import chain
@@ -7,27 +18,34 @@ import torch
 
 def run_global_mask_compression(args):
     """
-    Runs the compression experiment using a global token mask.
+    Run compression using a global token mask and batched LLM inference.
 
-    This function compresses a sequence of tokens using an arithmetic coder guided by
-    probabilities from a language model. A global bitmap of possible tokens is used
-    to reduce the prediction space.
+    The dataset is tokenized, split into `batch_size` contiguous batches, and then
+    processed step-wise. At each step the LLM predicts probabilities for the next
+    token given the current prompt; the true next token is then encoded using the
+    chosen encoding scheme. A single bitmap describing the full vocabulary mask is
+    stored alongside the compressed bitstream.
 
     Args:
-        input_path (str): Path to the data file.
-        model_name (str): Name of the language model to use.
-        context_length (int): The maximum number of tokens to consider as context.
-        first_n_tokens (int): The number of tokens from the dataset to process.
-        use_kv_cache (bool): Whether to use the model's KV cache for faster inference.
-        retain_tokens (int): Number of tokens to retain when the context length is exceeded (only with KV cache).
+        args (argparse.Namespace): Experiment configuration. Expected fields include:
+            input_path (str): Path to the data file.
+            model_name (str): Name of the language model to use.
+            context_length (int): Maximum number of tokens to use as context.
+            first_n_tokens (int | None): Number of tokens to process (defaults to all).
+            batch_size (int): Number of parallel sequences to process.
+            use_kv_cache (bool): Whether to enable KV cache for inference.
+            retain_tokens (int): Tokens to retain when truncating context.
+            engine (str): "transformer".
+            encoding (str): "AC", "bitpacked", or "huffman".
 
     Returns:
-        tuple: A tuple containing:
-            - str: The compressed bit string.
-            - bytes: The serialized bitmap data.
-            - dict: A dictionary with compression statistics.
+        tuple: (first_tokens, bit_string, bitmask_data, stats, args)
+            - first_tokens (list[int]): First token from each batch (seed for decoding).
+            - bit_string (str): The compressed bit string.
+            - bitmask_data (bytes): Serialized bitmap describing allowed vocabulary.
+            - stats (dict): Compression statistics (sizes, timings, throughput).
+            - args (argparse.Namespace): Possibly updated args from token preparation.
     """
-    # TODO: A better summary of the experiment's parameters
     print(f"\n----- Running Compression: Global Token Mask (tokens={args.first_n_tokens}, kv_cache={args.use_kv_cache}) -----")
 
     t0_tokenize = time.perf_counter()
@@ -41,6 +59,8 @@ def run_global_mask_compression(args):
         args.first_n_tokens = len(data_tokens)
 
 
+    # Split tokens into contiguous batches of (roughly) equal length.
+    # chunk_length is the minimum tokens per batch; extras are distributed one per batch.
     # chunk_length = math.ceil(len(data_tokens) / args.batch_size)
     chunk_length = len(data_tokens) // args.batch_size      # minimum tokens per batch
     extra = len(data_tokens) % args.batch_size           # remainder tokens
@@ -52,6 +72,7 @@ def run_global_mask_compression(args):
         end = start + size
         batches.append(data_tokens[start:end])
         start = end
+    # Capture the first token from each batch for seeding decompression.
     first_tokens = [batch[0] for batch in batches if batch]
     batches_length = [len(batch) for batch in batches]
 
@@ -63,6 +84,7 @@ def run_global_mask_compression(args):
     llm_compressor = LLMCompressor()
     token_predictor = TokenPredictor(args, bitmap_data=bitmask_data)
 
+    # Per-batch prompt buffers that grow token-by-token.
     prompts = [[] for _ in range(args.batch_size)]
     compression_time = time.perf_counter()
     inference_time = 0
@@ -76,9 +98,11 @@ def run_global_mask_compression(args):
     for token_idx in range(chunk_length):
         print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
+        # Append the current token from each batch to its prompt context.
         for i in range(args.batch_size):
             prompts[i].append(batches[i][token_idx])
 
+        # Trim context to keep inference cost bounded.
         if len(prompts[0]) >= args.context_length:
             prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
         
@@ -94,6 +118,7 @@ def run_global_mask_compression(args):
         actual_next_tokens = []
         valid_mask = [] 
 
+        # Build a mask for batches that still have a "next token" at this step.
         for idx in range(args.batch_size):
             if token_idx + 1 < batches_length[idx]:
                 token = batches[idx][token_idx + 1]
@@ -107,6 +132,7 @@ def run_global_mask_compression(args):
                 t0_ac = time.perf_counter()
                 probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
 
+                # Encode each valid batch's next token using arithmetic coding.
                 for idx, probs in enumerate(probs_cpu):
                     if not valid_mask[idx]:
                         continue
@@ -122,6 +148,7 @@ def run_global_mask_compression(args):
                 device = logits.device
                 B, V = logits.shape
 
+                # Compute rank of the true token within the model's logits.
                 target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
                 batch_idx = torch.arange(B, device=device)  # [B]
 
@@ -139,16 +166,6 @@ def run_global_mask_compression(args):
 
             else:
                 raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
-        elif args.engine == "vllm":
-            rank_list = []
-            for idx, probs in enumerate(probs_values):
-                if not valid_mask[idx]:
-                    continue
-                target_idx = actual_next_tokens[idx]
-                if target_idx in probs:
-                    rank_list.append(probs[target_idx].rank)
-                else:
-                    rank_list.append(target_idx)
         else:
             raise ValueError(f"Unsupported engine: {args.engine}")
 
@@ -171,6 +188,7 @@ def run_global_mask_compression(args):
     compression_time = time.perf_counter() - compression_time
     
     total_compression_time = time.perf_counter() - t0_tokenize
+    # Bitstream length (in bits) plus bitmap size yields the final compressed size.
     total_arithmetic_code_size = len(bit_string)
     if args.encoding == "huffman":
         # Estimate the size of the codebook in bits
@@ -216,22 +234,23 @@ def run_global_mask_decompression(
     bitmap
 ):
     """
-    Runs the decompression for a bit string compressed with a global token mask.
+    Decompress a bit string produced by the global-mask compressor.
 
-    This function reconstructs the original sequence of tokens by using the language
-    model to predict probabilities and the arithmetic decompressor to decode the next token.
+    The LLM predicts next-token probabilities for each batch step, and the arithmetic
+    decompressor uses those probabilities to recover the encoded token indices. The
+    resulting batches are concatenated to recover the original token order.
 
     Args:
+        args (argparse.Namespace): Same configuration used for compression.
+        first_tokens (list[int]): First token from each batch.
         bit_string (str): The compressed bit string.
-        input_path (str): Path to the original data file (for the token predictor).
-        model_name (str): Name of the language model to use.
-        context_length (int): The maximum number of tokens to consider as context.
-        first_n_tokens (int): The number of tokens to decompress.
-        use_kv_cache (bool): Whether to use the model's KV cache.
-        retain_tokens (int): Number of tokens to retain in the context (with KV cache).
+        bitmap (bytes): Serialized bitmap describing allowed vocabulary.
 
     Returns:
-        list: The list of reconstructed token IDs.
+        tuple: (reconstructed_tokens, detoken_string, stats)
+            - reconstructed_tokens (list[int]): Recovered token IDs (flattened).
+            - detoken_string (str): Detokenized text.
+            - stats (dict): Decompression timings and throughput.
     """
     print(f"\n----- Running Decompression: Global Token Mask (first_n_tokens={args.first_n_tokens}, kv_cache={args.use_kv_cache}) -----")
 
