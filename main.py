@@ -1,3 +1,7 @@
+"""
+CLI entry point for running global-mask compression and decompression experiments.
+"""
+
 import argparse
 import json
 import os
@@ -9,6 +13,9 @@ COMPRESSION_FILE = "compression_data.bin"
 DECOMPRESSION_FILE = "text_results.txt"
 
 def main():
+    """
+    Parse CLI arguments and run compression or decompression.
+    """
     # ========================
     # Parse command-line arguments
     # ========================
