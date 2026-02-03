@@ -1,9 +1,6 @@
-transformers
-hf_xet
-torch
-matplotlib
-seaborn
-pyroaring
-accelerate
-vllm
+numpy
 zstandard
+transformers
+torch
+pyroaring
+vllm
