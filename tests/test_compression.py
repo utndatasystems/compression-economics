@@ -2,12 +2,7 @@ import random
 import numpy as np
 from string import printable
 
-#from llm_compression.compression import (
-#    LLMCompressor,
-#    LLMDecompressor,
-#)
-
-from .src.encoding import LLMCompressor, LLMDecompressor
+from src.encoding import LLMCompressor, LLMDecompressor
 
 def test_compress_decompress_roundtrip():
     alphabet_size = len(printable)
