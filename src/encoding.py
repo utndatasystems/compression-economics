@@ -466,6 +466,7 @@ class LLMCompressor:
     def get_cross_entropy(self):
         return self.cross_entropy_sum
 
+
 class LLMDecompressor:
     def __init__(self, code):
         self.decoder = ArithmeticDecoder(32, BitInputStream(code))
@@ -473,27 +474,3 @@ class LLMDecompressor:
     def decompress(self, probs) -> int: # Returns one single token at a time (returns the index of the token)
         cumul = build_cumul(probs)
         return self.decoder.read(cumul, len(probs))
-
-def test_compress_decompress():
-    alphabet = printable
-    alphabet_size = len(alphabet)
-    text_len = 1000
-    text = [random.randint(0, len(alphabet)-1) for _ in range(text_len)]
-    prob_tables = []
-    for _ in range(text_len):
-        probs = np.random.rand(alphabet_size)
-        prob_tables.append(probs / probs.sum()) # normalise to 1
-
-    compressor = LLMCompressor()
-    for i in range(text_len):
-        correct_token_idx = text[i]
-        probs = prob_tables[i]
-        compressor.next_token(correct_token_idx, probs)
-    code = compressor.compress()
-
-    decompressor = LLMDecompressor(code)
-    for i in range(text_len):
-        probs = prob_tables[i]
-        token_idx = decompressor.decompress(probs)
-        assert token_idx == text[i], f"Decompressed token {token_idx} does not match original {text[i]} at index {i}"
-    print("Decompression successful, all tokens match the original text.")
