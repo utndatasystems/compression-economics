@@ -14,6 +14,7 @@ import torch
 import math
 from pyroaring import BitMap
 import time
+from peft import PeftModel
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -157,6 +158,9 @@ class TokenPredictor:
                 dtype=dtype,
                 device_map="auto"
             )
+            if args.lora_path is not None:
+                self.model = PeftModel.from_pretrained(self.model, args.lora_path, device_map="auto")
+                print(f"Loaded LoRA adapter from {args.lora_path}")
 
             print(f"Model {args.model_name} loaded with dtype {self.model.dtype}.")
 
