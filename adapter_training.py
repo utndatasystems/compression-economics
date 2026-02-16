@@ -12,13 +12,6 @@ from transformers import (
 )
 from peft import LoraConfig, VeraConfig, get_peft_model
 
-MODEL_ID = "Qwen/Qwen2.5-0.5B"
-TEXT_FILE = "./data/text8"
-adapter_type = "lora"
-r = 8
-epoch = 1
-
-
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision('high')
     device = "cuda"
@@ -39,18 +32,21 @@ print(f"Using device: {device}")
 
 def main():
     parser = argparse.ArgumentParser(description="LoRA Training Script")
-    parser.add_argument("--model_id", type=str, default=MODEL_ID, help="Base model ID")
-    parser.add_argument("--text_file", type=str, default=TEXT_FILE, help="Path to text file for training")
-    parser.add_argument("--adapter_type", type=str, default=adapter_type, help="Type of adapter to train (e.g., lora, vera)")
-    parser.add_argument("--out_dir", type=str, default=f"./{adapter_type}", help="Directory to save LoRA adapters")
-    parser.add_argument("--r", type=int, default=r, help="LoRA rank")
-    parser.add_argument("--epoch", type=int, default=epoch, help="Number of training epochs")
+    parser.add_argument("--model_id", type=str, default="Qwen/Qwen2.5-0.5B", help="Base model ID")
+    parser.add_argument("--text_file", type=str, default="./data/text8", help="Path to text file for training")
+    parser.add_argument("--adapter_type", type=str, default="lora", help="Type of adapter to train (e.g., lora, vera)")
+    parser.add_argument("--out_dir", type=str, default=None, help="Directory to save LoRA adapters")
+    parser.add_argument("--r", type=int, default=8, help="LoRA rank")
+    parser.add_argument("--epoch", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--batch_size", type=int, default=16, help="Training batch size")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps")
     parser.add_argument("--lr_scheduler_type", type=str, default="constant", help="Learning rate scheduler type")
-    parser.add_argument("--warmup_steps", type=float, default=0.0, help="Number of warmup steps for learning rate scheduler")
+    parser.add_argument("--warmup_steps", type=int, default=0, help="Number of warmup steps for learning rate scheduler")
     args = parser.parse_args()
+
+    if args.out_dir is None:
+        args.out_dir = os.path.join("./adapters/", args.adapter_type)
 
     print("Training arguments:")
     print(f"    Adapter\t\t\t: {args.adapter_type}")
