@@ -48,6 +48,14 @@ def main():
     if args.out_dir is None:
         args.out_dir = os.path.join("./adapters/", args.adapter_type)
 
+    run_name = f"r{args.r}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}_gas{args.gradient_accumulation_steps}"
+    lora_path = f"{args.out_dir}/{os.path.basename(args.text_file)}/{run_name}"
+
+    # if lora_path exist skip
+    if os.path.exists(lora_path):
+        print(f"Skipping training for existing path: {lora_path}")
+        return
+
     print("Training arguments:")
     print(f"    Adapter\t\t\t: {args.adapter_type}")
     print(f"    Epochs\t\t\t: {args.epoch}")
@@ -151,8 +159,7 @@ def main():
     trainer.train()
 
     # 8. Save LoRA adapter
-    run_name = f"r{args.r}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}"
-    lora_path = f"{args.out_dir}/{os.path.basename(args.text_file)}/{run_name}"
+    
     model.save_pretrained(lora_path)
 
 
@@ -172,7 +179,8 @@ def main():
     with open(f"{lora_path}/meta.json", "w") as f:
         json.dump(meta, f, indent=2)
 
-
+    print("Training complete.")
+    print("Metadata saved to:", f"{lora_path}/meta.json")
 
 
 if __name__ == "__main__":
