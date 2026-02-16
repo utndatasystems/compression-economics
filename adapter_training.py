@@ -151,7 +151,7 @@ def main():
     trainer.train()
 
     # 8. Save LoRA adapter
-    run_name = f"r{r}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}"
+    run_name = f"r{args.r}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}"
     lora_path = f"{args.out_dir}/{os.path.basename(args.text_file)}/{run_name}"
     model.save_pretrained(lora_path)
 
