@@ -5,3 +5,5 @@ torch
 pyroaring
 accelerate
 pytest
+peft 
+datasets 
