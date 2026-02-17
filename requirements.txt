@@ -4,5 +4,6 @@ transformers
 torch
 pyroaring
 accelerate
-peft
-datasets
+pytest
+peft 
+datasets 

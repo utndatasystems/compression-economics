@@ -7,6 +7,7 @@ python3 main.py \
   --batch_size 128 \
   --engine transformer \
   --encoding AC \
+  --model Qwen/Qwen2.5-0.5B \
 
 python3 main.py \
   --mode compress \
@@ -15,6 +16,7 @@ python3 main.py \
   --batch_size 128 \
   --engine transformer \
   --encoding bitpacked \
+  --model Qwen/Qwen2.5-0.5B \
 
 python3 main.py \
   --mode compress \
@@ -23,6 +25,7 @@ python3 main.py \
   --batch_size 128 \
   --engine transformer \
   --encoding huffman \
+  --model Qwen/Qwen2.5-0.5B \
 
 python3 main.py \
   --mode compress \
