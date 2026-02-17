@@ -36,7 +36,8 @@ def main():
     parser.add_argument("--text_file", type=str, default="./data/text8", help="Path to text file for training")
     parser.add_argument("--adapter_type", type=str, default="lora", help="Type of adapter to train (e.g., lora, vera)")
     parser.add_argument("--out_dir", type=str, default=None, help="Directory to save LoRA adapters")
-    parser.add_argument("--r", type=int, default=8, help="LoRA rank")
+    parser.add_argument("--r", type=int, default=8, help="Adapter rank")
+    parser.add_argument("--la", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--epoch", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
     parser.add_argument("--batch_size", type=int, default=16, help="Training batch size")
@@ -48,7 +49,14 @@ def main():
     if args.out_dir is None:
         args.out_dir = os.path.join("./adapters/", args.adapter_type)
 
-    run_name = f"r{args.r}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}_gas{args.gradient_accumulation_steps}"
+    if args.adapter_type == "lora":
+        run_name = f"r{args.r}_la{args.la}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}_gas{args.gradient_accumulation_steps}"
+
+    elif args.adapter_type == "vera":
+        run_name = f"r{args.r}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}_gas{args.gradient_accumulation_steps}"
+    else:
+        raise ValueError(f"Unknown adapter type: {args.adapter_type}")
+
     lora_path = f"{args.out_dir}/{os.path.basename(args.text_file)}/{run_name}"
 
     # if lora_path exist skip
@@ -116,7 +124,7 @@ def main():
     elif args.adapter_type == "lora":
         adapter_config = LoraConfig(
             r=args.r,
-            lora_alpha=args.r,
+            lora_alpha=args.la,
             target_modules=["q_proj", "v_proj"],
             lora_dropout=0.0,
             bias="none",
