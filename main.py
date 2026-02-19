@@ -5,12 +5,14 @@ CLI entry point for running global-mask compression and decompression experiment
 import argparse
 import json
 import os
+
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
-from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key
+from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params
 
 RESULTS_FILE = "compression_results.json"
 COMPRESSION_FILE = "compression_data.bin"
 DECOMPRESSION_FILE = "text_results.txt"
+
 
 def main():
     """
@@ -45,10 +47,18 @@ def main():
     if args.mode == "compress":
         # ========================
         # Validate input paths
-        if not args.input_path:
-            parser.error("--input_path is required in compress mode")
         if not args.output_path:
-            args.output_path = COMPRESSION_FILE
+            run_dir = create_run_dir()
+            print(f"\n📁 No output path provided. Created run directory: {run_dir}")
+        
+        else:
+            run_dir = args.output_path
+            print(f"\n📁 Run directory located at: {run_dir}")
+
+        save_params(args, run_dir)
+
+        args.output_path = os.path.join(run_dir, "compression_data.bin")
+        results_path = os.path.join(run_dir, "compression_results.json")
 
         # ========================
         # Check if experiment already exists
@@ -81,12 +91,19 @@ def main():
         # ========================
         # Save results (JSON stats)
         # ========================
-        results_db = load_results(RESULTS_FILE)
-        exp_key = make_key(args)
-        if exp_key not in results_db:
-            results_db[exp_key] = {}
-        results_db[exp_key]["compression"] = comp_stats
-        save_results(results_db, RESULTS_FILE)
+        
+        # Save stats (run-local)
+        save_results(
+            {"compression": comp_stats},
+            results_path
+        )
+
+        #results_db = load_results(RESULTS_FILE)
+        #exp_key = make_key(args)
+        #if exp_key not in results_db:
+        #    results_db[exp_key] = {}
+        #results_db[exp_key]["compression"] = comp_stats
+        #save_results(results_db, RESULTS_FILE)
 
         # ========================
         # Save binary compression file
@@ -106,7 +123,7 @@ def main():
             for k, v in comp_stats.items():
                 print(f"{k}: {v}")
         print("\n\n===== Compression Complete =====")
-        print(f"Compression stats saved to: {RESULTS_FILE}")
+        #print(f"Compression stats saved to: {RESULTS_FILE}")
         print(f"Compression data saved to: {args.output_path}")
 
     elif args.mode == "decompress":

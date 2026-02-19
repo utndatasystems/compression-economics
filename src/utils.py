@@ -10,6 +10,7 @@ This module provides:
 import struct
 import json
 import os
+from datetime import datetime
 
 def bits_to_bytes(bits):
     """
@@ -160,3 +161,16 @@ def make_key(args):
     """
     filename = os.path.basename(args.input_path)
     return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
+
+
+def create_run_dir(base_dir="results"):
+    timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
+    run_dir = os.path.join(base_dir, f"run_{timestamp}")
+    os.makedirs(run_dir, exist_ok=False)
+    os.makedirs(os.path.join(run_dir, "logs"), exist_ok=True)
+    return run_dir
+
+
+def save_params(args, run_dir):
+    with open(os.path.join(run_dir, "params.json"), "w") as f:
+        json.dump(vars(args), f, indent=2)
