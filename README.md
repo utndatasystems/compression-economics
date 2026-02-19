@@ -42,13 +42,15 @@ python main.py \
 ```
 
 Compression using an existing adaptor:
+```
 python main.py \
     --mode compress \
     --input_path ./data/text8 \
     --first_n_tokens 100000 \
     --batch_size 16 \
     --lora_path ./adapters/vera/text8/r4_lr0.0005_lsconstant_bs64_ep4_gas2/
-    
+```
+
 ### Decompression
 ```
 python main.py \
@@ -60,13 +62,14 @@ Decompression reads all required settings from the binary header, so only the
 compressed file path is required.
 
 ### Adaptor Training
-
+```
 python adapter_training.py \
     --adapter_type lora \
     --lr 0.0005 \
     --batch_size 64 \
     --r 4 \
     --epoch 4
+```
 
 ## Key options
 - `--input_path`: Text file to compress (compress mode) or `.bin` to decompress.
