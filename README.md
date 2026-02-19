@@ -20,6 +20,7 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - `src/encoding.py`: various encoding schemes (AC, bitpacked, Huffman).
 - `src/utils.py`: binary IO helpers and experiment result storage.
 - `data/text8`: sample dataset used in experiments.
+- `adaptors`: location of trained LoRa / VeRa adaptors 
 
 ## Setup
 1. Clone the repo:
