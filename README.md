@@ -84,6 +84,7 @@ python adapter_training.py \
 - `--encoding`: `AC`, `bitpacked`, or `huffman`. Default: `AC`.
 - `--print_results`: Print detailed stats to stdout. Default: disabled.
 
+[ToDo: update key options with new training arguments]
 ## Outputs
 - `compression_results.json`: Aggregated metrics keyed by experiment settings.
 - `compression_data.bin`: Binary artifact (header + bitstream + bitmap).
