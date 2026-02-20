@@ -6,13 +6,14 @@ import argparse
 import json
 import os
 
+
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
 from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params
+from src.prediction import TokenPredictor
 
 RESULTS_FILE = "compression_results.json"
 COMPRESSION_FILE = "compression_data.bin"
 DECOMPRESSION_FILE = "text_results.txt"
-
 
 def main():
     """
@@ -22,22 +23,21 @@ def main():
     # Parse command-line arguments
     # ========================
     parser = argparse.ArgumentParser(description="Run Global Mask Compression Experiment")
-    parser.add_argument("--mode", type=str, choices=["compress", "decompress"], required=True,
-                        help="Mode: compress or decompress")
+    parser.add_argument("--mode", type=str, choices=["compress", "decompress"], required=True, help="Mode: compress or decompress")
     parser.add_argument("--input_path", type=str, default="data/text8",help="Input path: For compress mode, dataset path. For decompress mode, compression file path.")
     parser.add_argument("--output_path", type=str, help="Output path: For compress mode, compression file path. For decompress mode, reconstruction text file path.")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B", help="Model name")
     parser.add_argument("--lora_path", type=str, default=None, help="Path to LoRA adapter (if any)")
     parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
     parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length exceeded (only with KV cache)")
-    parser.add_argument("--first_n_tokens", type=int, default=1000, help="Number of tokens to compress")
+    parser.add_argument("--first_n_tokens", type=int, default=10001, help="Number of tokens to compress")
     parser.add_argument("--use_kv_cache", action="store_true", help="Enable KV cache for compression")
     parser.set_defaults(use_kv_cache=True)
     parser.add_argument("--text_input", type=str, required=False, help="The direct text input for LLM inference.")
     parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
-    parser.add_argument("--batch_size", type=int, default=1, help="Batch size for LLM inference")
+    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
     parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
@@ -45,86 +45,92 @@ def main():
     args = parser.parse_args()
 
     if args.mode == "compress":
-        # ========================
-        # Validate input paths
-        if not args.output_path:
-            run_dir = create_run_dir()
-            print(f"\n📁 No output path provided. Created run directory: {run_dir}")
+            # ========================
+            # Validate input paths
+            if not args.input_path:
+                parser.error("--input_path is required in compress mode")
+            if not args.output_path:
+                args.output_path = COMPRESSION_FILE
+
+            # ========================
+            # Check if experiment already exists
+            # ========================
+            results_db = load_results(RESULTS_FILE)
+            exp_key = make_key(args)
+            if exp_key in results_db:
+                print(f"\n⚠️  Experiment already exists for {exp_key}, skipping run.")
+                print(f"Stored Results: {results_db[exp_key]}")
+                return
+
+            # ========================
+            # Print experiment settings
+            # ========================
+            print(f"\nRunning compression with parameters:")
+            print(f"  Data path        : {args.input_path}")
+            print(f"  Model            : {args.model_name}")
+            print(f"  Context length   : {args.context_length}")
+            print(f"  Retain tokens    : {args.retain_tokens}")
+            print(f"  First n tokens   : {args.first_n_tokens}")
+            print(f"  Use KV cache     : {args.use_kv_cache}")
+            print(f"  Batch size       : {args.batch_size}")
+            print(f"  Encoding         : {args.encoding}")
         
-        else:
-            run_dir = args.output_path
-            print(f"\n📁 Run directory located at: {run_dir}")
+            # add parameters to comp_stats for saving in results JSON
+            token_predictor = TokenPredictor(args, bitmap_data=None)
+            base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
+            base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
+            total_params = base_params + adapter_params
+            total_size_mb = base_size_mb + adapter_size_mb
 
-        save_params(args, run_dir)
+            print('Model parameters:')
+            print(f"    Adapter parameters: {adapter_params:,}")
+            print(f"    Base model parameters: {base_params:,}")
+            print(f"    Adapter size (MB): {adapter_size_mb:.2f}")
+            print(f"    Base model size (MB): {base_size_mb:.2f}")
 
-        args.output_path = os.path.join(run_dir, "compression_data.bin")
-        results_path = os.path.join(run_dir, "compression_results.json")
+            # ========================
+            # Run compression
+            # ========================
+            first_token, bit_string, bitmask_data, comp_stats, args = run_global_mask_compression(args)
 
-        # ========================
-        # Check if experiment already exists
-        # ========================
-        results_db = load_results(RESULTS_FILE)
-        exp_key = make_key(args)
-        if exp_key in results_db:
-            print(f"\n⚠️ Experiment already exists for {exp_key}, skipping run.")
-            print(f"Stored Results: {results_db[exp_key]}")
-            return
+            comp_stats["model_params"] = {
+                "total_params": total_params,
+                "adapter_params": adapter_params,
+                "base_model_params": base_params,
+                "total_size_mb": round(total_size_mb, 2),
+                "adapter_size_mb": round(adapter_size_mb, 2),
+                "base_model_size_mb": round(base_size_mb, 2),
+            }
 
-        # ========================
-        # Print experiment settings
-        # ========================
-        print(f"\nRunning compression with parameters:")
-        print(f"  Data path        : {args.input_path}")
-        print(f"  Model            : {args.model_name}")
-        print(f"  Context length   : {args.context_length}")
-        print(f"  Retain tokens    : {args.retain_tokens}")
-        print(f"  First n tokens   : {args.first_n_tokens}")
-        print(f"  Use KV cache     : {args.use_kv_cache}")
-        print(f"  Batch size       : {args.batch_size}")
-        print(f"  Encoding         : {args.encoding}")
+            # ========================
+            # Save results (JSON stats)
+            # ========================
+            results_db = load_results(RESULTS_FILE)
+            exp_key = make_key(args)
+            if exp_key not in results_db:
+                results_db[exp_key] = {}
+            results_db[exp_key]["compression"] = comp_stats
+            save_results(results_db, RESULTS_FILE)
 
-        # ========================
-        # Run compression
-        # ========================
-        first_token, bit_string, bitmask_data, comp_stats, args = run_global_mask_compression(args)
+            # ========================
+            # Save binary compression file
+            # ========================
+            save_global_mask_file(
+                args,
+                first_token=first_token,
+                bit_string=bit_string,
+                bitmask_data=bitmask_data)
 
-        # ========================
-        # Save results (JSON stats)
-        # ========================
-        
-        # Save stats (run-local)
-        save_results(
-            {"compression": comp_stats},
-            results_path
-        )
-
-        #results_db = load_results(RESULTS_FILE)
-        #exp_key = make_key(args)
-        #if exp_key not in results_db:
-        #    results_db[exp_key] = {}
-        #results_db[exp_key]["compression"] = comp_stats
-        #save_results(results_db, RESULTS_FILE)
-
-        # ========================
-        # Save binary compression file
-        # ========================
-        save_global_mask_file(
-            args,
-            first_token=first_token,
-            bit_string=bit_string,
-            bitmask_data=bitmask_data
-        )
-
-        # ========================
-        # Output compression results
-        # ========================
-        if args.print_results:
-            print("\n\n===== Compression Results =====")
-            for k, v in comp_stats.items():
-                print(f"{k}: {v}")
-        print("\n\n===== Compression Complete =====")
-        #print(f"Compression stats saved to: {RESULTS_FILE}")
-        print(f"Compression data saved to: {args.output_path}")
+            # ========================
+            # Output compression results
+            # ========================
+            if args.print_results:
+                print("\n\n===== Compression Results =====")
+                for k, v in comp_stats.items():
+                    print(f"{k}: {v}")
+            print("\n\n===== Compression Complete =====")
+            print(f"Compression stats saved to: {RESULTS_FILE}")
+            #print(f"Compression data saved to: {args.output_path}")
 
     elif args.mode == "decompress":
         # ========================

@@ -12,6 +12,30 @@ from transformers import (
 )
 from peft import LoraConfig, VeraConfig, get_peft_model
 
+
+def count_parameters(model):
+    total_params = 0
+    trainable_params = 0
+
+    for p in model.parameters():
+        numel = p.numel()
+        total_params += numel
+        if p.requires_grad:
+            trainable_params += numel
+    return total_params, trainable_params
+
+def estimate_model_size_mb(model):
+    total_bytes = 0
+    trainable_bytes = 0
+
+    for p in model.parameters():
+        bytes_ = p.numel() * p.element_size()
+        total_bytes += bytes_
+        if p.requires_grad:
+            trainable_bytes += bytes_
+    return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
+
+
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision('high')
     device, use_fp16, use_bf16 = "cuda", True, False
@@ -120,6 +144,21 @@ def main():
             task_type="CAUSAL_LM",)
 
     model = get_peft_model(model, adapter_config)
+
+    total_params, adapter_params = count_parameters(model)
+    total_size_mb, adapter_size_mb = estimate_model_size_mb(model)
+
+    base_model_params = total_params - adapter_params
+    base_model_size_mb = total_size_mb - adapter_size_mb
+
+    print('Model parameters:')
+    print(f"    Total parameters: {total_params:,}")
+    print(f"    Adapter parameters: {adapter_params:,}")
+    print(f"    Base model parameters: {base_model_params:,}")
+    print(f"    Total size (MB): {total_size_mb:.2f}")
+    print(f"    Adapter size (MB): {adapter_size_mb:.2f}")
+    print(f"    Base model size (MB): {base_model_size_mb:.2f}")
+    
     model.print_trainable_parameters()
     model = torch.compile(model) 
 
@@ -166,6 +205,12 @@ def main():
         "epochs": args.epoch,
         "final_loss": trainer.state.log_history[-1]["train_loss"],
         "train_runtime": trainer.state.log_history[-1]["train_runtime"],
+        "base_model_params": base_model_params,
+        "adapter_params": adapter_params,
+        "total_model_params": total_params,
+        "base_model_size_mb": round(base_model_size_mb, 2),
+        "adapter_size_mb": round(adapter_size_mb, 2),
+        "total_model_size_mb": round(total_size_mb, 2),
     }
 
     with open(f"{lora_path}/meta.json", "w") as f:
