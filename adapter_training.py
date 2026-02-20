@@ -14,18 +14,12 @@ from peft import LoraConfig, VeraConfig, get_peft_model
 
 if torch.cuda.is_available():
     torch.set_float32_matmul_precision('high')
-    device = "cuda"
-    use_fp16 = True
-    use_bf16 = False
+    device, use_fp16, use_bf16 = "cuda", True, False
 elif torch.backends.mps.is_available():
-    device = "mps"
-    use_fp16 = False
-    use_bf16 = False
+    device, use_fp16, use_bf16 = "mps", False, False
     torch.set_float32_matmul_precision("high")
 else:
-    device = "cpu"
-    use_fp16 = False
-    use_bf16 = False
+    device, use_fp16, use_bf16 = "cpu", False, False
 
 print(f"Using device: {device}")
 
@@ -35,7 +29,7 @@ def main():
     parser.add_argument("--model_id", type=str, default="Qwen/Qwen2.5-0.5B", help="Base model ID")
     parser.add_argument("--text_file", type=str, default="./data/text8", help="Path to text file for training")
     parser.add_argument("--adapter_type", type=str, default="lora", help="Type of adapter to train (e.g., lora, vera)")
-    parser.add_argument("--out_dir", type=str, default=None, help="Directory to save LoRA adapters")
+    parser.add_argument("--save_dir", type=str, default=None, help="Directory to save LoRA adapters")
     parser.add_argument("--r", type=int, default=8, help="Adapter rank")
     parser.add_argument("--la", type=int, default=32, help="LoRA alpha")
     parser.add_argument("--epoch", type=int, default=2, help="Number of training epochs")
@@ -46,8 +40,8 @@ def main():
     parser.add_argument("--warmup_steps", type=int, default=0, help="Number of warmup steps for learning rate scheduler")
     args = parser.parse_args()
 
-    if args.out_dir is None:
-        args.out_dir = os.path.join("./adapters/", args.adapter_type)
+    if args.save_dir is None:
+        args.save_dir = os.path.join("./adapters/", args.adapter_type)
 
     if args.adapter_type == "lora":
         run_name = f"r{args.r}_la{args.la}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}_gas{args.gradient_accumulation_steps}"
@@ -57,7 +51,7 @@ def main():
     else:
         raise ValueError(f"Unknown adapter type: {args.adapter_type}")
 
-    lora_path = f"{args.out_dir}/{os.path.basename(args.text_file)}/{run_name}"
+    lora_path = f"{args.save_dir}/{os.path.basename(args.text_file)}/{run_name}"
 
     # if lora_path exist skip
     if os.path.exists(lora_path):
@@ -72,7 +66,6 @@ def main():
     print(f"    Batch size\t\t\t: {args.batch_size}")
     print(f"    Gradient accumulation\t: {args.gradient_accumulation_steps}")
     
-
     # Load tokenizer
     tokenizer = AutoTokenizer.from_pretrained(args.model_id, cache_dir=".cache")
     tokenizer.pad_token = tokenizer.eos_token
@@ -83,7 +76,6 @@ def main():
     dataset = Dataset.from_dict({"text": [full_text]})
 
     # Tokenize dataset
-
     def tokenize_fn(examples):
         tokens = tokenizer(examples["text"][0])
         input_ids = tokens["input_ids"]
@@ -94,33 +86,30 @@ def main():
         for i in range(0, len(input_ids) - block_size, block_size):
             chunks.append(input_ids[i:i+block_size])
 
-        return {
-            "input_ids": chunks,
-        }
+        return {"input_ids": chunks,}
+    
     dataset = dataset.map(
         tokenize_fn,
         batched=True,
-        remove_columns=["text"],
-    )
+        remove_columns=["text"],)
 
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
-        mlm=False,
-    )
+        mlm=False,)
 
     # Load model and attach LoRA
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
         dtype="auto",
-        device_map={"": device},
-    )
+        device_map={"": device},)
+    
     if args.adapter_type == "vera":
         adapter_config = VeraConfig(
             r=args.r,
             target_modules=["q_proj", "v_proj"],
             bias="none",
-            vera_dropout=0.0,
-        )
+            vera_dropout=0.0,)
+        
     elif args.adapter_type == "lora":
         adapter_config = LoraConfig(
             r=args.r,
@@ -128,15 +117,14 @@ def main():
             target_modules=["q_proj", "v_proj"],
             lora_dropout=0.0,
             bias="none",
-            task_type="CAUSAL_LM",
-        )
+            task_type="CAUSAL_LM",)
 
     model = get_peft_model(model, adapter_config)
     model.print_trainable_parameters()
-    model = torch.compile(model)
+    model = torch.compile(model) 
 
     training_args = TrainingArguments(
-        output_dir=args.out_dir,
+        output_dir=args.save_dir,
         per_device_train_batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_train_epochs=args.epoch,
@@ -153,23 +141,19 @@ def main():
         weight_decay=0.0,
         report_to="none",
         dataloader_pin_memory=(device == "cuda"),
-        remove_unused_columns=False,
-    )
+        remove_unused_columns=False,)
 
     # 7. Train
     trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=dataset,
-        data_collator=data_collator,
-    )
+        data_collator=data_collator,)
 
     trainer.train()
 
     # 8. Save LoRA adapter
-    
     model.save_pretrained(lora_path)
-
 
     meta = {
         "model_id": args.model_id,
