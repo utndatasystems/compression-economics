@@ -158,8 +158,14 @@ class TokenPredictor:
                 dtype=dtype,
                 device_map="auto"
             )
+            self.base_params = self.count_parameters(self.model)[0]
+            self.base_size_mb = self.estimate_model_size_mb(self.model)[0]
+            self.adapter_params, self.adapter_size_mb = 0, 0
+
             if args.lora_path is not None:
                 self.model = PeftModel.from_pretrained(self.model, args.lora_path, device_map="auto")
+                self.adapter_params = self.count_parameters(self.model)[0] - self.base_params
+                self.adapter_size_mb = self.estimate_model_size_mb(self.model)[0] - self.base_size_mb
                 print(f"Loaded LoRA adapter from {args.lora_path}")
 
             print(f"Model {args.model_name} loaded with dtype {self.model.dtype}.")
@@ -385,3 +391,38 @@ class TokenPredictor:
             int: Token ID corresponding to the given index.
         """
         return self.tokens_list[token_id]
+    
+    def count_parameters(self, model):
+        """
+        Count total and adapter parameters in the model.
+
+        Args:
+            model (torch.nn.Module): The model to analyze.
+
+        Returns:
+            Tuple[int, int]: Total parameters and adapter parameters.
+        """
+        total_params = sum(p.numel() for p in model.parameters())
+        adapter_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+        total_params = 0
+        trainable_params = 0
+
+        for p in model.parameters():
+            numel = p.numel()
+            total_params += numel
+            if p.requires_grad:
+                trainable_params += numel
+        return total_params, trainable_params
+    
+    def estimate_model_size_mb(self, model):
+        model = self.model
+        total_bytes = 0
+        trainable_bytes = 0
+
+        for p in model.parameters():
+            bytes_ = p.numel() * p.element_size()
+            total_bytes += bytes_
+            if p.requires_grad:
+                trainable_bytes += bytes_
+        return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
