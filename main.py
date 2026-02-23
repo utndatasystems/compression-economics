@@ -82,25 +82,25 @@ def main():
             total_params = base_params + adapter_params
             total_size_mb = base_size_mb + adapter_size_mb
 
-            print('Model parameters:')
-            print(f"    Adapter parameters: {adapter_params:,}")
-            print(f"    Base model parameters: {base_params:,}")
-            print(f"    Adapter size (MB): {adapter_size_mb:.2f}")
-            print(f"    Base model size (MB): {base_size_mb:.2f}")
+            print(f'\nModel parameters:')
+            print(f"Adapter parameters   : {adapter_params:,}")
+            print(f"Base model parameters: {base_params:,}")
+            print(f"Adapter size (MB).   : {adapter_size_mb:.2f}")
+            print(f"Base model size (MB).: {base_size_mb:.2f}")
 
             # ========================
             # Run compression
             # ========================
             first_token, bit_string, bitmask_data, comp_stats, args = run_global_mask_compression(args)
 
-            comp_stats["model_params"] = {
+            comp_stats = {
+                **comp_stats,
                 "total_params": total_params,
                 "adapter_params": adapter_params,
                 "base_model_params": base_params,
                 "total_size_mb": round(total_size_mb, 2),
                 "adapter_size_mb": round(adapter_size_mb, 2),
-                "base_model_size_mb": round(base_size_mb, 2),
-            }
+                "base_model_size_mb": round(base_size_mb, 2),}
 
             # ========================
             # Save results (JSON stats)
@@ -110,7 +110,7 @@ def main():
             if exp_key not in results_db:
                 results_db[exp_key] = {}
             results_db[exp_key]["compression"] = comp_stats
-            save_results(results_db, RESULTS_FILE)
+            save_results(results_db, RESULTS_FILE) #add 
 
             # ========================
             # Save binary compression file
