@@ -5,17 +5,25 @@ DATA_DIR="./data"
 TEXT8_ZIP="$DATA_DIR/text8.zip"
 TEXT8_FILE="$DATA_DIR/text8"
 
-# python environment setup
+# Install uv if not already installed
+if ! command -v uv &> /dev/null; then
+  echo "[INFO] Installing uv"
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  export PATH="$HOME/.local/bin:$PATH"
+else
+  echo "[SKIP] uv already installed ($(uv --version))"
+fi
+
+# Python environment setup
 if [ ! -d "./.venv" ]; then
-  echo "[INFO] Creating Python virtual environment"
-  python3 -m venv ./.venv
+  echo "[INFO] Creating Python virtual environment with uv"
+  uv venv ./.venv
 else
   echo "[SKIP] Python virtual environment already exists"
 fi
 source ./.venv/bin/activate
-echo "[INFO] Installing Python dependencies"
-pip install --upgrade pip
-pip install -r requirements.txt
+echo "[INFO] Installing Python dependencies with uv"
+uv pip install -r requirements.txt
 
 # Download text8 dataset 
 
