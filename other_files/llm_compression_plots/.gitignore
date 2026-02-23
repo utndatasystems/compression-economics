@@ -1,0 +1,6 @@
+__pycache__/
+.venv
+text8*
+
+# ignore all pdfs
+*.pdf
