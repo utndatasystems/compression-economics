@@ -156,7 +156,6 @@ class TokenPredictor:
                 args.model_name,
                 cache_dir=".cache",
                 dtype=dtype,
-                device_map="auto"
             )
             self.base_params = self.count_parameters(self.model)[0]
             self.base_size_mb = self.estimate_model_size_mb(self.model)[0]
