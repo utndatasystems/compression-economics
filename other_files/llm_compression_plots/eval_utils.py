@@ -1,105 +1,144 @@
-
 import os
 import json
-import argparse
-import pandas as pd
-import matplotlib.pyplot as plt
-from collections import defaultdict
 import re
+from collections import defaultdict
+
+import pandas as pd
 
 
-def load_run(results_path):
-    if not (os.path.exists(results_path)):
+def load_run(results_path: str) -> pd.DataFrame:
+    """
+    Load a single experiment run from a JSON results file.
+
+    Parameters:
+        results_path (str): Path to the JSON results file.
+
+    Returns:
+        pd.DataFrame: DataFrame with one row containing compression data.
+                      Returns empty DataFrame if file or data does not exist.
+    """
+    if not os.path.exists(results_path):
         return pd.DataFrame([])
 
-    with open(results_path) as f:
+    with open(results_path, "r") as f:
         results = json.load(f)
 
-    comp = results.get("compression", {})
-    if not comp:
+    compression_data = results.get("compression", {})
+    if not compression_data:
         return pd.DataFrame([])
 
     run_name = os.path.basename(os.path.dirname(results_path))
+    record = {"run": run_name, **compression_data}
 
-    record = {
-        "run": run_name,
-        **comp,
-    }
-    print('done')
     return pd.DataFrame([record])
 
 
-def load_model_results(file_path, selected_datasets=None, selected_n=None):
+def load_model_results(file_path: str, selected_datasets: list = None, selected_n: int = None) -> dict:
     """
-    Loads model JSON results and flattens into a dictionary of:
-        dataset → model → compression/decompression data.
-    
+    Load and flatten model JSON results.
+
     Keeps only the **fastest compression time** entry for each dataset+model.
-    Adds ctx and ret to the output.
     Filters results by dataset and n if specified.
+
+    Parameters:
+        file_path (str): Path to the results JSON file.
+        selected_datasets (list, optional): List of dataset names to filter.
+        selected_n (int, optional): Number of tokens to filter by.
+
+    Returns:
+        dict: Flattened results dictionary: dataset → model → compression/decompression data.
     """
+    if not os.path.exists(file_path):
+        return {}
+
     with open(file_path, "r") as f:
         results = json.load(f)
 
     # Temporary store: dataset → model → best entry (fastest compression time)
     temp_store = defaultdict(lambda: defaultdict(dict))
 
-    #TODO: convert temp_store to final output format in a separate step, to avoid nested defaultdict in output
+    # TODO: implement filtering and flattening logic
+    # for dataset_name, dataset_data in results.items():
+    #     for model_name, runs in dataset_data.items():
+    #         select fastest compression time, filter by selected_datasets and selected_n
 
-    print(results)
     return results
 
 
-def lift_compression_args(data):
-    comp = data.get("compression")
-    args = comp.pop("args", None)
+def lift_compression_args(data: dict) -> dict:
+    """
+    Lift the 'args' dictionary inside compression data to top-level keys.
 
+    Parameters:
+        data (dict): Dictionary containing 'compression' entry.
+
+    Returns:
+        dict: Updated dictionary with args merged into compression data.
+    """
+    compression = data.get("compression")
+    if not compression:
+        return data
+
+    args = compression.pop("args", None)
     if isinstance(args, dict):
-        comp.update(args)
+        compression.update(args)
+
     return data
 
 
 def add_rank(data: dict) -> dict:
     """
-    Given a dictionary of runs, extract the rank from the experiment key
-    and add it as a new 'rank' key in each sub-dictionary.
+    Extract the experiment rank from experiment key and add as 'rank'.
+
+    The pattern expected is "/r<rank>_" in the experiment key.
 
     Parameters:
         data (dict): Dictionary of experiment runs.
 
     Returns:
-        dict: The same dictionary with 'rank' added to each run.
+        dict: Updated dictionary with 'rank' key added to each run.
     """
     rank_pattern = re.compile(r"/r(\d+)_")
 
     for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
         match = rank_pattern.search(key)
-        if match:
-            value["rank"] = int(match.group(1))
-        else:
-            value["rank"] = None
+        value["rank"] = int(match.group(1)) if match else None
 
     return data
 
+
 def include_peft(results: dict) -> dict:
-    for key, value in results.items():
-        # Only process experiment entries (dicts with lora_path)
-        if not isinstance(value, dict):
+    """
+    Annotate each run with PEFT type based on 'lora_path'.
+
+    Rules:
+        - 'vera' in path → "vera"
+        - 'lora' in path → "lora"
+        - None or missing → None
+
+    Parameters:
+        results (dict): Dictionary of experiment runs.
+
+    Returns:
+        dict: Updated dictionary with 'peft' key for each run.
+    """
+    for run_data in results.values():
+        if not isinstance(run_data, dict):
             continue
 
-        lora_path = value.get("lora_path")
-
+        lora_path = run_data.get("lora_path")
         if not isinstance(lora_path, str):
-            value["peft"] = None
+            run_data["peft"] = None
             continue
 
         path_lower = lora_path.lower()
-
         if "vera" in path_lower:
-            value["peft"] = "vera"
+            run_data["peft"] = "vera"
         elif "lora" in path_lower:
-            value["peft"] = "lora"
+            run_data["peft"] = "lora"
         else:
-            value["peft"] = None
+            run_data["peft"] = None
 
     return results
