@@ -41,6 +41,9 @@ def main():
     parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
+    parser.add_argument("--profile", action="store_true", help="Enable torch.profiler during compression")
+    parser.add_argument("--profile_dir", type=str, default="./profiler_logs", help="Directory to write profiler trace files")
+    parser.add_argument("--profile_steps", type=int, default=5, help="Number of active profiling steps (after warmup)")
 
     args = parser.parse_args()
 
@@ -74,6 +77,8 @@ def main():
             print(f"  Use KV cache     : {args.use_kv_cache}")
             print(f"  Batch size       : {args.batch_size}")
             print(f"  Encoding         : {args.encoding}")
+            if args.profile:
+                print(f"  Profiling        : enabled (steps={args.profile_steps}, dir={args.profile_dir})")
         
             # add parameters to comp_stats for saving in results JSON
             token_predictor = TokenPredictor(args, bitmap_data=None)

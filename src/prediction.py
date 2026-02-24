@@ -15,6 +15,7 @@ import math
 from pyroaring import BitMap
 import time
 from peft import PeftModel
+from torch.profiler import record_function
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -155,8 +156,7 @@ class TokenPredictor:
             self.model = AutoModelForCausalLM.from_pretrained(
                 args.model_name,
                 cache_dir=".cache",
-                dtype=dtype,
-                device_map="auto"
+                dtype="auto",
             )
             self.base_params = self.count_parameters(self.model)[0]
             self.base_size_mb = self.estimate_model_size_mb(self.model)[0]
@@ -311,9 +311,11 @@ class TokenPredictor:
                 if not enable_kv_cache:
                     # If not using cache, run the model on the full prompt every time.
                     t0_data_copy = time.perf_counter()
-                    input_ids = torch.tensor(prompts, device=self.device)
+                    with record_function("data_copy_to_gpu"):
+                        input_ids = torch.tensor(prompts, device=self.device)
                     data_copy_time += time.perf_counter() - t0_data_copy
-                    outputs = self.model(input_ids, use_cache=enable_kv_cache)
+                    with record_function("model_forward"):
+                        outputs = self.model(input_ids, use_cache=enable_kv_cache)
                     # Ensure cache is cleared when not in use.
                     self._past_kv = None
                     self._cached_context_len = 0
@@ -326,19 +328,23 @@ class TokenPredictor:
                     if self._past_kv is None or reset_cache:
                         # Rebuild the cache from the full prompt (first step or reset).
                         t0_data_copy = time.perf_counter()
-                        input_ids = torch.tensor(prompts, device=self.device)
+                        with record_function("data_copy_to_gpu"):
+                            input_ids = torch.tensor(prompts, device=self.device)
                         data_copy_time += time.perf_counter() - t0_data_copy
-                        outputs = self.model(input_ids, use_cache=True)
+                        with record_function("model_forward"):
+                            outputs = self.model(input_ids, use_cache=True)
                         self._past_kv = outputs.past_key_values
                         self._cached_context_len = 0
                     else:
                         # Incremental step: process only the last token with cache.
                         delta = [row[-1:] for row in prompts]
                         t0_data_copy = time.perf_counter()
-                        delta = torch.tensor(delta, device=self.device, dtype=torch.long)
+                        with record_function("data_copy_to_gpu"):
+                            delta = torch.tensor(delta, device=self.device, dtype=torch.long)
                         data_copy_time += time.perf_counter() - t0_data_copy
 
-                        outputs = self.model(delta, past_key_values=self._past_kv, use_cache=True)
+                        with record_function("model_forward"):
+                            outputs = self.model(delta, past_key_values=self._past_kv, use_cache=True)
                         self._past_kv = outputs.past_key_values
                         self._cached_context_len += 1
                 logits = outputs.logits[:, -1, :]
@@ -348,17 +354,20 @@ class TokenPredictor:
             # print(f"logits shape: {logits.shape}")
             # Optionally reduce logits to the active token subset.
             if getattr(self, "reduce_tokens", False):
-                logits = logits.index_select(1, self.index_tensor.to(logits.device))
+                with record_function("vocab_masking"):
+                    logits = logits.index_select(1, self.index_tensor.to(logits.device))
 
             softmax_time = 0.0
             if self.args.encoding == "AC":
                 # For arithmetic coding, convert logits to probabilities on CPU.
                 t0_softmax = time.perf_counter()
-                probs = torch.softmax(logits, dim=-1)
+                with record_function("softmax"):
+                    probs = torch.softmax(logits, dim=-1)
                 softmax_time = time.perf_counter() - t0_softmax
 
                 t0_data_copy = time.perf_counter()
-                probs_cpu = probs.cpu()
+                with record_function("data_copy_to_cpu"):
+                    probs_cpu = probs.cpu()
                 data_copy_time += time.perf_counter() - t0_data_copy
 
                 return self.tokens_list, probs_cpu, data_copy_time, softmax_time
@@ -391,7 +400,7 @@ class TokenPredictor:
             int: Token ID corresponding to the given index.
         """
         return self.tokens_list[token_id]
-    
+
     def count_parameters(self, model):
         """
         Count total and adapter parameters in the model.
