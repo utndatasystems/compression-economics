@@ -15,6 +15,13 @@ from itertools import chain
 import numpy as np
 import time
 import torch
+from torch.profiler import (
+    profile as torch_profile,
+    record_function,
+    ProfilerActivity,
+    schedule as profiler_schedule,
+    tensorboard_trace_handler,
+)
 
 def run_global_mask_compression(args):
     """
@@ -94,6 +101,27 @@ def run_global_mask_compression(args):
     entropy = 0.0
     rank_list = []
     probs_list = []
+
+    # ---- torch.profiler setup (only active when args.profile is True) ----
+    do_profile = getattr(args, "profile", False)
+    profile_steps = getattr(args, "profile_steps", 5)
+    profile_dir = getattr(args, "profile_dir", "./profiler_logs")
+
+    if do_profile:
+        import os
+        os.makedirs(profile_dir, exist_ok=True)
+        _profiler = torch_profile(
+            activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            schedule=profiler_schedule(wait=2, warmup=2, active=profile_steps, repeat=1),
+            on_trace_ready=tensorboard_trace_handler(profile_dir),
+            record_shapes=True,
+            with_stack=True,
+        )
+        _profiler.__enter__()
+        print(f"\n[Profiler] Enabled. Capturing {profile_steps} active steps (after 2 wait + 2 warmup) → {profile_dir}")
+    else:
+        _profiler = None
+
     # Process each token in the dataset to compress it.
     for token_idx in range(chunk_length):
         print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
@@ -110,7 +138,8 @@ def run_global_mask_compression(args):
 
         # Run LLM inference
         t0_inference = time.perf_counter()
-        token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
+        with record_function("llm_inference"):
+            token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
         data_copy_time += _data_copy_time
         softmax_time += _softmax_time
         inference_time += time.perf_counter() - t0_inference
@@ -130,44 +159,55 @@ def run_global_mask_compression(args):
         if args.engine == "transformer":
             if args.encoding == "AC":
                 t0_ac = time.perf_counter()
-                probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
+                with record_function("ac_encoding"):
+                    probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
 
-                # Encode each valid batch's next token using arithmetic coding.
-                for idx, probs in enumerate(probs_cpu):
-                    if not valid_mask[idx]:
-                        continue
-                    target_idx = actual_next_tokens[idx]
-                    llm_compressor.next_token(target_idx, probs)
-                    entropy += -np.log2(probs[target_idx])
-                    probs_list.append(probs[target_idx])
+                    # Encode each valid batch's next token using arithmetic coding.
+                    for idx, probs in enumerate(probs_cpu):
+                        if not valid_mask[idx]:
+                            continue
+                        target_idx = actual_next_tokens[idx]
+                        llm_compressor.next_token(target_idx, probs)
+                        entropy += -np.log2(probs[target_idx])
+                        probs_list.append(probs[target_idx])
 
                 ac_time += time.perf_counter() - t0_ac
 
             elif args.encoding in ("bitpacked", "huffman"):
-                logits = probs_values.to(torch.float32)
-                device = logits.device
-                B, V = logits.shape
+                with record_function("rank_encoding"):
+                    logits = probs_values.to(torch.float32)
+                    device = logits.device
+                    B, V = logits.shape
 
-                # Compute rank of the true token within the model's logits.
-                target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
-                batch_idx = torch.arange(B, device=device)  # [B]
+                    # Compute rank of the true token within the model's logits.
+                    target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
+                    batch_idx = torch.arange(B, device=device)  # [B]
 
-                target_logits = logits[batch_idx, target_idx].unsqueeze(1)
+                    target_logits = logits[batch_idx, target_idx].unsqueeze(1)
 
-                ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
-                ranks = ranks_0.cpu().tolist()
+                    ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
+                    ranks = ranks_0.cpu().tolist()
 
-                for idx in range(args.batch_size):
-                    if not valid_mask[idx]:
-                        continue
-                    rank = ranks[idx]
-                    rank_list.append(rank)
-                    # llm_compressor.next_token(rank)
+                    for idx in range(args.batch_size):
+                        if not valid_mask[idx]:
+                            continue
+                        rank = ranks[idx]
+                        rank_list.append(rank)
+                        # llm_compressor.next_token(rank)
 
             else:
                 raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
+
+            # Advance the profiler schedule one step (no-op when profiling disabled).
+            if _profiler is not None:
+                _profiler.step()
         else:
             raise ValueError(f"Unsupported engine: {args.engine}")
+
+    # Finalize the profiler (flushes the last trace to disk).
+    if _profiler is not None:
+        _profiler.__exit__(None, None, None)
+        print(f"\n[Profiler] Trace written to: {profile_dir}")
 
     if args.engine == "transformer":
         if args.encoding == "AC":
