@@ -2,6 +2,8 @@ data/*
 tmp/*
 temp/*
 adapters/*
+quantized_models/*
+
 logs/*
 *.job
 results/*
