@@ -48,6 +48,7 @@ LLM_CONFIGS = [
         "encoding": "AC",
         "use_kv_cache": True,
         "reduce_tokens": True,
+        "first_n_tokens": 1_000_000,
     },
     # Add more configs here to sweep parameters, e.g.:
     # {
@@ -57,6 +58,7 @@ LLM_CONFIGS = [
     #     "encoding": "AC",
     #     "use_kv_cache": True,
     #     "reduce_tokens": True,
+    #     "first_n_tokens": 1_000_000,
     # },
 ]
 
@@ -155,7 +157,7 @@ def fmt(val, decimals=4):
     return str(val)
 
 
-def run_llm_experiments(datasets, configs, models, results_json, first_n_tokens, dry_run=False):
+def run_llm_experiments(datasets, configs, models, results_json, first_n_tokens_override=None, dry_run=False):
     """
     Run main.py compress + decompress for every (dataset, model, config) combo.
     Returns a list of result dicts.
@@ -177,6 +179,9 @@ def run_llm_experiments(datasets, configs, models, results_json, first_n_tokens,
                 )
 
                 print(f"\nLLM Compress: {model_short} on {dataset_name}  [{config_label}]")
+
+                # Resolve first_n_tokens: CLI override takes precedence over config value
+                first_n_tokens = first_n_tokens_override if first_n_tokens_override is not None else config.get("first_n_tokens")
 
                 # Build compress command
                 comp_cmd = [
@@ -545,7 +550,7 @@ def parse_args():
     parser.add_argument("--skip-llm", action="store_true", help="Skip LLM experiments")
     parser.add_argument("--skip-baselines", action="store_true", help="Skip traditional baselines")
     parser.add_argument("--first-n-tokens", type=int, default=None,
-                        help="Number of tokens for LLM experiments (default: use dataset default)")
+                        help="Override first_n_tokens for all LLM configs (default: use per-config value)")
     parser.add_argument("--datasets", nargs="+", default=["data/text8"],
                         help="Dataset file paths")
     parser.add_argument("--output", default="experiment_results.tsv",
@@ -584,10 +589,10 @@ def main():
         print("\nRunning LLM compression experiments...")
         llm_rows = run_llm_experiments(
             datasets=args.datasets,
-            configs=LLM_CONFIGS, 
+            configs=LLM_CONFIGS,
             models=LLM_MODELS,
             results_json=args.results_json,
-            first_n_tokens=args.first_n_tokens,
+            first_n_tokens_override=args.first_n_tokens,
             dry_run=args.dry_run
         )
         all_rows.extend(llm_rows)
