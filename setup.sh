@@ -23,7 +23,7 @@ else
 fi
 source ./.venv/bin/activate
 echo "[INFO] Installing Python dependencies with uv"
-uv pip install -r requirements.txt
+uv sync
 
 # Download text8 dataset 
 
