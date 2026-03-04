@@ -11,7 +11,7 @@ from src.global_mask_compressor import run_global_mask_compression, run_global_m
 from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params
 from src.prediction import TokenPredictor
 
-RESULTS_FILE = "compression_results.json"
+RESULTS_FILE = "compression_results_grid_search.json"
 COMPRESSION_FILE = "compression_data.bin"
 DECOMPRESSION_FILE = "text_results.txt"
 
