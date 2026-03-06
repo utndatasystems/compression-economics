@@ -11,30 +11,8 @@ from transformers import (
     DataCollatorForLanguageModeling,
     BitsAndBytesConfig)
 
+from src.utils import count_parameters, estimate_model_size_mb
 from peft import LoraConfig, VeraConfig, get_peft_model
-
-
-def count_parameters(model):
-    total_params = 0
-    trainable_params = 0
-
-    for p in model.parameters():
-        numel = p.numel()
-        total_params += numel
-        if p.requires_grad:
-            trainable_params += numel
-    return total_params, trainable_params
-
-def estimate_model_size_mb(model):
-    total_bytes = 0
-    trainable_bytes = 0
-
-    for p in model.parameters():
-        bytes_ = p.numel() * p.element_size()
-        total_bytes += bytes_
-        if p.requires_grad:
-            trainable_bytes += bytes_
-    return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
 
 
 if torch.cuda.is_available():
