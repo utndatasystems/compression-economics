@@ -4,6 +4,7 @@ temp/*
 adapters/*
 quantized_models/*
 experiments/*
+experiments/luisa/survey.sh
 
 logs/*
 *.job
