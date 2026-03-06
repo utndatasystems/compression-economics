@@ -3,6 +3,7 @@ tmp/*
 temp/*
 adapters/*
 quantized_models/*
+experiments/*
 
 logs/*
 *.job
