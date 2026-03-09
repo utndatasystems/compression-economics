@@ -26,7 +26,14 @@ def main():
     parser.add_argument("--mode", type=str, choices=["compress", "decompress"], required=True, help="Mode: compress or decompress")
     parser.add_argument("--input_path", type=str, default="data/text8",help="Input path: For compress mode, dataset path. For decompress mode, compression file path.")
     parser.add_argument("--output_path", type=str, help="Output path: For compress mode, compression file path. For decompress mode, reconstruction text file path.")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B", help="Model name")
+    parser.add_argument("--model_name", type=str, choices=[ "Qwen/Qwen2.5-0.5B",  
+                                                            "Qwen/Qwen2.5-3B",
+                                                            "Qwen/Qwen2.5-7B",
+                                                            "Qwen/Qwen3-0.6B",
+                                                            "Qwen/Qwen3-2B",
+                                                            "Qwen/Qwen3-4B",
+                                                            "gpt2", 
+                                                            "meta-llama/Llama-3.2-1B-instruct"], default="Qwen/Qwen2.5-0.5B", help="Model name")
     parser.add_argument("--lora_path", type=str, default=None, help="Path to LoRA adapter (if any)")
     parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
     parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length exceeded (only with KV cache)")
