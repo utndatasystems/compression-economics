@@ -4,7 +4,7 @@ import json
 import torch
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
-from src.utils import count_parameters, estimate_model_size_mb  # Ensure these are defined elsewhere
+from src.utils import count_parameters, estimate_model_size_mb
 
 
 # Set device
@@ -30,6 +30,9 @@ def main():
 
     os.makedirs(args.save_dir, exist_ok=True)
 
+    # Extract clean model name
+    model_name = os.path.basename(args.model_id.rstrip("/"))
+
     # Configure quantization
     quant_config = BitsAndBytesConfig(
         load_in_4bit=(args.quantization_bits == 4),
@@ -51,15 +54,23 @@ def main():
     if args.adapter_path:
         model = PeftModel.from_pretrained(model, args.adapter_path, device_map="auto")
 
-    # Save quantized model
-    save_path = os.path.join(args.save_dir, f"quantized_{args.quantization_bits}bit")
+    # Create hierarchical save path
+    save_path = os.path.join(
+        args.save_dir,
+        model_name,
+        f"quantized_{args.quantization_bits}bit"
+    )
+
     os.makedirs(save_path, exist_ok=True)
+
+    # Save quantized model
     model.save_pretrained(save_path)
     print(f"Quantized model saved at {save_path} ({args.quantization_bits}-bit)")
 
     # Save metadata
     total_params, adapter_params = count_parameters(model)
     total_size, adapter_size = estimate_model_size_mb(model)
+
     meta = {
         "model_id": args.model_id,
         "adapter_loaded": args.adapter_path is not None,
@@ -73,6 +84,7 @@ def main():
     meta_path = os.path.join(save_path, "meta.json")
     with open(meta_path, "w") as f:
         json.dump(meta, f, indent=2)
+
     print("Metadata saved at:", meta_path)
 
 
