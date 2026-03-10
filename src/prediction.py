@@ -49,9 +49,14 @@ class TokenDataPreparer:
         # Tokenize the text (optionally truncating to first_n_tokens).
         print("Starting tokenization...")
         start_time = time.time()
+
         if args.first_n_tokens is not None:
+            # Reduce the input text to approximately first_n_tokens by splitting on spaces
             truncated_data = " ".join(self.data.split(" ", self.args.first_n_tokens)[:self.args.first_n_tokens])
+
+            # Tokenize the truncated data with truncation to ensure we don't exceed the token limit.
             self.data_tokens = self.tokenizer.encode(truncated_data, truncation=True, max_length=self.args.first_n_tokens)
+
             if len(self.data_tokens) < self.args.first_n_tokens:
                 self.args.first_n_tokens = len(self.data_tokens)
                 print(f"Reducing first_n_tokens to {self.args.first_n_tokens}, since the input data has fewer tokens.")
@@ -231,7 +236,7 @@ class TokenPredictor:
             self.tokens_list, dtype=torch.long, device=self.device
         )
         vocab_size = self.tokenizer.vocab_size
-        self.token_bitmap = torch.zeros(vocab_size, dtype=torch.bool)
+        self.token_bitmap = torch.zeros(vocab_size, dtype=torch.bool, device=self.device)
         self.token_bitmap[self.tokens_list] = True
 
     def _get_distinct_tokens(self):
@@ -331,7 +336,12 @@ class TokenPredictor:
                     data_copy_time += time.perf_counter() - t0_data_copy
 
                     if self.args.is_seq2seq:
-                        decoder_start = 0 # self.model.config.decoder_start_token_id
+                        # if self.model.config.decoder_start_token_id does not exist, default to 0
+                        if self.model.config.decoder_start_token_id is None:
+                            self.model.config.decoder_start_token_id = 0
+
+                        decoder_start = self.model.config.decoder_start_token_id
+                        
                         decoder_input_ids = torch.full(
                             (input_ids.shape[0], 1),
                             decoder_start,
@@ -346,7 +356,7 @@ class TokenPredictor:
                         outputs = self.model(input_ids, use_cache=enable_kv_cache)
 
                     self._past_kv = None
-                    self._cached_context_len = 0
+                    self._cached_context_len = input_ids.shape[1] #0
 
                 else:
                     # Check if the cache needs to be reset. This happens if the external
