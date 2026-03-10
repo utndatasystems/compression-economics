@@ -33,6 +33,11 @@ def main():
                                                             "Qwen/Qwen3-2B",
                                                             "Qwen/Qwen3-4B",
                                                             "gpt2", 
+                                                            "google/flan-t5-small",
+                                                            "google/flan-t5-base",
+                                                            "google/flan-t5-large",
+                                                            "google/flan-t5-xl",
+                                                            "google/flan-t5-xxl"
                                                             "meta-llama/Llama-3.2-1B-instruct"], default="Qwen/Qwen2.5-0.5B", help="Model name")
     parser.add_argument("--lora_path", type=str, default=None, help="Path to LoRA adapter (if any)")
     parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
@@ -50,6 +55,15 @@ def main():
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
 
     args = parser.parse_args()
+
+    # Detect seq2seq models (T5)
+    args.is_seq2seq = "t5" in args.model_name.lower()
+
+    # Disable KV cache for T5
+    if args.is_seq2seq:
+        if args.use_kv_cache:
+            print("⚠️ KV cache disabled for T5 models.")
+        args.use_kv_cache = False
 
     if args.mode == "compress":
             # ========================

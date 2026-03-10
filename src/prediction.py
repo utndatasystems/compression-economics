@@ -8,13 +8,14 @@ This module provides:
   returns logits or probabilities depending on the encoding scheme.
 """
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM
 import os
 import torch
 import math
 from pyroaring import BitMap
 import time
 from peft import PeftModel
+#from transformers.convert_slow_tokenizers_checkpoints_to_fast import args
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -135,6 +136,7 @@ class TokenPredictor:
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
         self.args = args
         self.device = None
+
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
             print(f"Using GPU: {torch.cuda.get_device_name(0)}")
@@ -151,12 +153,17 @@ class TokenPredictor:
         else:
             dtype = "auto"  # Let HF auto-detect dtype for non-FP8 models
 
+
         if args.engine == "transformer":
-            self.model = AutoModelForCausalLM.from_pretrained(
-                args.model_name,
-                cache_dir=".cache",
-                dtype=dtype,
-            )
+            if args.is_seq2seq:
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name, 
+                                                              cache_dir=".cache", 
+                                                              torch_dtype=dtype)
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(args.model_name, 
+                                                             cache_dir=".cache", 
+                                                             torch_dtype=dtype)
+
             self.base_params = self.count_parameters(self.model)[0]
             self.base_size_mb = self.estimate_model_size_mb(self.model)[0]
             self.adapter_params, self.adapter_size_mb = 0, 0
@@ -309,13 +316,38 @@ class TokenPredictor:
                 # Use local HF-style model for inference
                 if not enable_kv_cache:
                     # If not using cache, run the model on the full prompt every time.
+                    #t0_data_copy = time.perf_counter()
+                    #input_ids = torch.tensor(prompts, device=self.device)
+                    #data_copy_time += time.perf_counter() - t0_data_copy
+
+                    #outputs = self.model(input_ids, use_cache=enable_kv_cache)
+
+                    # Ensure cache is cleared when not in use.
+                    self._past_kv = None 
+                    self._cached_context_len = 0
                     t0_data_copy = time.perf_counter()
+
                     input_ids = torch.tensor(prompts, device=self.device)
                     data_copy_time += time.perf_counter() - t0_data_copy
-                    outputs = self.model(input_ids, use_cache=enable_kv_cache)
-                    # Ensure cache is cleared when not in use.
+
+                    if self.args.is_seq2seq:
+                        decoder_start = 0 # self.model.config.decoder_start_token_id
+                        decoder_input_ids = torch.full(
+                            (input_ids.shape[0], 1),
+                            decoder_start,
+                            dtype=torch.long,
+                            device=self.device)
+
+                        outputs = self.model(
+                            input_ids=input_ids,
+                            decoder_input_ids=decoder_input_ids,
+                            use_cache=False)
+                    else:
+                        outputs = self.model(input_ids, use_cache=enable_kv_cache)
+
                     self._past_kv = None
                     self._cached_context_len = 0
+
                 else:
                     # Check if the cache needs to be reset. This happens if the external
                     # context management has shortened the prompt.
