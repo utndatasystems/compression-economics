@@ -198,35 +198,6 @@ class TokenPredictor:
         self.index_tensor = torch.tensor(self.tokens_list, dtype=torch.long, device=self.device)
         self.reduce_tokens = args.reduce_tokens
 
-    def _set_active_chunk(self, chunk_index):
-        """
-        Sets the active token mask based on the tokens in the specified chunk.
-        Also returns the bitmap and its size for the current chunk.
-        """
-        if not self.reduce_tokens or self.chunk_size is None:
-            print("Warning: set_active_chunk is only effective when reduce_tokens is True and chunk_size is set.")
-            return None, 0
-
-        # Derive the token range for this chunk and update the mask.
-        start_index = chunk_index * self.chunk_size
-        end_index = min(start_index + self.chunk_size, len(self.data_tokens))
-        chunk_tokens = self.data_tokens[start_index:end_index]
-
-        if not chunk_tokens:
-            return None, 0
-
-        self.tokens_list = sorted(list(set(chunk_tokens)))
-        self._update_token_mask()
-        
-        print(f"\nActivated chunk {chunk_index}: tokens {start_index}-{end_index}. Distinct tokens: {len(self.tokens_list)}")
-        
-        # Get the roaring bitmap for the current chunk's token list
-        bitmap = BitMap(self.tokens_list)
-        binary_data = bitmap.serialize()
-        size_bytes = len(binary_data) # pyroaring serialize returns bytes
-        
-        return binary_data, size_bytes
-
     def _update_token_mask(self):
         """
         Updates the index tensor and bitmap for the current self.tokens_list.
@@ -238,6 +209,7 @@ class TokenPredictor:
         vocab_size = self.tokenizer.vocab_size
         self.token_bitmap = torch.zeros(vocab_size, dtype=torch.bool, device=self.device)
         self.token_bitmap[self.tokens_list] = True
+
 
     def _get_distinct_tokens(self):
         """
@@ -341,7 +313,7 @@ class TokenPredictor:
                             self.model.config.decoder_start_token_id = 0
 
                         decoder_start = self.model.config.decoder_start_token_id
-                        
+
                         decoder_input_ids = torch.full(
                             (input_ids.shape[0], 1),
                             decoder_start,
