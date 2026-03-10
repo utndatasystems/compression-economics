@@ -151,14 +151,10 @@ class TokenPredictor:
         else:
             self.device = torch.device("cpu")
             print("GPU not available, using CPU.")
-
-        # Pick dtype based on model name (FP8 models opt into auto).
-        if "FP8" in args.model_name.upper():
-            dtype = "auto"  # Use FP8 for FP8 models
-        else:
-            dtype = "auto"  # Let HF auto-detect dtype for non-FP8 models
-
-
+        
+        print(f"Loading model {args.model_name} on device {self.device}...")
+        dtype = "auto"
+        
         if args.engine == "transformer":
             if args.is_seq2seq:
                 self.model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name, 
@@ -209,7 +205,6 @@ class TokenPredictor:
         vocab_size = self.tokenizer.vocab_size
         self.token_bitmap = torch.zeros(vocab_size, dtype=torch.bool, device=self.device)
         self.token_bitmap[self.tokens_list] = True
-
 
     def _get_distinct_tokens(self):
         """
