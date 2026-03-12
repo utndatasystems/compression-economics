@@ -56,17 +56,30 @@ fi
 for dataset in "${DATASETS[@]}"; do
   TARGET_DIR="$DATA_DIR/$dataset"
 
+  if [ "$dataset" = "bitext" ]; then
+    TARGET_DIR="$DATA_DIR/textcolumns"
+  fi
+
   if [ ! -d "$TARGET_DIR" ]; then
     echo "[INFO] Downloading dataset: $dataset"
 
     ARCHIVE="$DATA_DIR/${dataset}.tar.gz"
-
-    wget \
-      "https://db.in.tum.de/~schmidt/data/${dataset}.tar.gz" \
-      -O "$ARCHIVE"
+    if [ ! -f "$ARCHIVE" ]; then
+      wget \
+        "https://db.in.tum.de/~schmidt/data/${dataset}.tar.gz" \
+        -O "$ARCHIVE"
+    else
+      echo "[SKIP] Archive already exists: ${dataset}.tar.gz"
+    fi
 
     tar -xzf "$ARCHIVE" -C "$DATA_DIR"
-    rm "$ARCHIVE"
+    if [ ! -d "$TARGET_DIR" ]; then
+      echo "[ERROR] Failed to extract dataset: $dataset"
+      exit 1
+    else
+      echo "[INFO] Successfully extracted dataset: $dataset"
+      rm "$ARCHIVE"
+    fi
 
   else
     echo "[SKIP] Dataset already exists: $dataset"
