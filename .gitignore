@@ -3,10 +3,17 @@ tmp/*
 temp/*
 adapters/*
 quantized_models/*
+experiments/*
+experiments/luisa/survey.sh
 
 logs/*
 *.job
 results/*
+
+# Image files
+*.jpg
+*.jpeg
+*.png
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

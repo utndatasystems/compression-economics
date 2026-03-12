@@ -12,6 +12,22 @@ import json
 import os
 from datetime import datetime
 
+def count_parameters(model):
+    total, trainable = 0, 0
+    for p in model.parameters():
+        total += p.numel()
+        if p.requires_grad:
+            trainable += p.numel()
+    return total, trainable
+
+def estimate_model_size_mb(model):
+    total_bytes, trainable_bytes = 0, 0
+    for p in model.parameters():
+        total_bytes += p.numel() * p.element_size()
+        if p.requires_grad:
+            trainable_bytes += p.numel() * p.element_size()
+    return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
+
 def bits_to_bytes(bits):
     """
     Convert a list of bits (0/1 ints) into a bytes object.

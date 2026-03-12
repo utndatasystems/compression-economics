@@ -8,13 +8,14 @@ This module provides:
   returns logits or probabilities depending on the encoding scheme.
 """
 
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM
 import os
 import torch
 import math
 from pyroaring import BitMap
 import time
 from peft import PeftModel
+#from transformers.convert_slow_tokenizers_checkpoints_to_fast import args
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -48,9 +49,14 @@ class TokenDataPreparer:
         # Tokenize the text (optionally truncating to first_n_tokens).
         print("Starting tokenization...")
         start_time = time.time()
+
         if args.first_n_tokens is not None:
+            # Reduce the input text to approximately first_n_tokens by splitting on spaces
             truncated_data = " ".join(self.data.split(" ", self.args.first_n_tokens)[:self.args.first_n_tokens])
+
+            # Tokenize the truncated data with truncation to ensure we don't exceed the token limit.
             self.data_tokens = self.tokenizer.encode(truncated_data, truncation=True, max_length=self.args.first_n_tokens)
+
             if len(self.data_tokens) < self.args.first_n_tokens:
                 self.args.first_n_tokens = len(self.data_tokens)
                 print(f"Reducing first_n_tokens to {self.args.first_n_tokens}, since the input data has fewer tokens.")
@@ -135,6 +141,7 @@ class TokenPredictor:
         self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
         self.args = args
         self.device = None
+
         if torch.cuda.is_available():
             self.device = torch.device("cuda")
             print(f"Using GPU: {torch.cuda.get_device_name(0)}")
@@ -144,19 +151,20 @@ class TokenPredictor:
         else:
             self.device = torch.device("cpu")
             print("GPU not available, using CPU.")
-
-        # Pick dtype based on model name (FP8 models opt into auto).
-        if "FP8" in args.model_name.upper():
-            dtype = "auto"  # Use FP8 for FP8 models
-        else:
-            dtype = "auto"  # Let HF auto-detect dtype for non-FP8 models
-
+        
+        print(f"Loading model {args.model_name} on device {self.device}...")
+        dtype = "auto"
+        
         if args.engine == "transformer":
-            self.model = AutoModelForCausalLM.from_pretrained(
-                args.model_name,
-                cache_dir=".cache",
-                dtype=dtype,
-            )
+            if args.is_seq2seq:
+                self.model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name, 
+                                                              cache_dir=".cache", 
+                                                              torch_dtype=dtype)
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(args.model_name, 
+                                                             cache_dir=".cache", 
+                                                             torch_dtype=dtype)
+
             self.base_params = self.count_parameters(self.model)[0]
             self.base_size_mb = self.estimate_model_size_mb(self.model)[0]
             self.adapter_params, self.adapter_size_mb = 0, 0
@@ -186,35 +194,6 @@ class TokenPredictor:
         self.index_tensor = torch.tensor(self.tokens_list, dtype=torch.long, device=self.device)
         self.reduce_tokens = args.reduce_tokens
 
-    def _set_active_chunk(self, chunk_index):
-        """
-        Sets the active token mask based on the tokens in the specified chunk.
-        Also returns the bitmap and its size for the current chunk.
-        """
-        if not self.reduce_tokens or self.chunk_size is None:
-            print("Warning: set_active_chunk is only effective when reduce_tokens is True and chunk_size is set.")
-            return None, 0
-
-        # Derive the token range for this chunk and update the mask.
-        start_index = chunk_index * self.chunk_size
-        end_index = min(start_index + self.chunk_size, len(self.data_tokens))
-        chunk_tokens = self.data_tokens[start_index:end_index]
-
-        if not chunk_tokens:
-            return None, 0
-
-        self.tokens_list = sorted(list(set(chunk_tokens)))
-        self._update_token_mask()
-        
-        print(f"\nActivated chunk {chunk_index}: tokens {start_index}-{end_index}. Distinct tokens: {len(self.tokens_list)}")
-        
-        # Get the roaring bitmap for the current chunk's token list
-        bitmap = BitMap(self.tokens_list)
-        binary_data = bitmap.serialize()
-        size_bytes = len(binary_data) # pyroaring serialize returns bytes
-        
-        return binary_data, size_bytes
-
     def _update_token_mask(self):
         """
         Updates the index tensor and bitmap for the current self.tokens_list.
@@ -224,7 +203,7 @@ class TokenPredictor:
             self.tokens_list, dtype=torch.long, device=self.device
         )
         vocab_size = self.tokenizer.vocab_size
-        self.token_bitmap = torch.zeros(vocab_size, dtype=torch.bool)
+        self.token_bitmap = torch.zeros(vocab_size, dtype=torch.bool, device=self.device)
         self.token_bitmap[self.tokens_list] = True
 
     def _get_distinct_tokens(self):
@@ -309,13 +288,43 @@ class TokenPredictor:
                 # Use local HF-style model for inference
                 if not enable_kv_cache:
                     # If not using cache, run the model on the full prompt every time.
+                    #t0_data_copy = time.perf_counter()
+                    #input_ids = torch.tensor(prompts, device=self.device)
+                    #data_copy_time += time.perf_counter() - t0_data_copy
+
+                    #outputs = self.model(input_ids, use_cache=enable_kv_cache)
+
+                    # Ensure cache is cleared when not in use.
+                    self._past_kv = None 
+                    self._cached_context_len = 0
                     t0_data_copy = time.perf_counter()
+
                     input_ids = torch.tensor(prompts, device=self.device)
                     data_copy_time += time.perf_counter() - t0_data_copy
-                    outputs = self.model(input_ids, use_cache=enable_kv_cache)
-                    # Ensure cache is cleared when not in use.
+
+                    if self.args.is_seq2seq:
+                        # if self.model.config.decoder_start_token_id does not exist, default to 0
+                        if self.model.config.decoder_start_token_id is None:
+                            self.model.config.decoder_start_token_id = 0
+
+                        decoder_start = self.model.config.decoder_start_token_id
+
+                        decoder_input_ids = torch.full(
+                            (input_ids.shape[0], 1),
+                            decoder_start,
+                            dtype=torch.long,
+                            device=self.device)
+
+                        outputs = self.model(
+                            input_ids=input_ids,
+                            decoder_input_ids=decoder_input_ids,
+                            use_cache=False)
+                    else:
+                        outputs = self.model(input_ids, use_cache=enable_kv_cache)
+
                     self._past_kv = None
-                    self._cached_context_len = 0
+                    self._cached_context_len = input_ids.shape[1] #0
+
                 else:
                     # Check if the cache needs to be reset. This happens if the external
                     # context management has shortened the prompt.

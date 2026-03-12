@@ -26,7 +26,19 @@ def main():
     parser.add_argument("--mode", type=str, choices=["compress", "decompress"], required=True, help="Mode: compress or decompress")
     parser.add_argument("--input_path", type=str, default="data/text8",help="Input path: For compress mode, dataset path. For decompress mode, compression file path.")
     parser.add_argument("--output_path", type=str, help="Output path: For compress mode, compression file path. For decompress mode, reconstruction text file path.")
-    parser.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-0.5B", help="Model name")
+    parser.add_argument("--model_name", type=str, choices=[ "Qwen/Qwen2.5-0.5B",  
+                                                            "Qwen/Qwen2.5-3B",
+                                                            "Qwen/Qwen2.5-7B",
+                                                            "Qwen/Qwen3-0.6B",
+                                                            "Qwen/Qwen3-2B",
+                                                            "Qwen/Qwen3-4B",
+                                                            "gpt2", 
+                                                            "google/flan-t5-small",
+                                                            "google/flan-t5-base",
+                                                            "google/flan-t5-large",
+                                                            "google/flan-t5-xl",
+                                                            "google/flan-t5-xxl"
+                                                            "meta-llama/Llama-3.2-1B-instruct"], default="Qwen/Qwen2.5-0.5B", help="Model name")
     parser.add_argument("--lora_path", type=str, default=None, help="Path to LoRA adapter (if any)")
     parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
     parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length exceeded (only with KV cache)")
@@ -43,6 +55,15 @@ def main():
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
 
     args = parser.parse_args()
+
+    # Detect seq2seq models (T5)
+    args.is_seq2seq = "t5" in args.model_name.lower()
+
+    # Disable KV cache for T5
+    if args.is_seq2seq:
+        if args.use_kv_cache:
+            print("⚠️ KV cache disabled for T5 models.")
+        args.use_kv_cache = False
 
     if args.mode == "compress":
             # ========================
