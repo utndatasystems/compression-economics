@@ -1,10 +1,10 @@
 import os
-import argparse
 import json
 import torch
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from peft import PeftModel
 from src.utils import count_parameters, estimate_model_size_mb
+from src.config import get_quantize_model_args
 
 
 # Set device
@@ -21,12 +21,7 @@ print(f"Using device: {device}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Quantize a model with optional adapter")
-    parser.add_argument("--model_id", type=str, required=True, help="Base model ID or path")
-    parser.add_argument("--adapter_path", type=str, default=None, help="Path to pre-trained adapter")
-    parser.add_argument("--save_dir", type=str, default="./output", help="Directory to save quantized models")
-    parser.add_argument("--quantization_bits", type=int, choices=[4, 8], required=True)
-    args = parser.parse_args()
+    args = get_quantize_model_args()
 
     # Clean names
     model_name = os.path.basename(args.model_id.rstrip("/"))

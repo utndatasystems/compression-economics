@@ -1,5 +1,4 @@
 import os
-import argparse
 import json
 import torch
 from datasets import Dataset
@@ -12,6 +11,7 @@ from transformers import (
     BitsAndBytesConfig)
 
 from src.utils import count_parameters, estimate_model_size_mb
+from src.config import get_adapter_training_args
 from peft import LoraConfig, VeraConfig, get_peft_model
 
 
@@ -28,34 +28,7 @@ print(f"Using device: {device}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="LoRA Training Script")
-    parser.add_argument("--model_id", type=str, default="Qwen/Qwen2.5-0.5B", help="Base model ID")
-    parser.add_argument("--text_file", type=str, default="./data/text8", help="Path to text file for training")
-    parser.add_argument("--adapter_type", type=str, default=None, choices=["lora", "vera", None], help="Type of adapter to train (e.g., lora, vera)")
-    parser.add_argument("--save_dir", type=str, default=None, help="Directory to save LoRA adapters")
-    parser.add_argument("--r", type=int, default=8, help="Adapter rank")
-    parser.add_argument("--la", type=int, default=32, help="LoRA alpha")
-    parser.add_argument("--epoch", type=int, default=2, help="Number of training epochs")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--batch_size", type=int, default=16, help="Training batch size")
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps")
-    parser.add_argument("--lr_scheduler_type", type=str, default="constant", help="Learning rate scheduler type")
-    parser.add_argument("--warmup_steps", type=int, default=0, help="Number of warmup steps for learning rate scheduler")
-    parser.add_argument("--mode", type=str, default="finetune",
-                    choices=["finetune", "quantize"],
-                    help="Whether to fine-tune with adapters or just quantize")
-    parser.add_argument("--quantization_bits", type=int, default=None,
-                    choices=[4, 8], 
-                    help="Quantize model to 4-bit or 8-bit")
-    args = parser.parse_args()
-
-    if args.save_dir is None:
-        if args.adapter_type is not None:
-            args.save_dir = f"./adapters/{args.adapter_type}"
-        elif args.mode == "quantize":
-            args.save_dir = "./quantized_models"
-        else:
-            raise ValueError("save_dir must be specified if adapter_type is None and mode is not quantize")
+    args = get_adapter_training_args()
 
     if args.adapter_type == "lora":
         run_name = f"r{args.r}_la{args.la}_lr{args.lr}_ls{args.lr_scheduler_type}_bs{args.batch_size}_ep{args.epoch}_gas{args.gradient_accumulation_steps}"

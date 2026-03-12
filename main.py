@@ -2,12 +2,12 @@
 CLI entry point for running global-mask compression and decompression experiments.
 """
 
-import argparse
 import json
 import os
 
 
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
+from src.config import get_main_args
 from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params
 from src.prediction import TokenPredictor
 
@@ -22,54 +22,13 @@ def main():
     # ========================
     # Parse command-line arguments
     # ========================
-    parser = argparse.ArgumentParser(description="Run Global Mask Compression Experiment")
-    parser.add_argument("--mode", type=str, choices=["compress", "decompress"], required=True, help="Mode: compress or decompress")
-    parser.add_argument("--input_path", type=str, default="data/text8",help="Input path: For compress mode, dataset path. For decompress mode, compression file path.")
-    parser.add_argument("--output_path", type=str, help="Output path: For compress mode, compression file path. For decompress mode, reconstruction text file path.")
-    parser.add_argument("--model_name", type=str, choices=[ "Qwen/Qwen2.5-0.5B",  
-                                                            "Qwen/Qwen2.5-3B",
-                                                            "Qwen/Qwen2.5-7B",
-                                                            "Qwen/Qwen3-0.6B",
-                                                            "Qwen/Qwen3-2B",
-                                                            "Qwen/Qwen3-4B",
-                                                            "gpt2", 
-                                                            "google/flan-t5-small",
-                                                            "google/flan-t5-base",
-                                                            "google/flan-t5-large",
-                                                            "google/flan-t5-xl",
-                                                            "google/flan-t5-xxl"
-                                                            "meta-llama/Llama-3.2-1B-instruct"], default="Qwen/Qwen2.5-0.5B", help="Model name")
-    parser.add_argument("--lora_path", type=str, default=None, help="Path to LoRA adapter (if any)")
-    parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
-    parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length exceeded (only with KV cache)")
-    parser.add_argument("--first_n_tokens", type=int, default=10001, help="Number of tokens to compress")
-    parser.add_argument("--use_kv_cache", action="store_true", help="Enable KV cache for compression")
-    parser.set_defaults(use_kv_cache=True)
-    parser.add_argument("--text_input", type=str, required=False, help="The direct text input for LLM inference.")
-    parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")
-    parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
-    parser.set_defaults(reduce_tokens=True)
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
-    parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
-    parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
-    parser.add_argument("--print_results", action="store_true", help="Print detailed results")
-
-    args = parser.parse_args()
-
-    # Detect seq2seq models (T5)
-    args.is_seq2seq = "t5" in args.model_name.lower()
-
-    # Disable KV cache for T5
-    if args.is_seq2seq:
-        if args.use_kv_cache:
-            print("⚠️ KV cache disabled for T5 models.")
-        args.use_kv_cache = False
+    args = get_main_args()
 
     if args.mode == "compress":
             # ========================
             # Validate input paths
             if not args.input_path:
-                parser.error("--input_path is required in compress mode")
+                raise ValueError("--input_path is required in compress mode")
             if not args.output_path:
                 args.output_path = COMPRESSION_FILE
 
