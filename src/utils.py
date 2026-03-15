@@ -11,6 +11,7 @@ import struct
 import json
 import os
 from datetime import datetime
+import torch
 
 def count_parameters(model):
     total, trainable = 0, 0
@@ -190,3 +191,14 @@ def create_run_dir(base_dir="results"):
 def save_params(args, run_dir):
     with open(os.path.join(run_dir, "params.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
+
+def get_device():
+    if torch.cuda.is_available():
+        torch.set_float32_matmul_precision('high')
+        device, use_fp16, use_bf16 = "cuda", True, False
+    elif torch.backends.mps.is_available():
+        device, use_fp16, use_bf16 = "mps", False, False
+        torch.set_float32_matmul_precision("high")
+    else:
+        device, use_fp16, use_bf16 = "cpu", False, False
+    return device, use_fp16, use_bf16
