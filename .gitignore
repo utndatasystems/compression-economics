@@ -193,3 +193,4 @@ cython_debug/
 compression_result*
 *.bin
 *.txt
+other_files/llm_compression_plots/loaded_results.json
