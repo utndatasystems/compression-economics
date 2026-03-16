@@ -14,7 +14,13 @@ MODEL_LIST = [
     "google/flan-t5-xl",
     "google/flan-t5-xxl",
     "meta-llama/Llama-3.2-1B-instruct",
+    "state-spaces/mamba-130m-hf",
+    "state-spaces/mamba-370m-hf",
+    "state-spaces/mamba-790m-hf",
+    "state-spaces/mamba-1.4b-hf",
+    "ai21labs/Jamba-v0.1",  # too large for testing, but included for completeness
 ]
+
 
 def get_adapter_training_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Adapter Training Script")
@@ -111,10 +117,13 @@ def get_main_args() -> argparse.Namespace:
     # Detect seq2seq models (T5)
     args.is_seq2seq = "t5" in args.model_name.lower()
 
+    # Detect Mamba models
+    args.is_mamba = "mamba" in args.model_name.lower()
+
     # Disable KV cache for T5
-    if args.is_seq2seq:
+    if args.is_seq2seq or args.is_mamba:
         if args.use_kv_cache:
-            print("⚠️ KV cache disabled for T5 models.")
+            print("⚠️ KV cache disabled for T5 and Mamba models.")
         args.use_kv_cache = False
     
     return args

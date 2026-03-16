@@ -1,0 +1,19 @@
+numpy
+zstandard
+transformers
+torch
+pyroaring
+accelerate
+pytest
+peft 
+datasets 
+bitsandbytes
+matplotlib
+seaborn
+notebook # only for plotting in notebook, not needed for repo, only for local plotting
+ipykernel
+ipywidgets
+#protobuf # needed for Mamba models 
+#sentencepiece 
+#tokenizers 
+#tiktoken

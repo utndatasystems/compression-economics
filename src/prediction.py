@@ -8,7 +8,7 @@ This module provides:
   returns logits or probabilities depending on the encoding scheme.
 """
 
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM, MambaForCausalLM
 import os
 import torch
 import math
@@ -36,7 +36,10 @@ class TokenDataPreparer:
             raise ValueError("Only one of input_path or text_input can be provided.")
 
         # Load tokenizer (from cache or download) for consistent tokenization.
-        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
+        if args.is_mamba:
+            self.tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
 
         # Load and tokenize input data.
         if args.input_path:
@@ -137,8 +140,12 @@ class TokenPredictor:
             bitmap_data (bytes | None): Serialized roaring bitmap of allowed tokens.
         """
 
-        # Load tokenizer and model (from cache or download).
-        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
+        # Load tokenizer (from cache or download) for consistent tokenization.
+        if args.is_mamba:
+            self.tokenizer = AutoTokenizer.from_pretrained("EleutherAI/gpt-neox-20b")
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
+
         self.args = args
         self.device = None
 
@@ -160,6 +167,12 @@ class TokenPredictor:
                 self.model = AutoModelForSeq2SeqLM.from_pretrained(args.model_name, 
                                                               cache_dir=".cache", 
                                                               torch_dtype=dtype)
+                
+            elif args.is_mamba:
+                self.model = MambaForCausalLM.from_pretrained(args.model_name,
+                                                                cache_dir=".cache",
+                                                                torch_dtype=dtype)
+                                                                #ignore_mismatched_sizes=True, might lead to worse performance of mamba
             else:
                 self.model = AutoModelForCausalLM.from_pretrained(args.model_name, 
                                                              cache_dir=".cache", 

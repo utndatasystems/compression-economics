@@ -8,6 +8,7 @@ from datasets import Dataset
 from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM,
     DataCollatorForLanguageModeling,
     BitsAndBytesConfig,
     TrainingArguments,
