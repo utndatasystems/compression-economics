@@ -22,7 +22,9 @@ def main():
     # ========================
     # Parse command-line arguments
     # ========================
+
     args = get_main_args()
+
 
     if args.mode == "compress":
             # ========================
@@ -81,6 +83,7 @@ def main():
                 "total_size_mb": round(total_size_mb, 2),
                 "adapter_size_mb": round(adapter_size_mb, 2),
                 "base_model_size_mb": round(base_size_mb, 2),}
+            # TODO: add model dtype information
 
             # ========================
             # Save results (JSON stats)
