@@ -18,7 +18,7 @@ MODEL_LIST = [
     "state-spaces/mamba-370m-hf",
     "state-spaces/mamba-790m-hf",
     "state-spaces/mamba-1.4b-hf",
-    "ai21labs/Jamba-v0.1", 
+    "ai21labs/Jamba-v0.1",  # too large for testing, but included for completeness
 ]
 
 
