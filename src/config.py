@@ -34,6 +34,7 @@ def get_adapter_training_args() -> argparse.Namespace:
     # fine-tuning related
     parser.add_argument("--epoch", type=int, default=2, help="Number of training epochs")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--min_lr", type=float, default=1e-6, help="Minimum learning rate")
     parser.add_argument("--batch_size", type=int, default=16, help="Training batch size")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps")
     parser.add_argument("--lr_scheduler_type", type=str, default="constant", help="Learning rate scheduler type")

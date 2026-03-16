@@ -165,6 +165,12 @@ class AdapterTrainer:
             print(f"    Total size (MB): {self.total_size_mb:.2f}")
 
     def get_training_args(self):
+        if self.args.lr_scheduler_type == "cosine_warmup_with_min_lr":
+            lr_scheduler_kwargs = {
+                "min_lr": self.args.min_lr
+            }
+        else:
+            lr_scheduler_kwargs = None
         return TrainingArguments(
             output_dir=self.args.save_dir,
             per_device_train_batch_size=self.args.batch_size,
@@ -172,6 +178,7 @@ class AdapterTrainer:
             num_train_epochs=self.args.epoch,
             learning_rate=self.args.lr,
             lr_scheduler_type=self.args.lr_scheduler_type,
+            lr_scheduler_kwargs=lr_scheduler_kwargs,
             warmup_steps=self.args.warmup_steps,
             fp16=self.use_fp16,
             bf16=self.use_bf16,
@@ -195,12 +202,12 @@ class AdapterTrainer:
         print(f"    Batch size\t\t\t: {self.args.batch_size}")
         print(f"    Gradient accumulation\t: {self.args.gradient_accumulation_steps}")
 
-        model.print_trainable_parameters()
-        model = torch.compile(model)
+        self.model.print_trainable_parameters()
+        self.model = torch.compile(self.model)
         training_args = self.get_training_args()
 
         self.trainer = Trainer(
-            model=model,
+            model=self.model,
             args=training_args,
             train_dataset=self.dataset,
             data_collator=self.data_collator,

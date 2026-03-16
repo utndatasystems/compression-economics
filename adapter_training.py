@@ -7,7 +7,7 @@ def main():
     args = get_adapter_training_args()
     trainer = AdapterTrainer(args)
     # if exist skip
-    if os.path.exists(trainer.output_path):
+    if os.path.exists(os.path.join(trainer.output_path, "adapter_model.safetensors")):
         print(f"Skipping training for existing path: {trainer.output_path}")
         return
     
