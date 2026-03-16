@@ -3,8 +3,9 @@ import numpy as np
 import pytest
 from string import printable
 from tqdm import tqdm
+from typing import Optional, Dict, Any, List
 
-from src.encoding import LLMCompressor, LLMDecompressor
+from src.encoding import * #LLMCompressor, LLMDecompressor, 
 
 
 @pytest.fixture(scope="session")
@@ -137,21 +138,28 @@ def test_compress_decompress_roundtrip(
         assert decoded == text[i]
 
 
-@pytest.mark.skip(reason="Temporarily disabled for debugging")
+#@pytest.mark.skip(reason="Temporarily disabled for debugging")
 @pytest.mark.parametrize("input_fixture",["random_input", "zipf_input"], indirect=True,)
 @pytest.mark.parametrize("compressor_cls,decompressor_cls",[(LLMCompressor, LLMDecompressor)],)
-def test_compress_decompress_brute_force(input_fixture, compressor_cls,decompressor_cls,):
+def test_compress_decompress_brute_force(
+    input_fixture, 
+    compressor_cls,
+    decompressor_cls,):
     """
     Verify that decompression remains correct even when probability
     tables are slightly distorted, across different input distributions.
     """
     text, prob_tables = input_fixture
+    # convert prob_tables to list
+
+    rank_list = text
+    codebook = build_huffman_code(rank_list)
 
     compressor = compressor_cls()
     for token, probs in zip(text, prob_tables):
         compressor.next_token(token, probs)
 
-    code = compressor.compress()
+    code = compressor.compress(encoding = 'huffman', rank_list=rank_list) #set encoding = 'huffmann' for huffman coding, 'AC for arithmetic coding
 
     decompressor = decompressor_cls(code)
 
@@ -168,7 +176,6 @@ def test_compress_decompress_brute_force(input_fixture, compressor_cls,decompres
 
 
 # TODO: Implement brute-force decompressor that tries all possible token sequences and probability tables to find a match for the given code.
-
 """
 def generate_sequences(length, alphabet_size):
             if length == 0:
