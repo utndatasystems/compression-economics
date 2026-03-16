@@ -120,9 +120,9 @@ def get_main_args() -> argparse.Namespace:
     args.is_mamba = "mamba" in args.model_name.lower()
 
     # Disable KV cache for T5
-    if args.is_seq2seq:
+    if args.is_seq2seq or args.is_mamba:
         if args.use_kv_cache:
-            print("⚠️ KV cache disabled for T5 models.")
+            print("⚠️ KV cache disabled for T5 and Mamba models.")
         args.use_kv_cache = False
     
     return args
