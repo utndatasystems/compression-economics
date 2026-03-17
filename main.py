@@ -38,11 +38,25 @@ def main():
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
-    parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--engine", type=str, choices=["transformer", "vllm"], default="transformer", help="Inference engine to use")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
+    parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Number of GPUs for vLLM tensor parallelism")
+    parser.add_argument(
+        "--gpu_memory_utilization",
+        type=float,
+        default=None,
+        help=(
+            "Target fraction of GPU memory reserved by vLLM. "
+            "If omitted, the runtime picks a safe value based on current free memory."
+        ),
+    )
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
 
     args = parser.parse_args()
+
+    # Validate engine+lora combination
+    if args.engine == "vllm" and args.lora_path is not None:
+        parser.error("LoRA adapters are not supported with --engine vllm. Use --engine transformer for LoRA.")
 
     if args.mode == "compress":
             # ========================
@@ -73,34 +87,25 @@ def main():
             print(f"  First n tokens   : {args.first_n_tokens}")
             print(f"  Use KV cache     : {args.use_kv_cache}")
             print(f"  Batch size       : {args.batch_size}")
+            print(f"  Engine           : {args.engine}")
             print(f"  Encoding         : {args.encoding}")
-        
-            # add parameters to comp_stats for saving in results JSON
-            token_predictor = TokenPredictor(args, bitmap_data=None)
-            base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
-            base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
-            total_params = base_params + adapter_params
-            total_size_mb = base_size_mb + adapter_size_mb
-
-            print(f'\nModel parameters:')
-            print(f"Adapter parameters   : {adapter_params:,}")
-            print(f"Base model parameters: {base_params:,}")
-            print(f"Adapter size (MB).   : {adapter_size_mb:.2f}")
-            print(f"Base model size (MB).: {base_size_mb:.2f}")
+            if args.engine == "vllm":
+                print(f"  Tensor parallel  : {args.tensor_parallel_size}")
+                if args.gpu_memory_utilization is not None:
+                    print(f"  GPU mem util     : {args.gpu_memory_utilization}")
 
             # ========================
             # Run compression
             # ========================
             first_token, bit_string, bitmask_data, comp_stats, args = run_global_mask_compression(args)
 
-            comp_stats = {
-                **comp_stats,
-                "total_params": total_params,
-                "adapter_params": adapter_params,
-                "base_model_params": base_params,
-                "total_size_mb": round(total_size_mb, 2),
-                "adapter_size_mb": round(adapter_size_mb, 2),
-                "base_model_size_mb": round(base_size_mb, 2),}
+            # Model param stats are now included in comp_stats from the compression run
+            # (avoids loading the model twice, which would OOM with vLLM).
+            print(f'\nModel parameters:')
+            print(f"Adapter parameters   : {comp_stats.get('adapter_params', 0):,}")
+            print(f"Base model parameters: {comp_stats.get('base_model_params', 0):,}")
+            print(f"Adapter size (MB).   : {comp_stats.get('adapter_size_mb', 0):.2f}")
+            print(f"Base model size (MB).: {comp_stats.get('base_model_size_mb', 0):.2f}")
 
             # ========================
             # Save results (JSON stats)

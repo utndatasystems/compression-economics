@@ -18,6 +18,11 @@ dependencies = [
     "zstandard>=0.25.0",
 ]
 
+[project.optional-dependencies]
+vllm = [
+    "vllm==0.17.1",
+]
+
 [dependency-groups]
 dev = [
     "bitvector>=3.5.0",

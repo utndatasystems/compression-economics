@@ -3,8 +3,10 @@ import numpy as np
 import pytest
 from string import printable
 from tqdm import tqdm
+from argparse import Namespace
 
 from src.encoding import LLMCompressor, LLMDecompressor
+from src.utils import save_global_mask_file, load_global_mask_file
 
 
 @pytest.fixture(scope="session")
@@ -135,6 +137,52 @@ def test_compress_decompress_roundtrip(
     for i, probs in enumerate(prob_tables):
         decoded = decompressor.decompress(probs)
         assert decoded == text[i]
+
+
+def test_global_mask_header_roundtrip(tmp_path):
+    args = Namespace(
+        input_path="data/text8",
+        output_path=str(tmp_path / "roundtrip.bin"),
+        model_name="Qwen/Qwen3-0.6B",
+        context_length=1000,
+        first_n_tokens=1025,
+        retain_tokens=100,
+        use_kv_cache=True,
+        batch_size=4,
+        reduce_tokens=True,
+        engine="vllm",
+        encoding="AC",
+        tensor_parallel_size=1,
+        gpu_memory_utilization=0.75,
+        lora_path=None,
+    )
+
+    save_global_mask_file(
+        args=args,
+        first_token=[1, 2, 3, 4],
+        bit_string=[1, 0, 1, 1],
+        bitmask_data=b"bitmap",
+    )
+
+    loaded_args = Namespace(
+        input_path=str(tmp_path / "roundtrip.bin"),
+        reduce_tokens=False,
+        engine="transformer",
+        encoding="bitpacked",
+        tensor_parallel_size=8,
+        gpu_memory_utilization=None,
+        lora_path="adapter",
+    )
+    loaded_args, first_token, bit_string, bitmask_data = load_global_mask_file(loaded_args)
+
+    assert first_token == [1, 2, 3, 4]
+    assert bit_string == [1, 0, 1, 1]
+    assert bitmask_data == b"bitmap"
+    assert loaded_args.engine == "vllm"
+    assert loaded_args.encoding == "AC"
+    assert loaded_args.reduce_tokens is True
+    assert loaded_args.tensor_parallel_size == 1
+    assert loaded_args.gpu_memory_utilization == 0.75
 
 
 @pytest.mark.skip(reason="Temporarily disabled for debugging")

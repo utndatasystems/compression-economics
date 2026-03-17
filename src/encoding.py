@@ -380,30 +380,45 @@ def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
     cumulative-frequency array expected by ArithmeticCoder.  Ensures every
     symbol’s frequency ≥ 1 and that the overall total == `total`.
     """
+    prob_vec = np.asarray(prob_vec, dtype=np.float64)
+    if prob_vec.ndim != 1:
+        raise ValueError("prob_vec must be a 1D array")
+
+    prob_vec = np.clip(prob_vec, 0.0, None)
+    prob_sum = prob_vec.sum()
+    if not np.isfinite(prob_sum) or prob_sum <= 0.0:
+        raise ValueError("prob_vec must contain a positive finite mass")
+    prob_vec = prob_vec / prob_sum
+
     alphabet_size = prob_vec.size
+    if alphabet_size > total:
+        raise ValueError("total must be at least the alphabet size")
 
-    # Give every symbol at least one count so no zero-frequency symbols
-    freq = np.maximum(1,
-                      (prob_vec * (total - alphabet_size)).astype(np.int64))
-    freq += 1
-    diff = freq.sum() - total
+    # Reserve one count per symbol, then distribute the remaining mass.
+    freq = np.ones(alphabet_size, dtype=np.int64)
+    remaining = total - alphabet_size
+    if remaining > 0:
+        freq += np.floor(prob_vec * remaining).astype(np.int64)
 
-    # Adjust so the sum is exact
-    if diff > 0:                        # too many counts → take some back
-        for idx in np.argsort(-freq):   # biggest bars first
-            take = min(freq[idx] - 1, diff)
-            freq[idx] -= take
-            diff -= take
-            if diff == 0:
-                break
-    elif diff < 0:                      # not enough counts → add
+    diff = total - freq.sum()
+
+    # Adjust so the sum is exact.
+    if diff > 0:
         for idx in np.argsort(-prob_vec):
             freq[idx] += 1
-            diff += 1
+            diff -= 1
+            if diff == 0:
+                break
+    elif diff < 0:
+        for idx in np.argsort(-freq):
+            take = min(freq[idx] - 1, -diff)
+            if take <= 0:
+                continue
+            freq[idx] -= take
+            diff += take
             if diff == 0:
                 break
 
-    # print(f"freq.sum: {freq.sum()}, total: {total}")
     assert freq.sum() == total, f"freq.sum={freq.sum()} != total={total}"
     assert np.all(freq >= 1)
 

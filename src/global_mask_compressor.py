@@ -10,7 +10,7 @@ bitmap to reconstruct tokens from the bitstream.
 """
 
 from src.encoding import LLMCompressor, LLMDecompressor
-from src.prediction import TokenDataPreparer, TokenPredictor
+from src.prediction import TokenDataPreparer, TokenPredictor, create_predictor
 from itertools import chain
 import numpy as np
 import time
@@ -82,7 +82,7 @@ def run_global_mask_compression(args):
     tokenize_time = time.perf_counter() - t0_tokenize
 
     llm_compressor = LLMCompressor()
-    token_predictor = TokenPredictor(args, bitmap_data=bitmask_data)
+    token_predictor = create_predictor(args, bitmap_data=bitmask_data)
 
     # Per-batch prompt buffers that grow token-by-token.
     prompts = [[] for _ in range(args.batch_size)]
@@ -94,40 +94,53 @@ def run_global_mask_compression(args):
     entropy = 0.0
     rank_list = []
     probs_list = []
-    # Process each token in the dataset to compress it.
-    for token_idx in range(chunk_length):
-        print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
-        # Append the current token from each batch to its prompt context.
-        for i in range(args.batch_size):
-            prompts[i].append(batches[i][token_idx])
+    # ── vLLM bulk rank path ──────────────────────────────────────────────
+    # For rank-based encodings with vLLM, process entire sequences in one
+    # forward pass using prompt_logprobs instead of token-by-token.
+    if args.engine == "vllm" and args.encoding in ("bitpacked", "huffman"):
+        rank_list, inference_time = token_predictor.run_bulk_rank_inference(
+            data_tokens, args.batch_size
+        )
+        # Estimate input token count (all tokens processed in one pass).
+        input_token_cnt = args.first_n_tokens
 
-        # Trim context to keep inference cost bounded.
-        if len(prompts[0]) >= args.context_length:
-            prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
-        
-        input_token_cnt += args.batch_size * len(prompts[0])
+    else:
+        # ── Step-by-step path (transformer always, vLLM + AC) ────────────
+        for token_idx in range(chunk_length):
+            print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
-        # Run LLM inference
-        t0_inference = time.perf_counter()
-        token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
-        data_copy_time += _data_copy_time
-        softmax_time += _softmax_time
-        inference_time += time.perf_counter() - t0_inference
+            # Append the current token from each batch to its prompt context.
+            for i in range(args.batch_size):
+                prompts[i].append(batches[i][token_idx])
 
-        actual_next_tokens = []
-        valid_mask = [] 
+            # Trim context to keep inference cost bounded (transformer only).
+            # vLLM manages context internally via prefix caching.
+            if args.engine != "vllm" and len(prompts[0]) >= args.context_length:
+                prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
 
-        # Build a mask for batches that still have a "next token" at this step.
-        for idx in range(args.batch_size):
-            if token_idx + 1 < batches_length[idx]:
-                token = batches[idx][token_idx + 1]
-                actual_next_tokens.append(token_ids.index(token))
-                valid_mask.append(True)
-            else:
-                actual_next_tokens.append(0)
-                valid_mask.append(False)
-        if args.engine == "transformer":
+            input_token_cnt += args.batch_size * len(prompts[0])
+
+            # Run LLM inference
+            t0_inference = time.perf_counter()
+            token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
+            data_copy_time += _data_copy_time
+            softmax_time += _softmax_time
+            inference_time += time.perf_counter() - t0_inference
+
+            actual_next_tokens = []
+            valid_mask = []
+
+            # Build a mask for batches that still have a "next token" at this step.
+            for idx in range(args.batch_size):
+                if token_idx + 1 < batches_length[idx]:
+                    token = batches[idx][token_idx + 1]
+                    actual_next_tokens.append(token_ids.index(token))
+                    valid_mask.append(True)
+                else:
+                    actual_next_tokens.append(0)
+                    valid_mask.append(False)
+
             if args.encoding == "AC":
                 t0_ac = time.perf_counter()
                 probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
@@ -150,9 +163,9 @@ def run_global_mask_compression(args):
 
                 # Compute rank of the true token within the model's logits.
                 target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
-                batch_idx = torch.arange(B, device=device)  # [B]
+                batch_arange = torch.arange(B, device=device)  # [B]
 
-                target_logits = logits[batch_idx, target_idx].unsqueeze(1)
+                target_logits = logits[batch_arange, target_idx].unsqueeze(1)
 
                 ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
                 ranks = ranks_0.cpu().tolist()
@@ -162,28 +175,23 @@ def run_global_mask_compression(args):
                         continue
                     rank = ranks[idx]
                     rank_list.append(rank)
-                    # llm_compressor.next_token(rank)
 
             else:
                 raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
-        else:
-            raise ValueError(f"Unsupported engine: {args.engine}")
 
-    if args.engine == "transformer":
-        if args.encoding == "AC":
-            bit_string = llm_compressor.compress(encoding="AC")
-        elif args.encoding == "bitpacked":
-            print(f"len of rank list: {len(rank_list)}")
-            print(f"max rank: {max(rank_list)}")
-            bit_string = llm_compressor.compress(encoding="bitpacked", rank_list=rank_list)
-        elif args.encoding == "huffman":
-            print(f"len of rank list: {len(rank_list)}")
-            print(f"first 10 in rank list: {rank_list[:10]}")
-            bit_string, codebook = llm_compressor.compress(encoding="huffman", rank_list=rank_list)
-        else:
-            raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
+    # ── Finalize compressed bitstream ────────────────────────────────────
+    if args.encoding == "AC":
+        bit_string = llm_compressor.compress(encoding="AC")
+    elif args.encoding == "bitpacked":
+        print(f"len of rank list: {len(rank_list)}")
+        print(f"max rank: {max(rank_list)}")
+        bit_string = llm_compressor.compress(encoding="bitpacked", rank_list=rank_list)
+    elif args.encoding == "huffman":
+        print(f"len of rank list: {len(rank_list)}")
+        print(f"first 10 in rank list: {rank_list[:10]}")
+        bit_string, codebook = llm_compressor.compress(encoding="huffman", rank_list=rank_list)
     else:
-        raise ValueError(f"Unsupported engine: {args.engine}")
+        raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
     
     compression_time = time.perf_counter() - compression_time
     
@@ -225,6 +233,13 @@ def run_global_mask_compression(args):
         "throughput_kibibytes_per_sec": original_size_bytes / 1024 / total_compression_time,
         "inference_throughput_tokens_per_sec": input_token_cnt / inference_time,
         "inference_throughput_kibibytes_per_sec": original_size_bytes / 1024 / inference_time,
+        # Model info
+        "base_model_params": token_predictor.base_params,
+        "adapter_params": token_predictor.adapter_params,
+        "total_params": token_predictor.base_params + token_predictor.adapter_params,
+        "base_model_size_mb": round(token_predictor.base_size_mb, 2),
+        "adapter_size_mb": round(token_predictor.adapter_size_mb, 2),
+        "total_size_mb": round(token_predictor.base_size_mb + token_predictor.adapter_size_mb, 2),
     }, args
 
 def run_global_mask_decompression(
@@ -258,13 +273,8 @@ def run_global_mask_decompression(
     t0_decompress = time.perf_counter()
 
     # Initialize the token predictor.
-    token_predictor = TokenPredictor(
-        args,
-        bitmap_data=bitmap
-    )
+    token_predictor = create_predictor(args, bitmap_data=bitmap)
 
-    # Get the original tokens to know the starting token and the total length.
-    
     decompressor = LLMDecompressor(bit_string)
     # Start decompression with the first token from the original data.
     prompts = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
@@ -288,7 +298,8 @@ def run_global_mask_decompression(
 
         print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
-        if len(prompts[0]) >= args.context_length:
+        # Trim context (transformer only; vLLM manages context via prefix caching).
+        if args.engine != "vllm" and len(prompts[0]) >= args.context_length:
             prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
 
         input_tokens_cnt += args.batch_size * len(prompts[0])
