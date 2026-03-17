@@ -12,9 +12,12 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 import os
 import torch
 import math
+from copy import copy
 from pyroaring import BitMap
 import time
 from peft import PeftModel
+
+from src.hf_cache import get_model_cache_dir
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -35,7 +38,8 @@ class TokenDataPreparer:
             raise ValueError("Only one of input_path or text_input can be provided.")
 
         # Load tokenizer (from cache or download) for consistent tokenization.
-        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
+        cache_dir = get_model_cache_dir()
+        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=cache_dir)
 
         # Load and tokenize input data.
         if args.input_path:
@@ -132,7 +136,8 @@ class TokenPredictor:
         """
 
         # Load tokenizer and model (from cache or download).
-        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
+        cache_dir = get_model_cache_dir()
+        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=cache_dir)
         self.args = args
         self.device = None
         if torch.cuda.is_available():
@@ -154,7 +159,7 @@ class TokenPredictor:
         if args.engine == "transformer":
             self.model = AutoModelForCausalLM.from_pretrained(
                 args.model_name,
-                cache_dir=".cache",
+                cache_dir=cache_dir,
                 dtype=dtype,
             )
             self.base_params = self.count_parameters(self.model)[0]
@@ -425,3 +430,39 @@ class TokenPredictor:
             if p.requires_grad:
                 trainable_bytes += bytes_
         return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
+
+
+def create_predictor(args, bitmap_data):
+    """
+    Factory function that returns the appropriate predictor based on args.engine.
+
+    Args:
+        args (argparse.Namespace): Must include 'engine' ("transformer" or "vllm").
+        bitmap_data (bytes | None): Serialized roaring bitmap of allowed tokens.
+
+    Returns:
+        TokenPredictor or VLLMTokenPredictor instance.
+    """
+    if args.engine == "transformer":
+        return TokenPredictor(args, bitmap_data)
+    elif args.engine == "vllm":
+        from src.vllm_prediction import VLLMTokenPredictor, probe_vllm_ac_support
+
+        if args.encoding == "AC":
+            supported, reason = probe_vllm_ac_support(args)
+        else:
+            supported, reason = True, None
+
+        if args.encoding == "AC" and not supported:
+            print(
+                "Installed vLLM version does not expose the native AC path "
+                f"required for full-vocabulary next-token logits ({reason}); "
+                "falling back to the transformer backend for AC."
+            )
+            fallback_args = copy(args)
+            fallback_args.engine = "transformer"
+            return TokenPredictor(fallback_args, bitmap_data)
+
+        return VLLMTokenPredictor(args, bitmap_data)
+    else:
+        raise ValueError(f"Unsupported engine: {args.engine}")

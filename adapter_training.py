@@ -13,6 +13,8 @@ from transformers import (
 
 from peft import LoraConfig, VeraConfig, get_peft_model
 
+from src.hf_cache import get_model_cache_dir
+
 
 def count_parameters(model):
     total_params = 0
@@ -111,7 +113,8 @@ def main():
         print(f"    Gradient accumulation\t: {args.gradient_accumulation_steps}")
     
     # Load tokenizer
-    tokenizer = AutoTokenizer.from_pretrained(args.model_id, cache_dir=".cache")
+    cache_dir = get_model_cache_dir()
+    tokenizer = AutoTokenizer.from_pretrained(args.model_id, cache_dir=cache_dir)
     tokenizer.pad_token = tokenizer.eos_token
 
     # Load text data
@@ -164,6 +167,7 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         args.model_id,
+        cache_dir=cache_dir,
         device_map="auto",
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         quantization_config=quant_config,

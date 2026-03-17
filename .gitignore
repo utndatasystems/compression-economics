@@ -139,6 +139,7 @@ celerybeat.pid
 
 # Environments
 .env
+.model_cache_dir
 .venv
 env/
 venv/

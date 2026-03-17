@@ -28,10 +28,17 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 git clone https://github.com/utndatasystems/summer-offsite.git
 cd summer-offsite
 ```
-2. Run the setup script to download the text8 dataset, create a virtual environment, and install dependencies:
+2. Run the setup script to download the text8 dataset, create a virtual environment, install dependencies, and pre-populate the Hugging Face cache used by the benchmark models:
 ```
-./setup.sh
+./setup.sh --model-cache-dir /path/to/shared/hf-cache
 source .venv/bin/activate
+```
+
+The selected cache directory is persisted in `.model_cache_dir`, and the runtime code will reuse it on future runs. You can override it per job by setting `COMPRESSION_ECONOMICS_MODEL_CACHE=/path/to/shared/hf-cache`. If you need authenticated downloads during setup, export `HF_TOKEN` before running the script.
+
+If you only want the environment and dataset setup, skip the model pre-download step:
+```
+./setup.sh --skip-model-downloads
 ```
 
 ## Basic usage
@@ -82,7 +89,14 @@ python adapter_training.py \
 - `--use_kv_cache`: Enable KV cache for faster incremental inference. Default: enabled.
 - `--reduce_tokens/--no_reduce_tokens`: Toggle global vocabulary reduction. Default: enabled.
 - `--encoding`: `AC`, `bitpacked`, or `huffman`. Default: `AC`.
+- `--gpu_memory_utilization`: vLLM-only. Override the fraction of GPU memory reserved for model weights and KV cache.
 - `--print_results`: Print detailed stats to stdout. Default: disabled.
+
+When `--engine vllm` is used and `CUDA_VISIBLE_DEVICES` is not already set, the runtime will prefer the visible GPU with the most free memory and will clamp the requested memory reservation to fit current free memory.
+
+Native vLLM arithmetic coding is verified against vLLM `0.17.1` in this repo. Rank-based encodings still use the bulk `prompt_logprobs` path, while arithmetic coding uses a separate internal full-logits compatibility path to retrieve dense next-token logits before sampler truncation.
+
+If that compatibility path is unavailable for the installed environment, the runtime falls back to the transformer backend for arithmetic coding with a warning that names the missing capability. The verified native AC path is currently limited to `tensor_parallel_size=1`.
 
 [ToDo: update key options with new training arguments]
 ## Outputs

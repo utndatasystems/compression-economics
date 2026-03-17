@@ -29,15 +29,9 @@ import subprocess
 import sys
 import time
 
-LLM_MODELS = [
-    "Qwen/Qwen2.5-0.5B",
-    "Qwen/Qwen2.5-1.5B",
-    "Qwen/Qwen2.5-7B",
-    "Qwen/Qwen3-0.6B",
-    "Qwen/Qwen3-1.7B",
-    "Qwen/Qwen3-8B",
-    "distilbert/distilgpt2",
-]
+from src.model_registry import BENCHMARK_MODEL_IDS
+
+LLM_MODELS = BENCHMARK_MODEL_IDS
 
 # Each config is a dict of CLI flags to pass to main.py (beyond model & dataset)
 LLM_CONFIGS = [
@@ -49,6 +43,8 @@ LLM_CONFIGS = [
         "use_kv_cache": True,
         "reduce_tokens": True,
         "first_n_tokens": 1_000_000,
+        "engine": "transformer",
+        "tensor_parallel_size": 1,
     },
     # Add more configs here to sweep parameters, e.g.:
     # {
@@ -193,9 +189,15 @@ def run_llm_experiments(datasets, configs, models, results_json, first_n_tokens_
                     "--retain_tokens", str(config["retain_tokens"]),
                     "--batch_size", str(config["batch_size"]),
                     "--encoding", config["encoding"],
-                    "--engine", "transformer",
+                    "--engine", config.get("engine", "transformer"),
+                    "--tensor_parallel_size", str(config.get("tensor_parallel_size", 1)),
                     "--print_results",
                 ]
+                if config.get("gpu_memory_utilization") is not None:
+                    comp_cmd += [
+                        "--gpu_memory_utilization",
+                        str(config["gpu_memory_utilization"]),
+                    ]
                 if first_n_tokens is not None:
                     comp_cmd += ["--first_n_tokens", str(first_n_tokens)]
                 if config["use_kv_cache"]:
@@ -234,9 +236,15 @@ def run_llm_experiments(datasets, configs, models, results_json, first_n_tokens_
                     "--retain_tokens", str(config["retain_tokens"]),
                     "--batch_size", str(config["batch_size"]),
                     "--encoding", config["encoding"],
-                    "--engine", "transformer",
+                    "--engine", config.get("engine", "transformer"),
+                    "--tensor_parallel_size", str(config.get("tensor_parallel_size", 1)),
                     "--print_results",
                 ]
+                if config.get("gpu_memory_utilization") is not None:
+                    decomp_cmd += [
+                        "--gpu_memory_utilization",
+                        str(config["gpu_memory_utilization"]),
+                    ]
                 if first_n_tokens is not None:
                     decomp_cmd += ["--first_n_tokens", str(first_n_tokens)]
                 if config["use_kv_cache"]:
