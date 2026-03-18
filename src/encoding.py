@@ -397,11 +397,13 @@ def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
             if diff == 0:
                 break
     elif diff < 0:                      # not enough counts → add
-        for idx in np.argsort(-prob_vec):
-            freq[idx] += 1
+        order = np.argsort(-prob_vec)
+        n = len(order)
+        i = 0
+        while diff < 0:
+            freq[order[i % n]] += 1
             diff += 1
-            if diff == 0:
-                break
+            i += 1
 
     # print(f"freq.sum: {freq.sum()}, total: {total}")
     assert freq.sum() == total, f"freq.sum={freq.sum()} != total={total}"

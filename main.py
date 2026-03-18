@@ -9,7 +9,7 @@ import os
 
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
 from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params
-from src.prediction import TokenPredictor
+from src.prediction import TokenPredictor, create_predictor
 
 RESULTS_FILE = "compression_results_grid_search.json"
 COMPRESSION_FILE = "compression_data.bin"
@@ -38,7 +38,9 @@ def main():
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
-    parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--engine", type=str, choices=["transformer", "vllm"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vLLM")
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="GPU memory utilization for vLLM")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
 
@@ -76,9 +78,23 @@ def main():
             print(f"  Encoding         : {args.encoding}")
         
             # add parameters to comp_stats for saving in results JSON
-            token_predictor = TokenPredictor(args, bitmap_data=None)
-            base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
-            base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
+            # For vLLM, estimate params from HF config to avoid creating a
+            # heavyweight LLM engine just for counting (the real engine is
+            # created inside run_global_mask_compression).
+            if args.engine == "vllm":
+                from transformers import AutoConfig
+                from src.hf_cache import get_model_cache_dir as _cache_dir
+                _cfg = AutoConfig.from_pretrained(args.model_name, cache_dir=_cache_dir())
+                _h = getattr(_cfg, "hidden_size", 0)
+                _n = getattr(_cfg, "num_hidden_layers", 0)
+                _v = getattr(_cfg, "vocab_size", 0)
+                base_params = _n * 12 * _h * _h + _v * _h
+                base_size_mb = base_params * 2 / (1024 ** 2)
+                adapter_params, adapter_size_mb = 0, 0.0
+            else:
+                token_predictor = create_predictor(args, bitmap_data=None)
+                base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
+                base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
             total_params = base_params + adapter_params
             total_size_mb = base_size_mb + adapter_size_mb
 

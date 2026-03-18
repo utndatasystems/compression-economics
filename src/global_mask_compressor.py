@@ -10,7 +10,7 @@ bitmap to reconstruct tokens from the bitstream.
 """
 
 from src.encoding import LLMCompressor, LLMDecompressor
-from src.prediction import TokenDataPreparer, TokenPredictor
+from src.prediction import TokenDataPreparer, create_predictor
 from itertools import chain
 import numpy as np
 import time
@@ -82,7 +82,7 @@ def run_global_mask_compression(args):
     tokenize_time = time.perf_counter() - t0_tokenize
 
     llm_compressor = LLMCompressor()
-    token_predictor = TokenPredictor(args, bitmap_data=bitmask_data)
+    token_predictor = create_predictor(args, bitmap_data=bitmask_data)
 
     # Per-batch prompt buffers that grow token-by-token.
     prompts = [[] for _ in range(args.batch_size)]
@@ -127,63 +127,56 @@ def run_global_mask_compression(args):
             else:
                 actual_next_tokens.append(0)
                 valid_mask.append(False)
-        if args.engine == "transformer":
-            if args.encoding == "AC":
-                t0_ac = time.perf_counter()
-                probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
-
-                # Encode each valid batch's next token using arithmetic coding.
-                for idx, probs in enumerate(probs_cpu):
-                    if not valid_mask[idx]:
-                        continue
-                    target_idx = actual_next_tokens[idx]
-                    llm_compressor.next_token(target_idx, probs)
-                    entropy += -np.log2(probs[target_idx])
-                    probs_list.append(probs[target_idx])
-
-                ac_time += time.perf_counter() - t0_ac
-
-            elif args.encoding in ("bitpacked", "huffman"):
-                logits = probs_values.to(torch.float32)
-                device = logits.device
-                B, V = logits.shape
-
-                # Compute rank of the true token within the model's logits.
-                target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
-                batch_idx = torch.arange(B, device=device)  # [B]
-
-                target_logits = logits[batch_idx, target_idx].unsqueeze(1)
-
-                ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
-                ranks = ranks_0.cpu().tolist()
-
-                for idx in range(args.batch_size):
-                    if not valid_mask[idx]:
-                        continue
-                    rank = ranks[idx]
-                    rank_list.append(rank)
-                    # llm_compressor.next_token(rank)
-
-            else:
-                raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
-        else:
-            raise ValueError(f"Unsupported engine: {args.engine}")
-
-    if args.engine == "transformer":
         if args.encoding == "AC":
-            bit_string = llm_compressor.compress(encoding="AC")
-        elif args.encoding == "bitpacked":
-            print(f"len of rank list: {len(rank_list)}")
-            print(f"max rank: {max(rank_list)}")
-            bit_string = llm_compressor.compress(encoding="bitpacked", rank_list=rank_list)
-        elif args.encoding == "huffman":
-            print(f"len of rank list: {len(rank_list)}")
-            print(f"first 10 in rank list: {rank_list[:10]}")
-            bit_string, codebook = llm_compressor.compress(encoding="huffman", rank_list=rank_list)
+            t0_ac = time.perf_counter()
+            probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
+
+            # Encode each valid batch's next token using arithmetic coding.
+            for idx, probs in enumerate(probs_cpu):
+                if not valid_mask[idx]:
+                    continue
+                target_idx = actual_next_tokens[idx]
+                llm_compressor.next_token(target_idx, probs)
+                entropy += -np.log2(probs[target_idx])
+                probs_list.append(probs[target_idx])
+
+            ac_time += time.perf_counter() - t0_ac
+
+        elif args.encoding in ("bitpacked", "huffman"):
+            logits = probs_values.to(torch.float32)
+            device = logits.device
+            B, V = logits.shape
+
+            # Compute rank of the true token within the model's logits.
+            target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
+            batch_idx = torch.arange(B, device=device)  # [B]
+
+            target_logits = logits[batch_idx, target_idx].unsqueeze(1)
+
+            ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
+            ranks = ranks_0.cpu().tolist()
+
+            for idx in range(args.batch_size):
+                if not valid_mask[idx]:
+                    continue
+                rank = ranks[idx]
+                rank_list.append(rank)
+
         else:
             raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
+
+    if args.encoding == "AC":
+        bit_string = llm_compressor.compress(encoding="AC")
+    elif args.encoding == "bitpacked":
+        print(f"len of rank list: {len(rank_list)}")
+        print(f"max rank: {max(rank_list)}")
+        bit_string = llm_compressor.compress(encoding="bitpacked", rank_list=rank_list)
+    elif args.encoding == "huffman":
+        print(f"len of rank list: {len(rank_list)}")
+        print(f"first 10 in rank list: {rank_list[:10]}")
+        bit_string, codebook = llm_compressor.compress(encoding="huffman", rank_list=rank_list)
     else:
-        raise ValueError(f"Unsupported engine: {args.engine}")
+        raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
     
     compression_time = time.perf_counter() - compression_time
     
@@ -258,7 +251,7 @@ def run_global_mask_decompression(
     t0_decompress = time.perf_counter()
 
     # Initialize the token predictor.
-    token_predictor = TokenPredictor(
+    token_predictor = create_predictor(
         args,
         bitmap_data=bitmap
     )

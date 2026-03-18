@@ -72,7 +72,11 @@ def save_global_mask_file(
         "first_n_tokens": args.first_n_tokens,
         "retain_tokens": args.retain_tokens,
         "use_kv_cache": args.use_kv_cache,
-        "batch_size": args.batch_size
+        "batch_size": args.batch_size,
+        "engine": getattr(args, "engine", "transformer"),
+        "encoding": getattr(args, "encoding", "AC"),
+        "reduce_tokens": getattr(args, "reduce_tokens", True),
+        "lora_path": getattr(args, "lora_path", None),
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -127,6 +131,10 @@ def load_global_mask_file(args):
     args.use_kv_cache = header["use_kv_cache"]
     args.batch_size = header["batch_size"]
     args.input_path = header["input_path"]
+    args.engine = header.get("engine", "transformer")
+    args.encoding = header.get("encoding", "AC")
+    args.reduce_tokens = header.get("reduce_tokens", True)
+    args.lora_path = header.get("lora_path", None)
 
     return args, first_token, bit_string, bitmask_data
 
