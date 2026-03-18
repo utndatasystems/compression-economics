@@ -1,5 +1,6 @@
 import argparse
 
+#TODO: as we add more models, we should consider loading the model list from a config file instead of hardcoding it here.
 MODEL_LIST = [
     "Qwen/Qwen2.5-0.5B",
     "Qwen/Qwen2.5-3B",
@@ -19,6 +20,7 @@ MODEL_LIST = [
     "state-spaces/mamba-790m-hf",
     "state-spaces/mamba-1.4b-hf",
     "ai21labs/Jamba-v0.1",  # too large for testing, but included for completeness
+    "bert-base-uncased"
 ]
 
 
@@ -33,7 +35,7 @@ def get_adapter_training_args() -> argparse.Namespace:
     parser.add_argument("--model_id", type=str, choices=MODEL_LIST, default="Qwen/Qwen2.5-0.5B", help="Base model ID")
     
     # Adapter related
-    parser.add_argument("--adapter_type", type=str, default=None, choices=["lora", "vera", None], help="Type of adapter to train (e.g., lora, vera)")
+    parser.add_argument("--adapter_type", type=str, default="vera", choices=["lora", "vera", None], help="Type of adapter to train (e.g., lora, vera)")
     parser.add_argument("--r", type=int, default=8, help="Adapter rank")
     parser.add_argument("--la", type=int, default=32, help="LoRA alpha")
 
@@ -44,6 +46,7 @@ def get_adapter_training_args() -> argparse.Namespace:
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps")
     parser.add_argument("--lr_scheduler_type", type=str, default="constant", help="Learning rate scheduler type")
     parser.add_argument("--warmup_steps", type=int, default=0, help="Number of warmup steps for learning rate scheduler")
+    parser.add_argument("--wandb_project", type=str, default="adapter-finetuning", help="Weights & Biases project name")
 
     # quantization related
     parser.add_argument(
