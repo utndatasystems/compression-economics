@@ -77,6 +77,17 @@ def save_global_mask_file(
         "encoding": getattr(args, "encoding", "AC"),
         "reduce_tokens": getattr(args, "reduce_tokens", True),
         "lora_path": getattr(args, "lora_path", None),
+        "tensor_parallel_size": getattr(args, "tensor_parallel_size", 1),
+        "gpu_memory_utilization": getattr(args, "gpu_memory_utilization", 0.9),
+        "tensorrt_engine_dir": getattr(args, "tensorrt_engine_dir", None),
+        "sglang_mem_fraction_static": getattr(args, "sglang_mem_fraction_static", 0.8),
+        "sglang_enable_deterministic_inference": getattr(args, "sglang_enable_deterministic_inference", True),
+        "llamacpp_model_path": getattr(args, "llamacpp_model_path", None),
+        "llamacpp_binary": getattr(args, "llamacpp_binary", "llama-server"),
+        "llamacpp_host": getattr(args, "llamacpp_host", "127.0.0.1"),
+        "llamacpp_port": getattr(args, "llamacpp_port", 8080),
+        "llamacpp_threads": getattr(args, "llamacpp_threads", 1),
+        "llamacpp_n_gpu_layers": getattr(args, "llamacpp_n_gpu_layers", 0),
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -135,6 +146,17 @@ def load_global_mask_file(args):
     args.encoding = header.get("encoding", "AC")
     args.reduce_tokens = header.get("reduce_tokens", True)
     args.lora_path = header.get("lora_path", None)
+    args.tensor_parallel_size = header.get("tensor_parallel_size", 1)
+    args.gpu_memory_utilization = header.get("gpu_memory_utilization", 0.9)
+    args.tensorrt_engine_dir = header.get("tensorrt_engine_dir", None)
+    args.sglang_mem_fraction_static = header.get("sglang_mem_fraction_static", 0.8)
+    args.sglang_enable_deterministic_inference = header.get("sglang_enable_deterministic_inference", True)
+    args.llamacpp_model_path = header.get("llamacpp_model_path", None)
+    args.llamacpp_binary = header.get("llamacpp_binary", "llama-server")
+    args.llamacpp_host = header.get("llamacpp_host", "127.0.0.1")
+    args.llamacpp_port = header.get("llamacpp_port", 8080)
+    args.llamacpp_threads = header.get("llamacpp_threads", 1)
+    args.llamacpp_n_gpu_layers = header.get("llamacpp_n_gpu_layers", 0)
 
     return args, first_token, bit_string, bitmask_data
 
@@ -168,7 +190,22 @@ def make_key(args):
     The key captures dataset name and core settings so runs can be indexed in a dict.
     """
     filename = os.path.basename(args.input_path)
-    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
+    return (
+        f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}"
+        f"|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}"
+        f"|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}"
+        f"|lora={args.lora_path}|tp={getattr(args, 'tensor_parallel_size', 1)}"
+        f"|gpu_mem={getattr(args, 'gpu_memory_utilization', 0.9)}"
+        f"|trt_engine={getattr(args, 'tensorrt_engine_dir', None)}"
+        f"|sg_mem={getattr(args, 'sglang_mem_fraction_static', 0.8)}"
+        f"|sg_det={getattr(args, 'sglang_enable_deterministic_inference', True)}"
+        f"|llamacpp_model={getattr(args, 'llamacpp_model_path', None)}"
+        f"|llamacpp_bin={getattr(args, 'llamacpp_binary', 'llama-server')}"
+        f"|llamacpp_host={getattr(args, 'llamacpp_host', '127.0.0.1')}"
+        f"|llamacpp_port={getattr(args, 'llamacpp_port', 8080)}"
+        f"|llamacpp_threads={getattr(args, 'llamacpp_threads', 1)}"
+        f"|llamacpp_ngl={getattr(args, 'llamacpp_n_gpu_layers', 0)}"
+    )
 
 
 def create_run_dir(base_dir="results"):

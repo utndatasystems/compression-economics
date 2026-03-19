@@ -38,11 +38,23 @@ def main():
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
-    parser.add_argument("--engine", type=str, choices=["transformer", "vllm"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--engine", type=str, choices=["transformer", "vllm", "tensorrt", "sglang", "llamacpp"], default="transformer", help="Inference engine to use")
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vLLM")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="GPU memory utilization for vLLM")
+    parser.add_argument("--tensorrt_engine_dir", type=str, default=None, help="Path to a prebuilt TensorRT-LLM engine directory")
+    parser.add_argument("--sglang_mem_fraction_static", type=float, default=0.8, help="GPU memory fraction reserved by SGlang")
+    parser.add_argument("--sglang_enable_deterministic_inference", action="store_true", help="Enable deterministic SGlang inference")
+    parser.add_argument("--no_sglang_enable_deterministic_inference", dest="sglang_enable_deterministic_inference", action="store_false", help="Disable deterministic SGlang inference")
+    parser.set_defaults(sglang_enable_deterministic_inference=True)
+    parser.add_argument("--llamacpp_model_path", type=str, default=None, help="Path to a local GGUF model for llama.cpp")
+    parser.add_argument("--llamacpp_binary", type=str, default="llama-server", help="Path to the llama-server binary")
+    parser.add_argument("--llamacpp_host", type=str, default="127.0.0.1", help="Host for the managed llama-server process")
+    parser.add_argument("--llamacpp_port", type=int, default=8080, help="Port for the managed llama-server process")
+    parser.add_argument("--llamacpp_threads", type=int, default=max(1, os.cpu_count() or 1), help="CPU threads for llama.cpp")
+    parser.add_argument("--llamacpp_n_gpu_layers", type=int, default=0, help="Number of llama.cpp layers to offload to GPU")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
+    parser.add_argument("--results_file", type=str, default=RESULTS_FILE, help="Path to the aggregated experiment-results JSON file")
 
     args = parser.parse_args()
 
@@ -57,7 +69,7 @@ def main():
             # ========================
             # Check if experiment already exists
             # ========================
-            results_db = load_results(RESULTS_FILE)
+            results_db = load_results(args.results_file)
             exp_key = make_key(args)
             if exp_key in results_db:
                 print(f"\n⚠️  Experiment already exists for {exp_key}, skipping run.")
@@ -81,7 +93,7 @@ def main():
             # For vLLM, estimate params from HF config to avoid creating a
             # heavyweight LLM engine just for counting (the real engine is
             # created inside run_global_mask_compression).
-            if args.engine == "vllm":
+            if args.engine in {"vllm", "tensorrt", "sglang"}:
                 from transformers import AutoConfig
                 from src.hf_cache import get_model_cache_dir as _cache_dir
                 _cfg = AutoConfig.from_pretrained(args.model_name, cache_dir=_cache_dir())
@@ -90,6 +102,10 @@ def main():
                 _v = getattr(_cfg, "vocab_size", 0)
                 base_params = _n * 12 * _h * _h + _v * _h
                 base_size_mb = base_params * 2 / (1024 ** 2)
+                adapter_params, adapter_size_mb = 0, 0.0
+            elif args.engine == "llamacpp":
+                base_params = 0
+                base_size_mb = 0.0
                 adapter_params, adapter_size_mb = 0, 0.0
             else:
                 token_predictor = create_predictor(args, bitmap_data=None)
@@ -121,12 +137,12 @@ def main():
             # ========================
             # Save results (JSON stats)
             # ========================
-            results_db = load_results(RESULTS_FILE)
+            results_db = load_results(args.results_file)
             exp_key = make_key(args)
             if exp_key not in results_db:
                 results_db[exp_key] = {}
             results_db[exp_key]["compression"] = comp_stats
-            save_results(results_db, RESULTS_FILE) #add 
+            save_results(results_db, args.results_file) #add 
 
             # ========================
             # Save binary compression file
@@ -145,7 +161,7 @@ def main():
                 for k, v in comp_stats.items():
                     print(f"{k}: {v}")
             print("\n\n===== Compression Complete =====")
-            print(f"Compression stats saved to: {RESULTS_FILE}")
+            print(f"Compression stats saved to: {args.results_file}")
             #print(f"Compression data saved to: {args.output_path}")
 
     elif args.mode == "decompress":
@@ -186,12 +202,12 @@ def main():
         # ========================
         # Save results (JSON stats)
         # ========================
-        results_db = load_results(RESULTS_FILE)
+        results_db = load_results(args.results_file)
         exp_key = make_key(args)
         if exp_key not in results_db:
             results_db[exp_key] = {}
         results_db[exp_key]["decompression"] = decomp_stats
-        save_results(results_db, RESULTS_FILE)
+        save_results(results_db, args.results_file)
 
         if args.print_results:
             print("\n\n===== Decompression Results =====")
@@ -203,7 +219,7 @@ def main():
             f.write(results)
 
         print("\n\n===== Decompression Complete =====")
-        print(f"Decompression stats saved to: {RESULTS_FILE}")
+        print(f"Decompression stats saved to: {args.results_file}")
         print(f"Reconstructed text saved to: {args.output_path}")
         
 

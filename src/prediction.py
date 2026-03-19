@@ -15,7 +15,6 @@ import math
 from copy import copy
 from pyroaring import BitMap
 import time
-from peft import PeftModel
 
 from src.hf_cache import get_model_cache_dir
 
@@ -37,9 +36,7 @@ class TokenDataPreparer:
         if args.input_path and args.text_input:
             raise ValueError("Only one of input_path or text_input can be provided.")
 
-        # Load tokenizer (from cache or download) for consistent tokenization.
-        cache_dir = get_model_cache_dir()
-        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=cache_dir)
+        self.tokenizer = self._create_tokenizer(args)
 
         # Load and tokenize input data.
         if args.input_path:
@@ -74,6 +71,19 @@ class TokenDataPreparer:
             self.tokens_list = list(range(self.tokenizer.vocab_size))
 
         print(f"Total distinct tokens: {len(self.tokens_list)}")
+
+    def _create_tokenizer(self, args):
+        if args.engine == "llamacpp":
+            from src.llamacpp_prediction import LlamaCppTokenizer, probe_llamacpp_ac_support
+
+            supported, reason = probe_llamacpp_ac_support(args)
+            if not supported:
+                raise ValueError(f"llama.cpp backend is not available: {reason}")
+
+            return LlamaCppTokenizer(args)
+
+        cache_dir = get_model_cache_dir()
+        return AutoTokenizer.from_pretrained(args.model_name, cache_dir=cache_dir)
 
     def _get_data_from_file(self, input_path):
         """
@@ -121,6 +131,10 @@ class TokenDataPreparer:
         """
         return self.args
 
+    def cleanup(self):
+        if hasattr(self.tokenizer, "cleanup"):
+            self.tokenizer.cleanup()
+
 class TokenPredictor:
     def __init__(self, args, bitmap_data):
         """
@@ -167,6 +181,8 @@ class TokenPredictor:
             self.adapter_params, self.adapter_size_mb = 0, 0
 
             if args.lora_path is not None:
+                from peft import PeftModel
+
                 self.model = PeftModel.from_pretrained(self.model, args.lora_path, device_map="auto")
                 self.adapter_params = self.count_parameters(self.model)[0] - self.base_params
                 self.adapter_size_mb = self.estimate_model_size_mb(self.model)[0] - self.base_size_mb
@@ -190,6 +206,9 @@ class TokenPredictor:
         # Cache indices for fast vocab reduction via index_select.
         self.index_tensor = torch.tensor(self.tokens_list, dtype=torch.long, device=self.device)
         self.reduce_tokens = args.reduce_tokens
+
+    def cleanup(self):
+        return None
 
     def _set_active_chunk(self, chunk_index):
         """
@@ -437,7 +456,7 @@ def create_predictor(args, bitmap_data):
     Factory function that returns the appropriate predictor based on args.engine.
 
     Args:
-        args (argparse.Namespace): Must include 'engine' ("transformer" or "vllm").
+        args (argparse.Namespace): Must include 'engine' ("transformer", "vllm", "tensorrt", "sglang", or "llamacpp").
         bitmap_data (bytes | None): Serialized roaring bitmap of allowed tokens.
 
     Returns:
@@ -464,5 +483,29 @@ def create_predictor(args, bitmap_data):
             return TokenPredictor(fallback_args, bitmap_data)
 
         return VLLMTokenPredictor(args, bitmap_data)
+    elif args.engine == "tensorrt":
+        from src.tensorrt_prediction import TensorRTTokenPredictor, probe_tensorrt_ac_support
+
+        supported, reason = probe_tensorrt_ac_support(args)
+        if not supported:
+            raise ValueError(f"TensorRT backend is not available: {reason}")
+
+        return TensorRTTokenPredictor(args, bitmap_data)
+    elif args.engine == "sglang":
+        from src.sglang_prediction import SGLangTokenPredictor, probe_sglang_ac_support
+
+        supported, reason = probe_sglang_ac_support(args)
+        if not supported:
+            raise ValueError(f"SGlang backend is not available: {reason}")
+
+        return SGLangTokenPredictor(args, bitmap_data)
+    elif args.engine == "llamacpp":
+        from src.llamacpp_prediction import LlamaCppTokenPredictor, probe_llamacpp_ac_support
+
+        supported, reason = probe_llamacpp_ac_support(args)
+        if not supported:
+            raise ValueError(f"llama.cpp backend is not available: {reason}")
+
+        return LlamaCppTokenPredictor(args, bitmap_data)
     else:
         raise ValueError(f"Unsupported engine: {args.engine}")

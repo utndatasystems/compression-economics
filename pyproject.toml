@@ -13,6 +13,7 @@ dependencies = [
     "pytest>=9.0.2",
     "scalene>=2.1.4",
     "seaborn>=0.13.2",
+    "sglang>=0.5.9",
     "torch>=2.10.0",
     "transformers>=5.2.0",
     "zstandard>=0.25.0",
