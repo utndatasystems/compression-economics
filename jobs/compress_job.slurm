@@ -2,10 +2,8 @@
 #SBATCH --job-name=mamba-compress      # Job name
 #SBATCH --output=logs/%x_%j.out        # Standard output (%x = job name, %j = job ID)
 #SBATCH --error=logs/%x_%j.err         # Standard error
-#SBATCH --partition=gpu                # Partition with GPUs
 #SBATCH --gres=gpu:1                   # Request 1 GPU
 #SBATCH --cpus-per-task=4              # Number of CPU cores
-#SBATCH --mem=16G                      # Memory per node
 #SBATCH --time=02:00:00                # Max runtime (HH:MM:SS)
 #SBATCH --mail-type=END,FAIL           # Email notification
 #SBATCH --mail-user=luisa.neubauer@utn.de  # Your email
