@@ -31,8 +31,10 @@ class AdapterTrainer:
 
         if self.args.mode == "quantize" and self.args.quantization_bits is not None:
             print(f"Quantization mode selected with {self.args.quantization_bits}-bit quantization. No training will be performed.")
-        if self.args.mode == "quantize":
+
+        elif self.args.mode == "quantize":
             self.quantization_init()
+
         self.model_init()
         if self.args.mode == "finetune":
             self.adapter_init()
