@@ -193,7 +193,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-compression_result*
+#compression_result*
 *.bin
 *.txt
 other_files/llm_compression_plots/loaded_results.json
