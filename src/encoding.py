@@ -374,39 +374,44 @@ class BitInputStream:
 # ------------------------------------------------------------------
 # Utility – convert probabilities → integer cumulative vector
 # ------------------------------------------------------------------
+
+
 def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
     """
-    Turn a length-N probability vector that sums to 1 into the length-(N+1)
-    cumulative-frequency array expected by ArithmeticCoder.  Ensures every
-    symbol’s frequency ≥ 1 and that the overall total == `total`.
+    Turn a probability vector into a cumulative-frequency array for arithmetic coding.
+    Ensures every symbol ≥1 and freq.sum() == total.
     """
     alphabet_size = prob_vec.size
 
-    # Give every symbol at least one count so no zero-frequency symbols
-    freq = np.maximum(1,
-                      (prob_vec * (total - alphabet_size)).astype(np.int64))
+    # Step 1: allocate counts proportional to prob_vec
+    freq = (prob_vec * (total - alphabet_size)).astype(np.int64)
+
+    # Step 2: ensure every symbol ≥1
     freq += 1
-    diff = freq.sum() - total
 
-    # Adjust so the sum is exact
-    if diff > 0:                        # too many counts → take some back
-        for idx in np.argsort(-freq):   # biggest bars first
-            take = min(freq[idx] - 1, diff)
-            freq[idx] -= take
-            diff -= take
-            if diff == 0:
-                break
-    elif diff < 0:                      # not enough counts → add
-        for idx in np.argsort(-prob_vec):
-            freq[idx] += 1
-            diff += 1
-            if diff == 0:
-                break
+    # Step 3: compute diff and adjust
+    diff = total - freq.sum()
+    if diff != 0:
+        # adjust the symbol with largest probability first
+        # np.argsort(-prob_vec) gives descending probabilities
+        indices = np.argsort(-prob_vec)
+        idx = 0
+        while diff != 0:
+            i = indices[idx % alphabet_size]  # wrap around if needed
+            if diff > 0:
+                freq[i] += 1
+                diff -= 1
+            else:  # diff < 0
+                if freq[i] > 1:
+                    freq[i] -= 1
+                    diff += 1
+            idx += 1
 
-    # print(f"freq.sum: {freq.sum()}, total: {total}")
+    # Safety check
     assert freq.sum() == total, f"freq.sum={freq.sum()} != total={total}"
     assert np.all(freq >= 1)
 
+    # Build cumulative array
     cumul = np.empty(alphabet_size + 1, dtype=np.int64)
     cumul[0] = 0
     cumul[1:] = np.cumsum(freq)
