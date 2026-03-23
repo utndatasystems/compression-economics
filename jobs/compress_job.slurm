@@ -14,7 +14,7 @@ module load cudnn/8.9.7.29-12
 module load python/3.12-conda          # Adjust to Python version you need
 
 # Activate your uv environment (if using uv)
-uv activate myenv
+source /home/hpc/v164be/v164be10/src/compression-economics/.venv/bin/activate
 
 # Optional: make logs directory
 mkdir -p logs
@@ -22,6 +22,6 @@ mkdir -p logs
 # Run your Python script
 python main.py \
   --mode compress \
-  --first_n_tokens 1000 \
+  --first_n_tokens 100000 \
   --batch_size 16 \
   --model state-spaces/mamba-130m-hf
