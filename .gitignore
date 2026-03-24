@@ -200,3 +200,6 @@ other_files/llm_compression_plots/loaded_results.json
 wandb/latest-run
 wandb/settings
 other_files/llm_compression_plots/loaded_results.json
+
+# files ending with .o*
+*.o*
