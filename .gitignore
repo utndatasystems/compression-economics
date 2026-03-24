@@ -203,3 +203,6 @@ other_files/llm_compression_plots/loaded_results.json
 
 # files ending with .o*
 *.o*
+
+# job files
+/jobs
