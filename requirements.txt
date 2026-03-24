@@ -13,6 +13,7 @@ seaborn
 notebook # only for plotting in notebook, not needed for repo, only for local plotting
 ipykernel
 ipywidgets
+wandb
 #protobuf # needed for Mamba models 
 #sentencepiece 
 #tokenizers 

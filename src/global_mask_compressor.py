@@ -9,6 +9,8 @@ transformer engine. Decompression mirrors compression using the same model and
 bitmap to reconstruct tokens from the bitstream.
 """
 
+from tqdm import tqdm
+
 from src.encoding import LLMCompressor, LLMDecompressor
 from src.prediction import TokenDataPreparer, TokenPredictor
 from itertools import chain
@@ -95,7 +97,7 @@ def run_global_mask_compression(args):
     rank_list = []
     probs_list = []
     # Process each token in the dataset to compress it.
-    for token_idx in range(chunk_length):
+    for token_idx in tqdm(range(chunk_length)):
         print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
         # Append the current token from each batch to its prompt context.

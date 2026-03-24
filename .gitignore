@@ -23,6 +23,9 @@ __pycache__/
 # C extensions
 *.so
 
+# Wandb files
+*.wandb
+
 # Distribution / packaging
 .Python
 build/
@@ -190,7 +193,10 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-compression_result*
+#compression_result*
 *.bin
 *.txt
+other_files/llm_compression_plots/loaded_results.json
+wandb/latest-run
+wandb/settings
 other_files/llm_compression_plots/loaded_results.json

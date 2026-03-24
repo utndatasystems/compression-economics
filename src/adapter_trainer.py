@@ -12,14 +12,13 @@ from transformers import (
     DataCollatorForLanguageModeling,
     BitsAndBytesConfig,
     TrainingArguments,
-    Trainer
-)
+    Trainer)
+import wandb
 from peft import LoraConfig, VeraConfig, get_peft_model
 
 
 class AdapterTrainer:
 
-    
     def __init__(self, args):
         self.args = args
         self.quant_config = None
@@ -32,8 +31,10 @@ class AdapterTrainer:
 
         if self.args.mode == "quantize" and self.args.quantization_bits is not None:
             print(f"Quantization mode selected with {self.args.quantization_bits}-bit quantization. No training will be performed.")
-        if self.args.mode == "quantize":
+
+        elif self.args.mode == "quantize":
             self.quantization_init()
+
         self.model_init()
         if self.args.mode == "finetune":
             self.adapter_init()
@@ -52,6 +53,14 @@ class AdapterTrainer:
             self.run_name = f"quant_{self.args.quantization_bits}bit"
         else:
             raise ValueError(f"Unknown adapter type: {self.args.adapter_type}")
+
+        # Initialize Weights & Biases for finetuning mode only 
+        if self.args.mode == "finetune":
+            wandb.init(
+                project=self.args.wandb_project,  # e.g., "adapter-finetuning"
+                name=self.run_name,
+                config=vars(self.args)
+            )
         
     def path_init(self):
         if self.args.mode == "quantize":
@@ -172,6 +181,7 @@ class AdapterTrainer:
             }
         else:
             lr_scheduler_kwargs = None
+
         return TrainingArguments(
             output_dir=self.args.save_dir,
             per_device_train_batch_size=self.args.batch_size,
@@ -184,16 +194,14 @@ class AdapterTrainer:
             fp16=self.use_fp16,
             bf16=self.use_bf16,
             logging_strategy="steps",
-            logging_steps=0.1,
+            logging_steps=10,  # log every 10 steps # 0.1
             save_strategy="no",
-            # save_strategy="steps",
-            # save_steps=0.3,
             weight_decay=0.0,
-            report_to="none",
+            report_to="wandb",  # enable wandb reporting, before 'none'
             dataloader_pin_memory=(self.device == "cuda"),
             remove_unused_columns=False,
         )
-
+    
     def finetune(self):
         print("Training arguments:")
         print(f"    Adapter\t\t\t: {self.args.adapter_type}")
@@ -246,3 +254,12 @@ class AdapterTrainer:
             json.dump(meta, f, indent=2)
         
         print("Metadata saved to:", os.path.join(self.output_path, "meta.json"))
+
+        if self.args.mode == "finetune":
+            wandb.log({
+                "final_loss": self.trainer.state.log_history[-1]["train_loss"],
+                "train_runtime": self.trainer.state.log_history[-1]["train_runtime"],
+                "total_model_params": self.total_params,
+                "adapter_params": self.adapter_params,
+                })
+            wandb.finish()
