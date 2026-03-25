@@ -10,6 +10,7 @@ This module provides:
 import struct
 import json
 import os
+import tarfile
 from datetime import datetime
 import torch
 
@@ -114,6 +115,9 @@ def load_global_mask_file(args):
     """
     Load global-mask compression artifacts from a binary file.
 
+    Args: 
+        args (argparse.Namespace): Experiment configuration with input_path.
+
     Returns:
         header, first_token, bit_string(list[int]), bitmask_data
     """
@@ -179,14 +183,12 @@ def make_key(args):
     filename = os.path.basename(args.input_path)
     return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
 
-
 def create_run_dir(base_dir="results"):
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     run_dir = os.path.join(base_dir, f"run_{timestamp}")
     os.makedirs(run_dir, exist_ok=False)
     os.makedirs(os.path.join(run_dir, "logs"), exist_ok=True)
     return run_dir
-
 
 def save_params(args, run_dir):
     with open(os.path.join(run_dir, "params.json"), "w") as f:
@@ -202,3 +204,33 @@ def get_device():
     else:
         device, use_fp16, use_bf16 = "cpu", False, False
     return device, use_fp16, use_bf16
+
+
+def folder_to_tar(folder_path, tar_path):
+    """
+    Package a folder into a tar archive.
+
+    Args:
+        folder_path (str): Path to the folder to be archived.
+        tar_path (str): Output tar file path.
+
+    Returns:
+        str: Path to the created tar file.
+    """
+    if not os.path.isdir(folder_path):
+        raise NotADirectoryError(f"{folder_path} is not a valid directory")
+
+    # Create tar archive
+    with tarfile.open(tar_path, "w") as tar:
+        # Add folder contents recursively
+        tar.add(folder_path, arcname=os.path.basename(folder_path))
+    
+    return tar_path
+
+
+if __name__ == "__main__":
+    # Example usage of folder_to_tar
+    folder_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8"
+    tar_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8.tar"
+    created_tar = folder_to_tar(folder_path, tar_path)
+    print(f"Created tar archive: {created_tar}")
