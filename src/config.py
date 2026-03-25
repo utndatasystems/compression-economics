@@ -106,7 +106,8 @@ def get_main_args() -> argparse.Namespace:
     parser.set_defaults(reduce_tokens=True)
     parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
-
+    parser.add_argument("--spec_k", type=int, default=None, help="Number of speculative tokens to generate for speculative compression/decompression")
+    parser.add_argument("--student_model_name", type=str, choices=MODEL_LIST, default="Qwen/Qwen2.5-0.5B", help="Student model name for speculative decompression (if different from teacher)")
     # other
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
     
