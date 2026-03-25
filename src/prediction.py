@@ -11,6 +11,7 @@ This module provides:
 
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM, MambaForCausalLM
 import os
+import tarfile
 import torch
 from pyroaring import BitMap
 import time
@@ -91,8 +92,26 @@ class TokenDataPreparer:
         """
         if not os.path.exists(input_path):
             raise FileNotFoundError(f"Data file not found: {input_path}")
-        with open(input_path, 'r') as f:
-            return f.read()
+        
+        if input_path.endswith(".tar"):
+            # Open the tar file
+            with tarfile.open(input_path, "r") as tar:
+                # Assume the tar contains only one text file
+                text_members = [m for m in tar.getmembers() if m.isfile()]
+                if not text_members:
+                    raise ValueError("No files found in the tar archive")
+                
+                # Read the first file inside the tar
+                #TODO: implement option to specify which file to read if multiple files are present in the tar
+                file_obj = tar.extractfile(text_members[0])
+                if file_obj is None:
+                    raise ValueError("Failed to extract file from tar archive")
+                return file_obj.read().decode("utf-8")
+        
+        else:
+            with open(input_path, 'r') as f:
+                return f.read()
+        
         
     def get_data_tokens(self):
         """
@@ -226,7 +245,7 @@ class TokenPredictor:
             list[int]: Sorted list of distinct token IDs.
         """
         return self.tokens_list
-
+    
     def run_batched_inference(self, prompts, enable_kv_cache=True):
         """
         Run one-step batched inference and return token scores along with timing data.
