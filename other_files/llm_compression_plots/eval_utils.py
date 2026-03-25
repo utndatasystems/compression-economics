@@ -86,6 +86,29 @@ def lift_compression_args(data: dict) -> dict:
     return data
 
 
+def add_dataset(data: dict) -> dict:
+    """
+    Extract dataset name from experiment key and add as 'dataset'.
+
+    The pattern expected is "<dataset>:" in the experiment key.
+
+    Parameters:
+        data (dict): Dictionary of experiment runs.
+
+    Returns:
+        dict: Updated dictionary with 'dataset' key added to each run.
+    """
+    dataset_pattern = re.compile(r"([^:/]+):")
+
+    for key, value in data.items():
+        if not isinstance(value, dict):
+            continue
+        match = dataset_pattern.search(key)
+        value["dataset"] = match.group(1) if match else None
+
+    return data
+
+
 def add_rank(data: dict) -> dict:
     """
     Extract the experiment rank from experiment key and add as 'rank'.
