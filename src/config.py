@@ -33,6 +33,7 @@ def get_adapter_training_args() -> argparse.Namespace:
 
     # model related
     parser.add_argument("--model_id", type=str, choices=MODEL_LIST, default="Qwen/Qwen2.5-0.5B", help="Base model ID")
+    parser.add_argument("--HF_token", type=str, default=None, help="Hugging Face token for rate limits (if needed)")
     
     # Adapter related
     parser.add_argument("--adapter_type", type=str, default="vera", choices=["lora", "vera", None], help="Type of adapter to train (e.g., lora, vera)")
@@ -88,13 +89,8 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--text_input", type=str, required=False, help="The direct text input for LLM inference.")
 
     # model related
-    parser.add_argument(
-        "--model_name",
-        type=str,
-        choices=MODEL_LIST,
-        default="Qwen/Qwen2.5-0.5B",
-        help="Model name",
-    )
+    parser.add_argument("--model_name", type=str, choices=MODEL_LIST, default="Qwen/Qwen2.5-0.5B", help="Model name",)
+    parser.add_argument("--HF_token", type=str, default=None, help="Hugging Face token for rate limits (if needed)")
     
     # inference related
     parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
