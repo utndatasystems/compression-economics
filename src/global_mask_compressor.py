@@ -10,6 +10,7 @@ bitmap to reconstruct tokens from the bitstream.
 """
 
 from tqdm import tqdm
+from wandb.plot import line
 
 from src.encoding import LLMCompressor, LLMDecompressor
 from src.prediction import TokenDataPreparer, TokenPredictor
@@ -229,11 +230,12 @@ def run_global_mask_compression(args):
         "inference_throughput_kibibytes_per_sec": original_size_bytes / 1024 / inference_time,
     }, args
 
+
 def run_global_mask_decompression(
     args,
     first_tokens,
     bit_string,
-    bitmap
+    bitmap,
 ):
     """
     Decompress a bit string produced by the global-mask compressor.
@@ -262,38 +264,45 @@ def run_global_mask_decompression(
     # Initialize the token predictor.
     token_predictor = TokenPredictor(
         args,
-        bitmap_data=bitmap
-    )
+        bitmap_data=bitmap)
 
     # Get the original tokens to know the starting token and the total length.
-    
     decompressor = LLMDecompressor(bit_string)
+
     # Start decompression with the first token from the original data.
     prompts = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
     reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
 
-    chunk_length = args.first_n_tokens // args.batch_size
+    chunk_length = args.first_n_tokens // args.batch_size # minimum tokens per batch
     extra = args.first_n_tokens % args.batch_size
 
     batches_length = [
         chunk_length + (1 if i < extra else 0)
-        for i in range(args.batch_size)
-    ]
+        for i in range(args.batch_size)]
+    
     input_tokens_cnt = 0
     inference_time = 0
     ac_time = 0
     data_copy_time = 0
     softmax_time = 0
 
+    # Determine max tokens to decode, set to first_n_tokens if not specified, or spec_k if in speculative mode.
+    max_tokens = args.first_n_tokens
+    if hasattr(args, "spec_k") and args.spec_k is not None:
+        max_tokens = args.spec_k
+    total_decoded = len(first_tokens) if first_tokens else 0
 
     for token_idx in range(chunk_length):
+        if total_decoded >= max_tokens:
+            break
 
         print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
         if len(prompts[0]) >= args.context_length:
             prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
 
-        input_tokens_cnt += args.batch_size * len(prompts[0])
+        input_tokens_cnt += args.batch_size * len(prompts[0]) 
+
         # Run LLM inference
         t0_inference = time.perf_counter()
         _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, enable_kv_cache=args.use_kv_cache)
@@ -312,8 +321,248 @@ def run_global_mask_decompression(
                 # Append the decompressed token to the context for the next step.
                 prompts[idx].append(next_token)
                 reconstructed_tokens[idx].append(next_token)
+
+                total_decoded += 1 
+
         ac_time += time.perf_counter() - t0_ac
     
+    reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
+    t0_detokenize = time.perf_counter()
+    detoken_string = token_predictor.detokenize(reconstructed_tokens)
+    detokenize_time = time.perf_counter() - t0_detokenize
+
+    decompression_time = time.perf_counter() - t0_decompress
+
+    return reconstructed_tokens, detoken_string, {
+        "args": args.__dict__,
+        "decompression_time_sec": decompression_time,
+        "input_tokens_cnt": input_tokens_cnt,
+        # Timings
+        "total_decompression_time": decompression_time,
+        "detokenize_time": detokenize_time,
+        "inference_time": inference_time,
+        "ac_time": ac_time,
+        "data_copy_time": data_copy_time,
+        "softmax_time": softmax_time,
+        # Throughput
+        "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
+        "inference_throughput_kibibytes_per_sec": len(detoken_string) / 1024 / inference_time,
+    }
+
+def run_global_mask_decompression_lean(
+    args,
+    first_tokens,
+    bit_string,
+    bitmap,
+):
+    """
+    Decompress a bit string produced by the global-mask compressor.
+
+    The LLM predicts next-token probabilities for each batch step, and the arithmetic
+    decompressor uses those probabilities to recover the encoded token indices. The
+    resulting batches are concatenated to recover the original token order.
+
+    Args:
+        args (argparse.Namespace): Same configuration used for compression.
+        first_tokens (list[int]): First token from each batch.
+        bit_string (str): The compressed bit string.
+        bitmap (bytes): Serialized bitmap describing allowed vocabulary.
+
+    Returns:
+        tuple: (reconstructed_tokens, detoken_string, stats)
+            - reconstructed_tokens (list[int]): Recovered token IDs (flattened).
+            - detoken_string (str): Detokenized text.
+            - stats (dict): Decompression timings and throughput.
+    """
+    print(f"\n----- Running Decompression: Global Token Mask (first_n_tokens={args.first_n_tokens}, kv_cache={args.use_kv_cache}) -----")
+
+    # Initialize the token predictor.
+    token_predictor = TokenPredictor(
+        args,
+        bitmap_data=bitmap)
+
+    # Get the original tokens to know the starting token and the total length.
+    decompressor = LLMDecompressor(bit_string)
+
+    # Start decompression with the first token from the original data.
+    prompts = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
+    reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
+
+    chunk_length = args.first_n_tokens // args.batch_size # minimum tokens per batch
+    extra = args.first_n_tokens % args.batch_size
+
+    batches_length = [
+        chunk_length + (1 if i < extra else 0)
+        for i in range(args.batch_size)]
+    
+    input_tokens_cnt = 0
+    inference_time = 0
+    ac_time = 0
+    data_copy_time = 0
+    softmax_time = 0
+
+    # Determine max tokens to decode, set to first_n_tokens if not specified, or spec_k if in speculative mode.
+    max_tokens = args.first_n_tokens
+    if hasattr(args, "spec_k") and args.spec_k is not None:
+        max_tokens = args.spec_k
+    total_decoded = len(first_tokens) if first_tokens else 0
+
+    for token_idx in range(chunk_length):
+        if total_decoded >= max_tokens:
+            break
+
+        print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
+
+        if len(prompts[0]) >= args.context_length:
+            prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
+
+        input_tokens_cnt += args.batch_size * len(prompts[0]) 
+
+        # Run LLM inference
+        t0_inference = time.perf_counter()
+        _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, enable_kv_cache=args.use_kv_cache)
+        data_copy_time += _data_copy_time
+        softmax_time += _softmax_time
+        inference_time += time.perf_counter() - t0_inference
+
+        t0_ac = time.perf_counter()
+        # Provide the actual token's indexes and the probability distributions to the compressor.
+        for idx, probs in enumerate(probs_values.to(torch.float32).numpy()):
+            if token_idx + 1 < batches_length[idx]:
+                # Decompress the next token's index from the bit string.
+                next_token_idx = decompressor.decompress(probs)
+                next_token = token_predictor.get_token_by_id(next_token_idx)
+                
+                # Append the decompressed token to the context for the next step.
+                prompts[idx].append(next_token)
+                reconstructed_tokens[idx].append(next_token)
+
+                total_decoded += 1 
+
+        ac_time += time.perf_counter() - t0_ac
+    
+    reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
+    t0_detokenize = time.perf_counter()
+    detoken_string = token_predictor.detokenize(reconstructed_tokens)
+
+
+    return reconstructed_tokens, detoken_string
+
+
+def run_global_mask_speculative_decompression(args,
+    first_tokens,
+    bit_string,
+    bitmap):
+    """
+    Run speculative decompression using a global token mask.
+
+    Args:
+        args (argparse.Namespace): Experiment configuration.
+
+    Returns:
+        tuple: (reconstructed_tokens, detoken_string, stats)
+            - reconstructed_tokens (list[int]): Recovered token IDs (flattened).
+            - detoken_string (str): Detokenized text.
+            - stats (dict): Decompression timings and throughput.
+    """
+
+    args.spec_k = 5
+
+    # Initialize the token predictor.
+    token_predictor_teacher = TokenPredictor(
+        args,
+        bitmap_data=bitmap)
+
+    token_predictor_student = TokenPredictor(
+        args,
+        bitmap_data=bitmap)   
+
+    # Get the original tokens to know the starting token and the total length.
+    decompressor = LLMDecompressor(bit_string)
+
+    # Start decompression with the first token from the original data.
+    prompts = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
+    reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
+
+    chunk_length = args.first_n_tokens // args.batch_size
+    extra = args.first_n_tokens % args.batch_size
+
+    batches_length = [
+        chunk_length + (1 if i < extra else 0)
+        for i in range(args.batch_size)]
+    
+    input_tokens_cnt = 0
+    inference_time = 0
+    ac_time = 0
+    data_copy_time = 0
+    softmax_time = 0
+
+    for token_idx in range(chunk_length):
+        print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
+
+        if len(prompts[0]) >= args.context_length:
+            prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
+
+        input_tokens_cnt += args.batch_size * len(prompts[0])
+
+        t0_inference = time.perf_counter()
+
+        # STEP 1: Draft generation
+        # make call to run_global_mask_decompression with student model
+        draft_tokens_batch, _ = run_global_mask_decompression_lean(
+            args,
+            first_tokens,
+            bit_string,
+            bitmap)
+
+        #draft_tokens_batch = [
+        #    token_predictor_student.generate_draft(prompt, k=args.spec_k)
+        #    for prompt in prompts]
+
+        # STEP 2: Run target model once on extended prompts
+        extended_prompts = [
+            prompt + [draft_tokens_batch[i]]
+            for i, prompt in enumerate(prompts)]
+
+        _, probs_seq, _data_copy_time, _softmax_time = token_predictor_teacher.run_batched_inference(
+            extended_prompts,
+            enable_kv_cache=args.use_kv_cache)
+
+        data_copy_time += _data_copy_time
+        softmax_time += _softmax_time
+        inference_time += time.perf_counter() - t0_inference
+
+        t0_ac = time.perf_counter()
+
+        # STEP 3: Verify + accept/reject
+        for idx in range(len(prompts)):
+            draft_tokens = draft_tokens_batch[idx]
+            probs_steps = probs_seq[idx]
+
+            accepted = 0
+
+            for step, probs in enumerate(probs_steps):
+                #TODO: something wrong with probs datatype or shape that's causing decompressor to fail
+                decoded_idx = decompressor.decompress(probs)
+                draft_token = draft_tokens[step]
+
+                if decoded_idx == draft_token:
+                    accepted += 1
+                else:
+                    # mismatch → fallback token
+                    next_token = token_predictor_teacher.get_token_by_id(decoded_idx)
+                    prompts[idx].append(next_token)
+                    reconstructed_tokens[idx].append(next_token)
+                    break
+
+            # accept prefix
+            if accepted > 0:
+                accepted_tokens = draft_tokens[:accepted]
+                prompts[idx].extend(accepted_tokens)
+                reconstructed_tokens[idx].extend(accepted_tokens)
+
+    ac_time += time.perf_counter() - t0_ac
+
     reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
     t0_detokenize = time.perf_counter()
     detoken_string = token_predictor.detokenize(reconstructed_tokens)
