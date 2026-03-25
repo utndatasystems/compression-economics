@@ -206,3 +206,6 @@ other_files/llm_compression_plots/loaded_results.json
 
 # job files
 /jobs
+
+# old testing files
+/other_files/llm_testing/*

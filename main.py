@@ -25,7 +25,15 @@ def main():
 
     args = get_main_args()
 
+    # Set Hugging Face token as environment variable if provided
+    if args.HF_token is not None:
+        print("Setting Hugging Face token from command-line argument.")
+        os.environ["HF_TOKEN"] = args.HF_token
+        os.environ["HUGGINGFACE_HUB_TOKEN"] = args.HF_token  
 
+    # delete HF_token from args to avoid saving it in results JSON
+    args.HF_token = None
+    
     if args.mode == "compress":
             # ========================
             # Validate input paths
