@@ -8,14 +8,13 @@ This module provides:
   returns logits or probabilities depending on the encoding scheme.
 """
 
+
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM, MambaForCausalLM
 import os
 import torch
-import math
 from pyroaring import BitMap
 import time
 from peft import PeftModel
-#from transformers.convert_slow_tokenizers_checkpoints_to_fast import args
 
 class TokenDataPreparer:
     def __init__(self, args):
