@@ -5,8 +5,7 @@ CLI entry point for running global-mask compression and decompression experiment
 import json
 import os
 
-
-from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
+from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression, run_global_mask_speculative_decompression
 from src.config import get_main_args
 from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params
 from src.prediction import TokenPredictor
@@ -134,11 +133,15 @@ def main():
             args.input_path = COMPRESSION_FILE
         if not args.output_path:
             args.output_path = DECOMPRESSION_FILE
+        if args.spec_k is not None:
+            spec_k = args.spec_k
+
         # ========================
         # Load binary compression file
         # ========================
         print(f"\nLoading compression file: {args.input_path}")
         args, first_token, bit_string, bitmask_data = load_global_mask_file(args)
+        args.spec_k = spec_k if args.spec_k is not None else None
 
         exp_key = make_key(args)
 
@@ -149,14 +152,27 @@ def main():
         print(f"  First n tokens   : {args.first_n_tokens}")
         print(f"  Use KV cache     : {args.use_kv_cache}")
         print(f"  Batch size       : {args.batch_size}")
+        print(f"  Spec_k           : {args.spec_k}")
 
         print("\n===== Decompress Data =====")
-        _, results, decomp_stats = run_global_mask_decompression(
-            args=args,
-            first_tokens=first_token,
-            bit_string=bit_string,
-            bitmap=bitmask_data
-        )
+        #args.spec_k = 5
+
+        # NEW 
+        if args.spec_k is not None:
+            print(f"\nUsing spec_k = {args.spec_k} for draft token generation.")
+
+            _, results, decomp_stats = run_global_mask_speculative_decompression(
+                args=args,
+                first_tokens=first_token,
+                bit_string=bit_string,
+                bitmap=bitmask_data)
+            
+        else:
+            _, results, decomp_stats = run_global_mask_decompression(
+                args=args,
+                first_tokens=first_token,
+                bit_string=bit_string,
+                bitmap=bitmask_data)
 
         # ========================
         # Save results (JSON stats)
