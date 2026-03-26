@@ -80,12 +80,13 @@ class TokenDataPreparer:
 
         print(f"Total distinct tokens: {len(self.tokens_list)}")
 
-    def _get_data_from_file(self, input_path):
+    def _get_data_from_file(self, input_path, concat_all=True):
         """
         Load data from a given text file.
 
         Args:
             input_path (str): File path to the input text.
+            concat_all (bool): Whether to concatenate all files in a tar archive.
 
         Returns:
             str: Contents of the file as a string.
@@ -96,17 +97,30 @@ class TokenDataPreparer:
         if input_path.endswith(".tar"):
             # Open the tar file
             with tarfile.open(input_path, "r") as tar:
-                # Assume the tar contains only one text file
                 text_members = [m for m in tar.getmembers() if m.isfile()]
+
+                # If no files are found in the tar archive, raise an error.
                 if not text_members:
                     raise ValueError("No files found in the tar archive")
                 
-                # Read the first file inside the tar
-                #TODO: implement option to specify which file to read if multiple files are present in the tar
-                file_obj = tar.extractfile(text_members[0])
-                if file_obj is None:
-                    raise ValueError("Failed to extract file from tar archive")
-                return file_obj.read().decode("utf-8")
+                # If concat_all is True, concatenate the contents of all files in the tar archive.
+                if concat_all:
+                    contents = []
+                    print(f"Concatenating {len(text_members)} files from tar archive...")
+                    for member in text_members:
+                        file_obj = tar.extractfile(member)
+                        if file_obj is None:
+                            raise ValueError(f"Failed to extract {member.name} from tar archive")
+                        contents.append(file_obj.read().decode("utf-8"))
+                    return "\n".join(contents)
+                
+                else:
+                    # Read the first file inside the tar
+                    print(f"Reading {text_members[0].name} from tar archive...")
+                    file_obj = tar.extractfile(text_members[0])
+                    if file_obj is None:
+                        raise ValueError("Failed to extract file from tar archive")
+                    return file_obj.read().decode("utf-8")
         
         else:
             with open(input_path, 'r') as f:
