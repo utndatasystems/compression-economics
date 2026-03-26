@@ -476,6 +476,6 @@ class LLMDecompressor:
     def __init__(self, code):
         self.decoder = ArithmeticDecoder(32, BitInputStream(code))
 
-    def decompress(self, probs) -> int: # Returns one single token at a time (returns the index of the token)
+    def decompress(self, probs: np.ndarray) -> int: # Returns one single token at a time (returns the index of the token)
         cumul = build_cumul(probs)
         return self.decoder.read(cumul, len(probs))
