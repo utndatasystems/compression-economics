@@ -421,6 +421,41 @@ class TokenPredictor:
             else:
                 raise NotImplementedError(f"Encoding method '{self.args.encoding}' is not implemented.")
 
+
+    def generate_draft(self, prompt, k=None):
+        """
+        Generate a sequence of draft tokens for a given prompt, iteratively producing k tokens.
+
+        Args:
+            prompt (list[int]): Token IDs for the input prompt.
+                k (int, optional): Number of speculative tokens to generate. Defaults to self.args.spec_k.
+
+        Returns:
+            list[int]: List of k generated token IDs.
+        """
+
+        if k is None:
+            k = getattr(self.args, "spec_k", 1)
+
+        draft_tokens = []
+        current_prompt = prompt.copy()  # do not modify original prompt
+
+        for _ in range(k):
+            tokens_list, scores, _, _ = self.run_batched_inference([current_prompt], enable_kv_cache=True)
+            scores = scores[0]  # remove batch dimension
+
+            # Select next token
+            if isinstance(scores, torch.Tensor):
+                next_idx = torch.argmax(scores).item()
+                next_token = tokens_list[next_idx]
+            else:
+                next_token = tokens_list[0]  # fallback
+
+            draft_tokens.append(next_token)
+            current_prompt.append(next_token)  # extend prompt for next step
+
+        return draft_tokens
+
     def detokenize(self, token_ids):
         """
         Convert a list of token IDs back to a string.
