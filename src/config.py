@@ -46,6 +46,13 @@ def get_adapter_training_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=16, help="Training batch size")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=2, help="Gradient accumulation steps")
     parser.add_argument("--lr_scheduler_type", type=str, default="constant", help="Learning rate scheduler type")
+
+    # Wandb related
+    parser.add_argument(
+        "--use_wandb",
+        action="store_true",
+        help="Enable Weights & Biases logging"
+    )
     parser.add_argument("--warmup_steps", type=int, default=0, help="Number of warmup steps for learning rate scheduler")
     parser.add_argument("--wandb_project", type=str, default="adapter-finetuning", help="Weights & Biases project name")
 
@@ -58,11 +65,47 @@ def get_adapter_training_args() -> argparse.Namespace:
         help="Whether to fine-tune with adapters or just quantize",
     )
     parser.add_argument(
+        "--use_bnb",
+        action="store_true",
+        help="Use bitsandbytes quantization when loading the base model"
+    )
+
+    parser.add_argument(
         "--quantization_bits",
         type=int,
         default=None,
         choices=[4, 8],
-        help="Quantize model to 4-bit or 8-bit",
+        help="BitsAndBytes quantization bits for base model loading"
+    )
+
+    parser.add_argument(
+        "--bnb_compute_dtype",
+        type=str,
+        default="fp16",
+        choices=["fp32", "fp16", "bf16"],
+        help="Compute dtype used by BitsAndBytes"
+    )
+
+    parser.add_argument(
+        "--bnb_4bit_quant_type",
+        type=str,
+        default="nf4",
+        choices=["nf4", "fp4"],
+        help="4-bit quantization type for BitsAndBytes"
+    )
+
+    parser.add_argument(
+        "--bnb_4bit_use_double_quant",
+        action="store_true",
+        help="Use nested/double quantization for 4-bit BitsAndBytes"
+    )
+
+    parser.add_argument(
+        "--adapter_save_dtype",
+        type=str,
+        default=None,
+        choices=["fp32", "fp16", "bf16"],
+        help="Cast LoRA/VeRA adapter weights to this dtype before saving"
     )
 
     args = parser.parse_args()
@@ -72,6 +115,7 @@ def get_adapter_training_args() -> argparse.Namespace:
             args.save_dir = f"./adapters/{args.adapter_type}"
         elif args.mode == "quantize":
             args.save_dir = "./quantized_models"
+            args.use_bnb = True
         else:
             raise ValueError("save_dir must be specified if adapter_type is None and mode is not quantize")
 
