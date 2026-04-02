@@ -316,8 +316,8 @@ class TokenPredictor:
             return self.tokens_list, logits, data_copy_time, softmax_time
 
         raise NotImplementedError(
-            f"Encoding method '{self.args.encoding}' is not implemented."
-        )
+            f"Encoding method '{self.args.encoding}' is not implemented.")
+    
 
     def run_batched_inference_cachefree(self, prompts):
         """
@@ -325,10 +325,16 @@ class TokenPredictor:
 
         This is intended as a correctness baseline for comparing against the
         cached path in run_batched_inference().
+
+        input: 
+        - prompts: list of tokenized prompts (list of list of ints)
+
+        output:
+        - tokens_list: list of token IDs corresponding to the score columns in the returned tensor.
+        - scores: tensor of shape (batch_size, vocab_size_or_reduced_vocab_size)
+        - data_copy_time: approximate time spent moving tensors between host and device during this call.
+        - softmax_time: time spent computing the softmax (only non-zero when encoding == "AC").
         """
-        if not hasattr(self, "_past_kv"):
-            self._past_kv = None
-            self._cached_context_len = 0
 
         data_copy_time = 0.0
 
@@ -336,37 +342,19 @@ class TokenPredictor:
             if self.args.engine != "transformer":
                 raise ValueError(f"Unsupported engine: {self.args.engine}")
 
-            self._past_kv = None
-            self._cached_context_len = 0
-
             t0_data_copy = time.perf_counter()
             input_ids = torch.tensor(prompts, device=self.device)
+
+            # Assert that dimensions of input_ids are correct --> tensor of shape (batch_size, seq_len)
             assert input_ids.shape[0] == len(prompts), (
-                f"Batch size mismatch: expected {len(prompts)}, got {input_ids.shape[0]}"
-            )
+                f"Batch size mismatch: expected {len(prompts)}, got {input_ids.shape[0]}")
+            assert input_ids.shape[1] > 0, (
+                f"Sequence length mismatch: expected positive length, got {input_ids.shape[1]}")
+
             data_copy_time += time.perf_counter() - t0_data_copy
 
-            if self.args.is_seq2seq:
-                if self.start_token_id is None:
-                    self.start_token_id = 0
+            outputs = self.model(input_ids, use_cache=False)
 
-                decoder_input_ids = torch.full(
-                    (input_ids.shape[0], 1),
-                    self.start_token_id,
-                    dtype=torch.long,
-                    device=self.device,
-                )
-
-                outputs = self.model(
-                    input_ids=input_ids,
-                    decoder_input_ids=decoder_input_ids,
-                    use_cache=False,
-                )
-            else:
-                outputs = self.model(input_ids, use_cache=False)
-
-            self._past_kv = None
-            self._cached_context_len = input_ids.shape[1]
             logits = outputs.logits[:, -1, :]
 
         return self._finalize_batched_scores(logits, data_copy_time)
@@ -522,7 +510,7 @@ class TokenPredictor:
 
         return self._finalize_batched_scores(logits, data_copy_time)
             
-        
+
     def generate_draft(self, prompt, k=None, enable_kv_cache=True):
         """
         Generate k draft tokens autoregressively for a single prompt.
@@ -546,9 +534,8 @@ class TokenPredictor:
         total_softmax_time = 0.0
 
         for _ in range(k):
-            tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference(
-                [current_prompt.copy()],    
-                enable_kv_cache=enable_kv_cache,)
+            tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference_cachefree(
+                [current_prompt.copy()],)
 
             total_data_copy_time += data_copy_time
             total_softmax_time += softmax_time
