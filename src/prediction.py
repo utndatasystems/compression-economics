@@ -200,6 +200,8 @@ class TokenPredictor:
                                                               cache_dir=".cache", 
                                                               torch_dtype=dtype)
                 
+                self.start_token_id = self.model.config.decoder_start_token_id
+                
             elif args.is_mamba:
                 self.model = MambaForCausalLM.from_pretrained(args.model_name,
                                                                 cache_dir=".cache",
@@ -223,8 +225,10 @@ class TokenPredictor:
             print(f"Model {args.model_name} loaded with dtype {self.model.dtype}.")
 
             self.model.eval()
+
             # Move model to device
-            self.model.to(self.device)
+            if self.device is not None:
+                self.model.to(self.device)
         else:
             raise ValueError(f"Unsupported engine: {args.engine}")
 
@@ -279,6 +283,93 @@ class TokenPredictor:
                           for seq in prompts]
         
         return padded_prompts, attention_mask
+
+    def _finalize_batched_scores(self, logits, data_copy_time):
+        """
+        Apply optional vocab reduction and return scores in the configured format.
+        Follows last in run_batched_inference() after obtaining the raw logits from the model.
+
+        Args:
+            logits (torch.Tensor): Tensor of shape (batch_size, vocab_size).
+            data_copy_time (float): Time already spent on host/device transfers.
+
+        Returns:
+            tuple[list[int], torch.Tensor, float, float]:
+                Same return format as run_batched_inference().
+        """
+        if getattr(self, "reduce_tokens", False):
+            logits = logits.index_select(1, self.index_tensor.to(logits.device))
+
+        softmax_time = 0.0
+        if self.args.encoding == "AC":
+            t0_softmax = time.perf_counter()
+            probs = torch.softmax(logits, dim=-1)
+            softmax_time = time.perf_counter() - t0_softmax
+
+            t0_data_copy = time.perf_counter()
+            probs_cpu = probs.cpu()
+            data_copy_time += time.perf_counter() - t0_data_copy
+
+            return self.tokens_list, probs_cpu, data_copy_time, softmax_time
+
+        if self.args.encoding in ("bitpacked", "huffman"):
+            return self.tokens_list, logits, data_copy_time, softmax_time
+
+        raise NotImplementedError(
+            f"Encoding method '{self.args.encoding}' is not implemented."
+        )
+
+    def run_batched_inference_cachefree(self, prompts):
+        """
+        Run a full forward pass for every prompt without reusing KV cache state.
+
+        This is intended as a correctness baseline for comparing against the
+        cached path in run_batched_inference().
+        """
+        if not hasattr(self, "_past_kv"):
+            self._past_kv = None
+            self._cached_context_len = 0
+
+        data_copy_time = 0.0
+
+        with torch.inference_mode():
+            if self.args.engine != "transformer":
+                raise ValueError(f"Unsupported engine: {self.args.engine}")
+
+            self._past_kv = None
+            self._cached_context_len = 0
+
+            t0_data_copy = time.perf_counter()
+            input_ids = torch.tensor(prompts, device=self.device)
+            assert input_ids.shape[0] == len(prompts), (
+                f"Batch size mismatch: expected {len(prompts)}, got {input_ids.shape[0]}"
+            )
+            data_copy_time += time.perf_counter() - t0_data_copy
+
+            if self.args.is_seq2seq:
+                if self.start_token_id is None:
+                    self.start_token_id = 0
+
+                decoder_input_ids = torch.full(
+                    (input_ids.shape[0], 1),
+                    self.start_token_id,
+                    dtype=torch.long,
+                    device=self.device,
+                )
+
+                outputs = self.model(
+                    input_ids=input_ids,
+                    decoder_input_ids=decoder_input_ids,
+                    use_cache=False,
+                )
+            else:
+                outputs = self.model(input_ids, use_cache=False)
+
+            self._past_kv = None
+            self._cached_context_len = input_ids.shape[1]
+            logits = outputs.logits[:, -1, :]
+
+        return self._finalize_batched_scores(logits, data_copy_time)
 
     def run_batched_inference(self, prompts, enable_kv_cache=True):
         """
@@ -370,45 +461,11 @@ class TokenPredictor:
             self._cached_context_len = 0
 
         data_copy_time = 0
+
         with torch.inference_mode():
             if self.args.engine == "transformer":
                 if not enable_kv_cache:
-                    # Disable caching for this call and clear any previously stored state.
-                    self._past_kv = None
-                    self._cached_context_len = 0
-
-                    # Materialize the full prompt batch on the target device.
-                    t0_data_copy = time.perf_counter()
-                    input_ids = torch.tensor(prompts, device=self.device)
-                    data_copy_time += time.perf_counter() - t0_data_copy
-
-                    if self.args.is_seq2seq:
-                        # Seq2seq models need an explicit decoder start token for
-                        # one-step decoding. Fall back to 0 if the config does not
-                        # provide one.
-                        if self.model.config.decoder_start_token_id is None:
-                            self.model.config.decoder_start_token_id = 0
-
-                        decoder_start = self.model.config.decoder_start_token_id
-                        decoder_input_ids = torch.full(
-                            (input_ids.shape[0], 1),
-                            decoder_start,
-                            dtype=torch.long,
-                            device=self.device,
-                        )
-
-                        outputs = self.model(
-                            input_ids=input_ids,
-                            decoder_input_ids=decoder_input_ids,
-                            use_cache=False,
-                        )
-                    else:
-                        # Causal LM path without caching: run the full prompt batch.
-                        outputs = self.model(input_ids, use_cache=False)
-
-                    # No cache is retained in the no-cache path.
-                    self._past_kv = None
-                    self._cached_context_len = input_ids.shape[1]
+                    return self.run_batched_inference_cachefree(prompts)
 
                 else:
                     # If the prompt is now shorter than the cached context, the
@@ -463,33 +520,7 @@ class TokenPredictor:
             else:
                 raise ValueError(f"Unsupported engine: {self.args.engine}")
 
-            # Restrict the vocabulary to the active token subset when token
-            # reduction is enabled.
-            if getattr(self, "reduce_tokens", False):
-                logits = logits.index_select(1, self.index_tensor.to(logits.device))
-
-            softmax_time = 0.0
-            if self.args.encoding == "AC":
-                # Arithmetic coding expects probabilities rather than raw logits.
-                t0_softmax = time.perf_counter()
-                probs = torch.softmax(logits, dim=-1)
-                softmax_time = time.perf_counter() - t0_softmax
-
-                # Move probabilities to CPU for downstream consumption.
-                t0_data_copy = time.perf_counter()
-                probs_cpu = probs.cpu()
-                data_copy_time += time.perf_counter() - t0_data_copy
-
-                return self.tokens_list, probs_cpu, data_copy_time, softmax_time
-
-            elif self.args.encoding in ("bitpacked", "huffman"):
-                # Rank-based encodings operate directly on logits.
-                return self.tokens_list, logits, data_copy_time, softmax_time
-
-            else:
-                raise NotImplementedError(
-                    f"Encoding method '{self.args.encoding}' is not implemented."
-                )
+        return self._finalize_batched_scores(logits, data_copy_time)
             
         
     def generate_draft(self, prompt, k=None, enable_kv_cache=True):
