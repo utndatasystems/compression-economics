@@ -141,8 +141,7 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
     parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length exceeded (only with KV cache)")
     parser.add_argument("--first_n_tokens", type=int, default=10001, help="Number of tokens to compress")
-    parser.add_argument("--use_kv_cache", action="store_true", help="Enable KV cache for compression")
-    parser.set_defaults(use_kv_cache=True)
+    parser.add_argument("--use_kv_cache", type=bool, default=True)
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
     
     # compressiong related
