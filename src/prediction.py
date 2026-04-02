@@ -297,6 +297,10 @@ class TokenPredictor:
             tuple[list[int], torch.Tensor, float, float]:
                 Same return format as run_batched_inference().
         """
+
+        assert isinstance(logits, torch.Tensor), f"Expected logits to be a torch.Tensor, got {type(logits)}"
+        assert logits.dim() == 2, f"Expected logits of shape (batch_size, vocab_size), got {logits.shape}"
+
         if getattr(self, "reduce_tokens", False):
             logits = logits.index_select(1, self.index_tensor.to(logits.device))
 
@@ -354,8 +358,11 @@ class TokenPredictor:
             data_copy_time += time.perf_counter() - t0_data_copy
 
             outputs = self.model(input_ids, use_cache=False)
-
             logits = outputs.logits[:, -1, :]
+
+        # assert that logits is of shape (batch_size, vocab_size).
+        assert logits.dim() == 2, f"Expected logits of shape (batch_size, vocab_size), got {logits.shape}"
+        assert isinstance(logits, torch.Tensor), f"Expected logits to be a torch.Tensor, got {type(logits)}"
 
         return self._finalize_batched_scores(logits, data_copy_time)
 
@@ -511,58 +518,72 @@ class TokenPredictor:
         return self._finalize_batched_scores(logits, data_copy_time)
             
 
-    def generate_draft(self, prompt, k=None, enable_kv_cache=True):
+    def generate_draft(self, prompt, k=None):
+        #ToDo: later implement kv cashing for repeated calls on iterative prompts
         """
-        Generate k draft tokens autoregressively for a single prompt.
+        Generate k draft tokens autoregressively for a batch of prompts of equal length, without using KV caching.
 
         Returns a tuple similar in spirit to run_batched_inference():
             (   draft_tokens,       # List[int], length k
                 draft_scores,       # torch.Tensor, shape (k, vocab_size_or_reduced)
                 data_copy_time,     # float
-                softmax_time,       # float
-            )
+                softmax_time,       # float)
         """
+
+        # assert that input prompt is a list of equal-length lists with token ids
+        print('Prompt for draft generation is:', prompt)
+        assert isinstance(prompt, list) and all(isinstance(row, list) for row in prompt), "Input prompt must be a list of lists of token IDs."
+        
+        # assert all lists in list are of equal length
+        if len(prompt) > 0:
+            prompt_length = len(prompt[0])
+            assert all(len(row) == prompt_length for row in prompt), "All prompts must be of equal length."
 
         if k is None:
             k = getattr(self.args, "spec_k", 1)
 
-        draft_tokens = []
-        scores_per_step = []
+        draft_tokens = [[] for _ in range(len(prompt))] # make it list of lists to store tokens for each batch element separately
+        draft_scores = [[] for _ in range(len(prompt))] # make it list of lists to store scores for each batch element separately
+
         current_prompt = prompt.copy()
 
-        total_data_copy_time = 0.0
-        total_softmax_time = 0.0
+        total_data_copy_time, total_softmax_time = 0.0, 0.0
 
         for _ in range(k):
+            # Run inference for the current prompt and get scores for the next token.
             tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference_cachefree(
-                [current_prompt.copy()],)
+                current_prompt.copy(),)
 
+            # Accumulate timing metrics across steps.
             total_data_copy_time += data_copy_time
             total_softmax_time += softmax_time
 
-            # scores has shape (1, vocab_size_or_reduced)
-            step_scores = scores[0]
-            scores_per_step.append(step_scores)
+            # Select the next token based on the scores
+            if isinstance(scores, torch.Tensor):
+                next_idx = torch.argmax(scores, dim=-1) # get the index of the highest scoring token
+                assert next_idx.shape == (len(prompt),), f"Expected next_idx shape ({len(prompt)},), got {next_idx.shape}"
+                print("Shape of scores:", next_idx.shape) #Shape of scores: torch.Size([1])
+            else: 
+                raise TypeError(f"Expected torch.Tensor for scores, got {type(scores)}")
 
-            if isinstance(step_scores, torch.Tensor):
-                next_idx = torch.argmax(step_scores).item()
-            else:
-                raise TypeError(f"Expected torch.Tensor for scores, got {type(step_scores)}")
+            # Get the next tokens for each batch element, all batches share tokens_list
+            next_tokens = [tokens_list[next] for next in next_idx.flatten().tolist()] # convert to list of ints
+            print(next_tokens) # [2, 837]
 
-            next_token = tokens_list[next_idx]
-            draft_tokens.append(int(next_token))
-            current_prompt.append(int(next_token))
+            current_prompt = [row + [next_token] for row, next_token in zip(current_prompt, next_tokens)]
+            print("Current prompt after appending next tokens:", current_prompt) # [[1, 2, 3, 2], [4, 5, 6, 837]]
+        
+            #TODO: currently we only return the final draft tokens after k steps, but we could also store the intermediate scores and tokens at each step if needed for analysis
+            for i, next_token in enumerate(next_tokens):
+                draft_tokens[i].append(next_token)
+                draft_scores[i].append(scores.cpu()) # store scores for each batch element separately
 
-        if len(scores_per_step) > 0:
-            draft_scores = torch.stack(scores_per_step, dim=0)
-        else:
-            if self.args.encoding == "AC":
-                draft_scores = torch.empty((0, len(self.tokens_list)), dtype=torch.float32)
-            else:
-                draft_scores = torch.empty((0, len(self.tokens_list)), device=self.device)
-
+        
         return draft_tokens, draft_scores, total_data_copy_time, total_softmax_time
 
+
+    def accept_reject_loop(self):
+        pass
 
     def generate_draft_old(self, prompt, k=None):
         """
@@ -657,3 +678,55 @@ class TokenPredictor:
             if p.requires_grad:
                 trainable_bytes += bytes_
         return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
+    
+
+
+if __name__ == "__main__":
+    # initiate a TokenPredictor with dummy args and bitmap data for testing
+
+    dummy_predictor = TokenPredictor(args=type("Args", (object,), {
+        "model_name": "gpt2",
+        "engine": "transformer",
+        "reduce_tokens": True,
+        "encoding": "AC",
+        "is_seq2seq": False,
+        "is_mamba": False,
+        "lora_path": None,
+    })(), bitmap_data=None)
+
+    # test run_batched_inference with dummy input
+    dummy_prompts = [[1, 2, 3], [4, 5, 6]] # batch of 2 prompts, each of length 3
+
+    tokens_list, scores, data_copy_time, softmax_time = dummy_predictor.run_batched_inference(dummy_prompts)
+
+    print("Tokens list shape:", len(tokens_list)) # is list 
+    print("Most likely next token ids:", [tokens_list[torch.argmax(scores[i]).item()] for i in range(scores.shape[0])])
+    print("Scores shape:", scores.shape)
+    print("Data copy time:", data_copy_time)
+    print("Softmax time:", softmax_time)    
+    print("\n")
+
+
+    # run cashfree inference for testing
+    tokens_list_cf, scores_cf, data_copy_time_cf, softmax_time_cf = dummy_predictor.run_batched_inference_cachefree(dummy_prompts)
+    print("Cashfree - Tokens list shape:", len(tokens_list_cf)) # is list
+    print("Cashfree - Most likely next token ids:", [tokens_list_cf[torch.argmax(scores_cf[i]).item()] for i in range(scores_cf.shape[0])])
+    print("Cashfree - Scores shape:", scores_cf.shape)
+    print("Cashfree - Data copy time:", data_copy_time_cf)
+    print("Cashfree - Softmax time:", softmax_time_cf)
+    print("\n")
+
+    # Test generate_draft with dummy input
+    draft_tokens, draft_scores, total_data_copy_time, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=1)
+    # works properly for k=1 without draft_scores
+
+    print("Draft tokens:", len(draft_tokens))
+    print("Draft scores shape:", draft_scores.shape)
+
+
+    # Test generate_draft with dummy input for k > 1
+    draft_tokens_k, draft_scores_k, total_data_copy_time_k, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=2)
+
+    print("Draft tokens for k=2:", len(draft_tokens_k))
+    print("Draft scores shape for k=2:", draft_scores_k.shape)
+
