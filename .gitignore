@@ -5,7 +5,6 @@ temp/*
 adapters/*
 quantized_models/*
 experiments/*
-experiments/luisa/survey.sh
 
 logs/*
 *.job
@@ -210,3 +209,8 @@ other_files/llm_compression_plots/loaded_results.json
 
 # old testing files
 /other_files/llm_testing/*
+compression_results.json
+other_files/llm_compression_plots/loaded_results.json
+data_remote
+compression_results.json
+other_files/llm_compression_plots/loaded_results.json
