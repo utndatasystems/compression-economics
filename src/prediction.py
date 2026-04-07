@@ -518,41 +518,66 @@ class TokenPredictor:
         return self._finalize_batched_scores(logits, data_copy_time)
             
 
-    def generate_draft(self, prompt, k=None):
+    def generate_draft(self, prompt, k=None, enable_kv_cache=False, full_draft=False):                 
         #ToDo: later implement kv cashing for repeated calls on iterative prompts
         """
-        Generate k draft tokens autoregressively for a batch of prompts of equal length, without using KV caching.
+        Generate k draft tokens autoregressively for a batch of equal-length tokenized prompts.
 
-        Returns a tuple similar in spirit to run_batched_inference():
-            (   draft_tokens,       # List[int], length k
-                draft_scores,       # torch.Tensor, shape (k, vocab_size_or_reduced)
-                data_copy_time,     # float
-                softmax_time,       # float)
+        Args:
+            prompts: List[List[int]] of shape (batch_size, prompt_len)
+            k: Number of draft steps. Defaults to self.args.spec_k or 1.
+            enable_kv_cache: Reserved for future use.
+            full_draft: If True, also return the extended prompts.
+
+        Returns:
+            draft_tokens: List[List[int]] of shape (batch_size, k)
+            draft_scores: torch.Tensor of shape (k, batch_size, vocab_size)
+            data_copy_time: float
+            softmax_time: float
+            current_prompts: only if full_draft=True
         """
 
-        # assert that input prompt is a list of equal-length lists with token ids
-        print('Prompt for draft generation is:', prompt)
+        if k is None:
+            k = getattr(self.args, "spec_k", 1)
+        if k <= 0:
+            raise ValueError(f"k must be >= 1, got {k}")
+
         assert isinstance(prompt, list) and all(isinstance(row, list) for row in prompt), "Input prompt must be a list of lists of token IDs."
+        
+        # If k=1, we can just call the existing inference method once
+        if k == 1:
+            tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference_cachefree(
+                [row[:] for row in prompt])
+            next_idx = torch.argmax(scores, dim=-1)
+            draft_tokens = [[tokens_list[idx.item()]] for idx in next_idx]
+            draft_scores = scores.unsqueeze(0).detach().cpu()   # shape (1, B, V)
+
+            if full_draft:
+                current_prompt = [row + [tok[0]] for row, tok in zip(prompt, draft_tokens)]
+                return draft_tokens, draft_scores, data_copy_time, softmax_time, current_prompt
+
+            # assert correct types and shapes of outputs
+            assert isinstance(draft_tokens, list) and all(isinstance(row, list) for row in draft_tokens), "Draft tokens must be a list of lists of token IDs."
+            assert draft_scores.shape == (1, len(prompt), len(self.tokens_list)), f"Expected draft_scores shape (1, {len(prompt)}, {len(self.tokens_list)}), got {draft_scores.shape}"
+
+            return draft_tokens, draft_scores, data_copy_time, softmax_time
         
         # assert all lists in list are of equal length
         if len(prompt) > 0:
             prompt_length = len(prompt[0])
             assert all(len(row) == prompt_length for row in prompt), "All prompts must be of equal length."
 
-        if k is None:
-            k = getattr(self.args, "spec_k", 1)
-
         draft_tokens = [[] for _ in range(len(prompt))] # make it list of lists to store tokens for each batch element separately
-        draft_scores = [[] for _ in range(len(prompt))] # make it list of lists to store scores for each batch element separately
-
-        current_prompt = prompt.copy()
+        draft_scores = torch.zeros((k, len(prompt), len(self.tokens_list)), device=self.device) # preallocate tensor for scores with shape (k, batch_size, vocab_size_or_reduced_vocab_size)
+        
+        current_prompt = [row[:] for row in prompt]
 
         total_data_copy_time, total_softmax_time = 0.0, 0.0
 
-        for _ in range(k):
+        for ki in range(k):
             # Run inference for the current prompt and get scores for the next token.
-            tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference_cachefree(
-                current_prompt.copy(),)
+            tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference_cachefree([row[:] for row in current_prompt],)
+            assert scores.shape == (len(prompt), len(self.tokens_list)), f"Expected scores shape ({len(prompt)}, {len(self.tokens_list)}), got {scores.shape}" # torch.Size([2, 50257]) 
 
             # Accumulate timing metrics across steps.
             total_data_copy_time += data_copy_time
@@ -562,63 +587,244 @@ class TokenPredictor:
             if isinstance(scores, torch.Tensor):
                 next_idx = torch.argmax(scores, dim=-1) # get the index of the highest scoring token
                 assert next_idx.shape == (len(prompt),), f"Expected next_idx shape ({len(prompt)},), got {next_idx.shape}"
-                print("Shape of scores:", next_idx.shape) #Shape of scores: torch.Size([1])
             else: 
                 raise TypeError(f"Expected torch.Tensor for scores, got {type(scores)}")
 
             # Get the next tokens for each batch element, all batches share tokens_list
             next_tokens = [tokens_list[next] for next in next_idx.flatten().tolist()] # convert to list of ints
-            print(next_tokens) # [2, 837]
+            assert len(next_tokens) == len(prompt), f"Expected next_tokens length {len(prompt)}, got {len(next_tokens)}"
 
             current_prompt = [row + [next_token] for row, next_token in zip(current_prompt, next_tokens)]
-            print("Current prompt after appending next tokens:", current_prompt) # [[1, 2, 3, 2], [4, 5, 6, 837]]
-        
-            #TODO: currently we only return the final draft tokens after k steps, but we could also store the intermediate scores and tokens at each step if needed for analysis
+
             for i, next_token in enumerate(next_tokens):
                 draft_tokens[i].append(next_token)
-                draft_scores[i].append(scores.cpu()) # store scores for each batch element separately
+            
+            draft_scores[ki] = scores.to(self.device)  # move to cpu for easier handling later
 
+        # Wrap draft tokens in one additional layer for each k step, so that the output is a list of lists of lists: batch_size x k x tokens_per_step
+        draft_tokens = [[draft_tokens[i][j] for j in range(k)] for i in range(len(prompt))]
         
-        return draft_tokens, draft_scores, total_data_copy_time, total_softmax_time
+        assert len(draft_tokens) == len(prompt), f"Expected draft_tokens length {len(prompt)}, got {len(draft_tokens)}"
+        assert draft_scores.shape == (k, len(prompt), len(self.tokens_list)), f"Expected draft_scores shape ({k}, {len(prompt)}, {len(self.tokens_list)}), got {draft_scores.shape}"             #assert that shape is k, B, V 
+
+        if full_draft:
+            return draft_tokens, draft_scores, total_data_copy_time, total_softmax_time, current_prompt
+        else:
+            return draft_tokens, draft_scores, total_data_copy_time, total_softmax_time
 
 
-    def accept_reject_loop(self):
-        pass
-
-    def generate_draft_old(self, prompt, k=None):
+    def greedy_next_token(self, prompt, enable_kv_cache=True):
         """
-        Generate a sequence of draft tokens for a given prompt, iteratively producing k tokens.
+        Predict one next token for a single prompt.
 
         Args:
-            prompt (list[int]): Token IDs for the input prompt.
-                k (int, optional): Number of speculative tokens to generate. Defaults to self.args.spec_k.
+            prompt: List[int]
+        Returns:
+            next_token: int
+            scores: torch.Tensor of shape (vocab_size_or_reduced_vocab_size,)
+            data_copy_time: float
+            softmax_time: float
+        """
+        tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference(
+            [prompt],
+            enable_kv_cache=enable_kv_cache,)
+
+        if not isinstance(scores, torch.Tensor):
+            raise TypeError(f"Expected torch.Tensor for scores, got {type(scores)}")
+
+        next_idx = torch.argmax(scores[0]).item()
+        next_token = tokens_list[next_idx]
+
+        return next_token, scores[0], data_copy_time, softmax_time
+
+
+    def accept_reject_loop(self, base_prompts, draft_tokens):
+        """
+        Verify drafted tokens against the verifier model. Each batch element is processed independently in a greedy accept-reject loop.
+
+        Args:
+            base_prompts: List[List[int]] of shape (batch_size, prompt_len)
+                The prompts BEFORE draft generation started.
+            draft_tokens: List[List[int]] of shape (batch_size, k)
+                The drafted tokens for each batch element.
 
         Returns:
-            list[int]: List of k generated token IDs.
+            accepted_tokens: List[List[int]]
+                Longest accepted prefix for each batch item.
+            accepted_lengths: List[int]
+                Number of accepted draft tokens per batch item.
+            updated_prompts: List[List[int]]
+                Prompt after applying accepted prefix and, if rejection occurs,
+                appending the verifier token at the rejection position.
+            rejected: List[bool]
+                True if that batch item had a rejection.
+            total_data_copy_time: float
+            total_softmax_time: float
         """
+        if not isinstance(base_prompts, list) or not all(isinstance(p, list) for p in base_prompts):
+            raise TypeError("base_prompts must be a list of token-id lists")
 
+        if not isinstance(draft_tokens, list) or not all(isinstance(p, list) for p in draft_tokens):
+            raise TypeError("draft_tokens must be a list of token-id lists")
+
+        if len(base_prompts) != len(draft_tokens):
+            raise ValueError(
+                f"Batch size mismatch: got {len(base_prompts)} prompts and {len(draft_tokens)} draft rows"
+            )
+
+        batch_size = len(base_prompts)
+
+        accepted_tokens = [[] for _ in range(batch_size)]
+        accepted_lengths = [0 for _ in range(batch_size)]
+        updated_prompts = [p[:] for p in base_prompts]
+        rejected = [False for _ in range(batch_size)]
+
+        total_data_copy_time = 0.0
+        total_softmax_time = 0.0
+
+        for i in range(batch_size):
+            prompt_i = base_prompts[i][:]
+            draft_i = draft_tokens[i]
+
+            # Important: verifier cache is per sequence here, so reset for each batch item.
+            self.reset_kv_cache()
+
+            for j, drafted_tok in enumerate(draft_i):
+                pred_tok, _, data_copy_time, softmax_time = self.greedy_next_token(
+                    prompt_i,
+                    enable_kv_cache=True,
+                )
+                total_data_copy_time += data_copy_time
+                total_softmax_time += softmax_time
+
+                if pred_tok == drafted_tok:
+                    # Accept this drafted token
+                    accepted_tokens[i].append(drafted_tok)
+                    accepted_lengths[i] += 1
+                    prompt_i.append(drafted_tok)
+                else:
+                    # Reject at first mismatch:
+                    # append verifier token instead, then stop for this batch item
+                    rejected[i] = True
+                    prompt_i.append(pred_tok)
+                    break
+
+            updated_prompts[i] = prompt_i
+
+        return (
+            accepted_tokens,
+            accepted_lengths,
+            updated_prompts,
+            rejected,
+            total_data_copy_time,
+            total_softmax_time,
+        )
+
+    def speculative_decode(self, prompts, max_new_tokens, k=None):
+        """
+        Simple speculative decoding loop with restart-on-rejection.
+
+        Args:
+            prompts: List[List[int]]
+            max_new_tokens: int
+            k: draft length per cycle
+
+        Returns:
+            final_prompts: List[List[int]]
+            generated_tokens: List[List[int]]   # only newly generated tokens
+        """
         if k is None:
             k = getattr(self.args, "spec_k", 1)
+        if k <= 0:
+            raise ValueError(f"k must be >= 1, got {k}")
+        if max_new_tokens <= 0:
+            raise ValueError(f"max_new_tokens must be >= 1, got {max_new_tokens}")
 
-        draft_tokens = []
-        current_prompt = prompt.copy()  # do not modify original prompt
+        batch_size = len(prompts)
+        current_prompts = [p[:] for p in prompts]
+        original_lengths = [len(p) for p in prompts]
 
-        for _ in range(k):
-            tokens_list, scores, _, _ = self.run_batched_inference([current_prompt], enable_kv_cache=True)
-            scores = scores[0]  # remove batch dimension
-            #TODO: check if removal of batch dimension is correct
+        generated_tokens = [[] for _ in range(batch_size)]
 
-            # Select next token
-            if isinstance(scores, torch.Tensor):
-                next_idx = torch.argmax(scores).item()
-                next_token = tokens_list[next_idx]
-            else:
-                next_token = tokens_list[0]  # fallback
+        while True:
+            # Stop when every batch element has enough newly generated tokens
+            done = all(len(g) >= max_new_tokens for g in generated_tokens)
+            if done:
+                break
 
-            draft_tokens.append(next_token)
-            current_prompt.append(next_token)  # extend prompt for next step
+            # Optionally shrink k for sequences close to completion
+            remaining = [max_new_tokens - len(g) for g in generated_tokens]
+            current_k = min(k, max(remaining))
 
-        return draft_tokens
+            # 1. Draft
+            draft_tokens, _, _, _ = self.generate_draft(
+                current_prompts,
+                k=current_k,
+                enable_kv_cache=False,
+                full_draft=False,
+            )
+
+            # 2. Verify + restart-on-reject
+            (
+                accepted_tokens,
+                accepted_lengths,
+                updated_prompts,
+                rejected,
+                _,
+                _,
+            ) = self.accept_reject_loop(current_prompts, draft_tokens)
+
+            current_prompts = updated_prompts
+
+            # 3. Refresh generated_tokens from prompt deltas
+            for i in range(batch_size):
+                new_tokens = current_prompts[i][original_lengths[i]:]
+                generated_tokens[i] = new_tokens[:max_new_tokens]
+
+        # Trim final prompts in case we overshot
+        final_prompts = []
+        for i in range(batch_size):
+            final_prompt = prompts[i] + generated_tokens[i]
+            final_prompts.append(final_prompt)
+
+        return final_prompts, generated_tokens
+
+    def accept_reject_loop_old(self, full_prompt, k):
+        # write an accept-reject loop for speculative decoding 
+        # TODO: return length of longest accepted sequence as well as the accepted tokens for each batch element, so that we can compare to the draft tokens and scores later on
+        # TODO: in case of rejection, start new
+
+        # if k not set, set it to self.args.spec_k or 1
+        if k is None:
+            k = getattr(self.args, "spec_k", 1)
+        if k <= 0:
+            raise ValueError(f"k must be >= 1, got {k}")
+        
+        # 1. For each step in the full_draft, compare the draft token to the token that would be generated by the model if we were to decode one token at a time with KV caching.
+        drafted_tokens = full_prompt[-k:] # get the last k tokens from the full prompt, which are the drafted tokens
+
+        # 2. Collapse k dimension into batch dimension and run the model with KV caching on the full prompt up to the point where the draft starts, then step through one token at a time and compare to the drafted tokens.
+        # If any token doesn't match, reject the entire draft and return False. If all tokens match, return True.
+
+        drafted_tokens = [token for sublist in drafted_tokens for token in sublist] # flatten the drafted tokens into a single list
+    
+        print(f"Drafted tokens for accept-reject loop: {drafted_tokens}")
+
+        tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference(drafted_tokens)
+
+        if isinstance(scores, torch.Tensor):
+            next_idx = torch.argmax(scores, dim=-1) # get the index of the highest scoring token
+            next_tokens = [tokens_list[next] for next in next_idx.flatten().tolist()] # convert to list of ints
+        else:
+            raise TypeError(f"Expected torch.Tensor for scores, got {type(scores)}")
+        
+        if next_tokens == drafted_tokens:
+            print("Accepting draft.")
+            return True
+        else:            
+            print("Rejecting draft")
+
+            return False
 
     def detokenize(self, token_ids):
         """
@@ -678,24 +884,15 @@ class TokenPredictor:
             if p.requires_grad:
                 trainable_bytes += bytes_
         return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
-    
+
+    def reset_kv_cache(self):
+        # Helper method to reset the KV cache state, e.g. when the prompt context is shortened.
+        self._past_kv = None
+        self._cached_context_len = 0
 
 
-if __name__ == "__main__":
-    # initiate a TokenPredictor with dummy args and bitmap data for testing
-
-    dummy_predictor = TokenPredictor(args=type("Args", (object,), {
-        "model_name": "gpt2",
-        "engine": "transformer",
-        "reduce_tokens": True,
-        "encoding": "AC",
-        "is_seq2seq": False,
-        "is_mamba": False,
-        "lora_path": None,
-    })(), bitmap_data=None)
-
-    # test run_batched_inference with dummy input
-    dummy_prompts = [[1, 2, 3], [4, 5, 6]] # batch of 2 prompts, each of length 3
+def test_run_batched_inferences():
+    dummy_predictor, dummy_prompts = init_test_setting()
 
     tokens_list, scores, data_copy_time, softmax_time = dummy_predictor.run_batched_inference(dummy_prompts)
 
@@ -716,17 +913,247 @@ if __name__ == "__main__":
     print("Cashfree - Softmax time:", softmax_time_cf)
     print("\n")
 
-    # Test generate_draft with dummy input
-    draft_tokens, draft_scores, total_data_copy_time, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=1)
-    # works properly for k=1 without draft_scores
 
-    print("Draft tokens:", len(draft_tokens))
-    print("Draft scores shape:", draft_scores.shape)
+def test_generate_draft():
+    dummy_predictor, dummy_prompts = init_test_setting()
+
+    draft_tokens, draft_scores, total_data_copy_time, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=3)
+
+    print("Draft tokens:", draft_tokens)
+    print("Draft scores shape:", draft_scores.shape) # should be (k, batch_size, vocab_size_or_reduced_vocab_size)
+    print("Total data copy time for draft generation:", total_data_copy_time)
+    print("Total softmax time for draft generation:", total_softmax_time)
 
 
-    # Test generate_draft with dummy input for k > 1
-    draft_tokens_k, draft_scores_k, total_data_copy_time_k, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=2)
+def init_test_setting():
+    # initiate a TokenPredictor with dummy args and bitmap data for testing
+    dummy_predictor = TokenPredictor(args=type("Args", (object,), {
+        "model_name": "gpt2",
+        "engine": "transformer",
+        "reduce_tokens": True,
+        "encoding": "AC",
+        "is_seq2seq": False,
+        "is_mamba": False,
+        "lora_path": None,
+        "spec_k": 3,
+    })(), bitmap_data=None)
 
-    print("Draft tokens for k=2:", len(draft_tokens_k))
-    print("Draft scores shape for k=2:", draft_scores_k.shape)
+    # batch of 2 prompts, each of length 3
+    dummy_prompts = [[1, 2, 3], [4, 5, 6]]
 
+    return dummy_predictor, dummy_prompts
+
+
+def test_run_batched_inferences():
+    dummy_predictor, dummy_prompts = init_test_setting()
+
+    tokens_list, scores, data_copy_time, softmax_time = dummy_predictor.run_batched_inference(dummy_prompts)
+
+    print("Tokens list shape:", len(tokens_list))
+    print("Most likely next token ids:", [tokens_list[torch.argmax(scores[i]).item()] for i in range(scores.shape[0])])
+    print("Scores shape:", scores.shape)
+    print("Data copy time:", data_copy_time)
+    print("Softmax time:", softmax_time)
+    print("\n")
+
+    # run cachefree inference for testing
+    tokens_list_cf, scores_cf, data_copy_time_cf, softmax_time_cf = dummy_predictor.run_batched_inference_cachefree(dummy_prompts)
+    print("Cachefree - Tokens list shape:", len(tokens_list_cf))
+    print("Cachefree - Most likely next token ids:", [tokens_list_cf[torch.argmax(scores_cf[i]).item()] for i in range(scores_cf.shape[0])])
+    print("Cachefree - Scores shape:", scores_cf.shape)
+    print("Cachefree - Data copy time:", data_copy_time_cf)
+    print("Cachefree - Softmax time:", softmax_time_cf)
+    print("\n")
+
+
+def test_generate_draft():
+    dummy_predictor, dummy_prompts = init_test_setting()
+
+    draft_tokens, draft_scores, total_data_copy_time, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=3)
+
+    print("Draft tokens:", draft_tokens)
+    print("Draft scores shape:", draft_scores.shape)  # should be (k, batch_size, vocab_size_or_reduced_vocab_size)
+    print("Total data copy time for draft generation:", total_data_copy_time)
+    print("Total softmax time for draft generation:", total_softmax_time)
+
+    assert isinstance(draft_tokens, list)
+    assert len(draft_tokens) == len(dummy_prompts)
+    assert all(len(row) == 3 for row in draft_tokens), f"Expected 3 draft tokens per batch item, got {draft_tokens}"
+    assert isinstance(draft_scores, torch.Tensor)
+    assert draft_scores.shape[0] == 3
+    assert draft_scores.shape[1] == len(dummy_prompts)
+
+    print("test_generate_draft passed.\n")
+
+
+def test_reset_kv_cache():
+    dummy_predictor, dummy_prompts = init_test_setting()
+
+    # populate cache first
+    _ = dummy_predictor.run_batched_inference(dummy_prompts, enable_kv_cache=True)
+
+    assert hasattr(dummy_predictor, "_past_kv")
+    assert hasattr(dummy_predictor, "_cached_context_len")
+
+    print("Before reset:")
+    print("Has _past_kv:", dummy_predictor._past_kv is not None)
+    print("_cached_context_len:", dummy_predictor._cached_context_len)
+
+    dummy_predictor.reset_kv_cache()
+
+    print("After reset:")
+    print("Has _past_kv:", dummy_predictor._past_kv is not None)
+    print("_cached_context_len:", dummy_predictor._cached_context_len)
+
+    assert dummy_predictor._past_kv is None
+    assert dummy_predictor._cached_context_len == 0
+
+    print("test_reset_kv_cache passed.\n")
+
+
+def test_greedy_next_token():
+    dummy_predictor, dummy_prompts = init_test_setting()
+
+    prompt = dummy_prompts[0]
+
+    next_token, score_vec, data_copy_time, softmax_time = dummy_predictor.greedy_next_token(
+        prompt,
+        enable_kv_cache=False,
+    )
+
+    print("Prompt:", prompt)
+    print("Greedy next token:", next_token)
+    print("Score vector shape:", score_vec.shape)
+    print("Data copy time:", data_copy_time)
+    print("Softmax time:", softmax_time)
+
+    assert isinstance(next_token, int)
+    assert isinstance(score_vec, torch.Tensor)
+    assert score_vec.dim() == 1
+
+    print("test_greedy_next_token passed.\n")
+
+
+def test_accept_reject_loop():
+    dummy_predictor, dummy_prompts = init_test_setting()
+
+    # First generate a draft from the same model.
+    # Since draft + verifier are currently the same model,
+    # this will often accept all drafted tokens.
+    draft_tokens, draft_scores, draft_data_copy_time, draft_softmax_time = dummy_predictor.generate_draft(
+        dummy_prompts,
+        k=3,
+    )
+
+    print("Input prompts:", dummy_prompts)
+    print("Draft tokens:", draft_tokens)
+
+    (
+        accepted_tokens,
+        accepted_lengths,
+        updated_prompts,
+        rejected,
+        total_data_copy_time,
+        total_softmax_time,
+    ) = dummy_predictor.accept_reject_loop(dummy_prompts, draft_tokens)
+
+    print("Accepted tokens:", accepted_tokens)
+    print("Accepted lengths:", accepted_lengths)
+    print("Updated prompts:", updated_prompts)
+    print("Rejected flags:", rejected)
+    print("Verifier data copy time:", total_data_copy_time)
+    print("Verifier softmax time:", total_softmax_time)
+
+    assert isinstance(accepted_tokens, list)
+    assert isinstance(accepted_lengths, list)
+    assert isinstance(updated_prompts, list)
+    assert isinstance(rejected, list)
+
+    assert len(accepted_tokens) == len(dummy_prompts)
+    assert len(accepted_lengths) == len(dummy_prompts)
+    assert len(updated_prompts) == len(dummy_prompts)
+    assert len(rejected) == len(dummy_prompts)
+
+    for i in range(len(dummy_prompts)):
+        assert accepted_lengths[i] == len(accepted_tokens[i])
+        assert len(updated_prompts[i]) >= len(dummy_prompts[i])
+
+    print("test_accept_reject_loop passed.\n")
+
+
+def test_accept_reject_loop_forced_rejection():
+    dummy_predictor, dummy_prompts = init_test_setting()
+
+    draft_tokens, _, _, _ = dummy_predictor.generate_draft(dummy_prompts, k=3)
+
+    # Force a mismatch in the first batch element by corrupting the first draft token
+    forced_draft_tokens = [row[:] for row in draft_tokens]
+    forced_draft_tokens[0][0] = forced_draft_tokens[0][0] + 1
+
+    print("Original draft tokens:", draft_tokens)
+    print("Forced draft tokens:", forced_draft_tokens)
+
+    (
+        accepted_tokens,
+        accepted_lengths,
+        updated_prompts,
+        rejected,
+        total_data_copy_time,
+        total_softmax_time,
+    ) = dummy_predictor.accept_reject_loop(dummy_prompts, forced_draft_tokens)
+
+    print("Accepted tokens:", accepted_tokens)
+    print("Accepted lengths:", accepted_lengths)
+    print("Updated prompts:", updated_prompts)
+    print("Rejected flags:", rejected)
+
+    assert rejected[0] is True, "Expected forced rejection in batch element 0"
+    assert accepted_lengths[0] == 0, f"Expected zero accepted tokens before first forced mismatch, got {accepted_lengths[0]}"
+
+    print("test_accept_reject_loop_forced_rejection passed.\n")
+
+
+def test_speculative_decode():
+    dummy_predictor, dummy_prompts = init_test_setting()
+
+    max_new_tokens = 5
+
+    final_prompts, generated_tokens = dummy_predictor.speculative_decode(
+        dummy_prompts,
+        max_new_tokens=max_new_tokens,
+        k=3,
+    )
+
+    print("Original prompts:", dummy_prompts)
+    print("Generated tokens:", generated_tokens)
+    print("Final prompts:", final_prompts)
+
+    assert isinstance(final_prompts, list)
+    assert isinstance(generated_tokens, list)
+    assert len(final_prompts) == len(dummy_prompts)
+    assert len(generated_tokens) == len(dummy_prompts)
+
+    for i in range(len(dummy_prompts)):
+        assert len(generated_tokens[i]) == max_new_tokens, (
+            f"Expected {max_new_tokens} generated tokens, got {len(generated_tokens[i])}"
+        )
+        assert final_prompts[i] == dummy_prompts[i] + generated_tokens[i], (
+            f"Final prompt mismatch for batch element {i}"
+        )
+
+    print("test_speculative_decode passed.\n")
+
+
+if __name__ == "__main__":
+    # Existing tests
+    # test_run_batched_inferences()
+    # test_generate_draft()
+
+    # New tests
+    test_reset_kv_cache()
+    
+    #test_greedy_next_token()
+    #test_generate_draft()
+    #test_accept_reject_loop()
+    #test_accept_reject_loop_forced_rejection()
+    #test_speculative_decode()
