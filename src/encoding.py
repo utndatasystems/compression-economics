@@ -289,9 +289,9 @@ class ArithmeticDecoder(ArithmeticCoderBase):
             self.code = self.code << 1 | self.read_code_bit()
 
 
-    # Decodes the next symbol based on the given frequency table and returns it.
-    # Also updates this arithmetic coder's state and may read in some bits.
     def read(self, cumul, alphabet_size):
+        """Decodes the next symbol based on the given frequency table and returns it.
+            Also updates this arithmetic coder's state and may read in some bits."""
     #		if not isinstance(freqs, CheckedFrequencyTable):
     #			freqs = CheckedFrequencyTable(freqs)
 
@@ -479,3 +479,4 @@ class LLMDecompressor:
     def decompress(self, probs: np.ndarray) -> int: # Returns one single token at a time (returns the index of the token)
         cumul = build_cumul(probs)
         return self.decoder.read(cumul, len(probs))
+    
