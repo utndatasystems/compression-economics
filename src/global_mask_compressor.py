@@ -12,6 +12,7 @@ bitmap to reconstruct tokens from the bitstream.
 from src.encoding import LLMCompressor, LLMDecompressor
 from src.prediction import TokenDataPreparer, TokenPredictor
 from itertools import chain
+
 import numpy as np
 import time
 import torch
@@ -355,7 +356,7 @@ def run_global_mask_decompression(
 
 
 
-def run_global_mask_speculative_decompression(args, first_tokens, bit_string, bitmap):
+def run_global_mask_speculative_decompression_old(args, first_tokens, bit_string, bitmap):
     """
     Run speculative decompression using a global token mask.
     """
@@ -418,17 +419,16 @@ def run_global_mask_speculative_decompression(args, first_tokens, bit_string, bi
         t0_inference = time.perf_counter()
 
         # STEP 1: Draft generation with student for "active" batches
-
-        #draft_tokens_batch = [
-        #    list(token_predictor_student.generate_draft(prompts[i], k=args.spec_k))
-        #    for i in active_indices]
+        draft_tokens_batch = [
+            list(token_predictor_student.generate_draft(prompts[i], k=args.spec_k))
+            for i in active_indices]
         
         #draft_tokens_batch = [
         #    list(token_predictor_student.generate_draft(prompts[i], k=args.spec_k)[0])
         #    for i in active_indices] # 192 = 32 * 6 
 
-        draft_tokens_batch = [list(token_predictor_student.run_batched_inference(prompts[i], enable_kv_cache=False))
-                                for i in active_indices]
+        #draft_tokens_batch = [list(token_predictor_student.run_batched_inference(prompts[i], enable_kv_cache=False))
+        #                        for i in active_indices]
         
             
         # STEP 2: Build teacher inputs correctly
@@ -569,287 +569,212 @@ def run_global_mask_speculative_decompression(args, first_tokens, bit_string, bi
     }
 
 
+def run_global_mask_speculative_decompression_v1(args, first_tokens, bit_string, bitmap):
+    """
+    Run speculative decompression using:
+      - TokenPredictor.generate_draft() for student drafting
+      - TokenPredictor.run_batched_inference() for teacher verification
 
+    This version fixes the token-space bug in the original implementation:
+    decompressor outputs a column index into the returned score tensor, which
+    must be mapped through tokens_list to recover the actual token id.
+    """
 
-     
-
-def other_function():
-    # Iterate through all tokens in chunk length 
-    for token_idx in range(chunk_length):
-        print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
-
-        # Truncate prompts to retain_tokens if needed
-        if len(prompts[0]) >= args.context_length:
-            prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
-
-        input_tokens_cnt += args.batch_size * len(prompts[0])
-        t0_inference = time.perf_counter()
-
-        # STEP 1: Draft generation
-        draft_tokens_batch = [
-            token_predictor_student.generate_draft(prompt, k=args.spec_k)
-            for prompt in prompts]
-        
-        print(f'draft_tokens_batch shape: {len(draft_tokens_batch)} x {len(draft_tokens_batch[0])}')  # Should be [B, spec_k] = draft_tokens_batch shape: 32 x 5
-        # Shape is 32 x 5 = Batch x spec_k, but we want to ensure it's a list of lists for the next steps
-        print(f'Generated draft tokens {draft_tokens_batch[0]}')  # Generated draft tokens [13, 198, 198, 464, 1708]
-
-        # Ensure draft_tokens_batch is list of lists
-        draft_tokens_batch = [list(draft) if not isinstance(draft, list) else draft for draft in draft_tokens_batch]
-        print(draft_tokens_batch[0])  # Print the first batch of draft tokens to verify it's a list
-
-        # STEP 2: Prepare input for and teacher inference
-        # This was wrong because we need to run the teacher on each extended prompt with the corresponding draft token, not just the first one. We need to loop through each prompt and its corresponding draft tokens to create the extended prompts correctly.
-
-        extended_prompts = []
-        # cumulative extensions of original prompts by draft tokens 
-        for prompt, draft_tokens in zip(prompts, draft_tokens_batch):
-            current = prompt.copy()  # start from the original prompt
-    
-            for draft_token in draft_tokens:
-                current = current + [draft_token]  # grow cumulatively
-                extended_prompts.append(current)
-
-
-        #[[36393, 13], [36393, 13, 198], [36393, 13, 198, 198], [36393, 13, 198, 198, 464], [36393, 13, 198, 198, 464, 1708], [286, 262], [286, 262, 366], [286, 262, 366, 40], [286, 262, 366, 40, 12], [286, 262, 366, 40, 12, 20], [1231, 262], [1231, 262, 779], [1231, 262, 779, 286], [1231, 262, 779, 286, 257], [1231, 262, 779, 286, 257, 366], [290, 262], [290, 262, 366], [290, 262, 366, 40], [290, 262, 366, 40, 12], [290, 262, 366, 40, 12, 40], [4003, 11], [4003, 11, 262], [4003, 11, 262, 1708], [4003, 11, 262, 1708, 318], [4003, 11, 262, 1708, 318, 257], [15529, 198], [15529, 198, 198], [15529, 198, 198, 1659], [15529, 198, 198, 1659, 262], [15529, 198, 198, 1659, 262, 1708], [16652, 13], [16652, 13, 198], [16652, 13, 198, 198], [16652, 13, 198, 198, 464], [16652, 13, 198, 198, 464, 1708], [15529, 198], [15529, 198, 198], [15529, 198, 198, 1659], [15529, 198, 198, 1659, 262], [15529, 198, 198, 1659, 262, 1708], [2751, 198], [2751, 198, 198], [2751, 198, 198, 464], [2751, 198, 198, 464, 1708], [2751, 198, 198, 464, 1708, 318], [18005, 13], [18005, 13, 405], [18005, 13, 405, 198], [18005, 13, 405, 198, 198], [18005, 13, 405, 198, 198, 464], [38547, 13], [38547, 13, 198], [38547, 13, 198, 198], [38547, 13, 198, 198, 464], [38547, 13, 198, 198, 464, 1708], [198, 198], [198, 198, 464], [198, 198, 464, 1708], [198, 198, 464, 1708, 318], [198, 198, 464, 1708, 318, 257], [2, 198], [2, 198, 198], [2, 198, 198, 2], [2, 198, 198, 2, 198], [2, 198, 198, 2, 198, 198], [2, 198], [2, 198, 198], [2, 198, 198, 2], [2, 198, 198, 2, 198], [2, 198, 198, 2, 198, 198], [23, 13], [23, 13, 15], [23, 13, 15, 13], [23, 13, 15, 13, 15], [23, 13, 15, 13, 15, 13], [18938, 13], [18938, 13, 198], [18938, 13, 198, 198], [18938, 13, 198, 198, 464], [18938, 13, 198, 198, 464, 1708], [33042, 13], [33042, 13, 198], [33042, 13, 198, 198], [33042, 13, 198, 198, 464], [33042, 13, 198, 198, 464, 1708], [23, 13], [23, 13, 15], [23, 13, 15, 13], [23, 13, 15, 13, 15], [23, 13, 15, 13, 15, 13], [19, 13], [19, 13, 15], [19, 13, 15, 13], [19, 13, 15, 13, 15], [19, 13, 15, 13, 15, 13], [1433, 13], [1433, 13, 15], [1433, 13, 15, 13], [1433, 13, 15, 13, 15], [1433, 13, 15, 13, 15, 14], [2920, 13], [2920, 13, 198], [2920, 13, 198, 198], [2920, 13, 198, 198, 464], [2920, 13, 198, 198, 464, 1708], [198, 198], [198, 198, 464], [198, 198, 464, 1708], [198, 198, 464, 1708, 318], [198, 198, 464, 1708, 318, 257], [198, 198], [198, 198, 464], [198, 198, 464, 1708], [198, 198, 464, 1708, 318], [198, 198, 464, 1708, 318, 257], [44939, 13], [44939, 13, 198], [44939, 13, 198, 198], [44939, 13, 198, 198, 464], [44939, 13, 198, 198, 464, 1708], [2, 198], [2, 198, 198], [2, 198, 198, 2], [2, 198, 198, 2, 198], [2, 198, 198, 2, 198, 198], [2388, 13], [2388, 13, 405], [2388, 13, 405, 8], [2388, 13, 405, 8, 198], [2388, 13, 405, 8, 198, 198], [18005, 13], [18005, 13, 405], [18005, 13, 405, 198], [18005, 13, 405, 198, 198], [18005, 13, 405, 198, 198, 464], [1954, 13], [1954, 13, 198], [1954, 13, 198, 198], [1954, 13, 198, 198, 464], [1954, 13, 198, 198, 464, 1708], [1828, 13], [1828, 13, 15], [1828, 13, 15, 13], [1828, 13, 15, 13, 15], [1828, 13, 15, 13, 15, 14], [198, 198], [198, 198, 464], [198, 198, 464, 1708], [198, 198, 464, 1708, 318], [198, 198, 464, 1708, 318, 257], [198, 198], [198, 198, 464], [198, 198, 464, 1708], [198, 198, 464, 1708, 318], [198, 198, 464, 1708, 318, 257], [198, 198], [198, 198, 464], [198, 198, 464, 1708], [198, 198, 464, 1708, 318], [198, 198, 464, 1708, 318, 257]]
-        # Extended prompts prepared. Their shape is 160 x 2
-
-        print(extended_prompts) # --> outputs 5*32 , 5 = 160, 5 
-        print(f'Extended prompts prepared. Their shape is {len(extended_prompts)} x {len(extended_prompts[0])}')  # Debug statement
-
-        # run teacher inference once
-        _, probs_seq, _data_copy_time, _softmax_time = token_predictor_teacher.run_batched_inference(
-            extended_prompts,
-            enable_kv_cache=args.use_kv_cache)
-
-        print(f'probs_seq shape: {probs_seq.shape}') # Should be [B*spec_k, V]
-        # probs_seq shape: torch.Size([160, 357]) 
-
-        data_copy_time += _data_copy_time
-        softmax_time += _softmax_time
-        inference_time += time.perf_counter() - t0_inference
-
-        # STEP 3: Verify and accept/reject
-        t0_ac = time.perf_counter()
-
-        # convert draft_tokens_batch to torch tensor
-        draft_tokens_batch = torch.tensor(draft_tokens_batch)
-        print(f'draft tokens batch: ', draft_tokens_batch.shape)
-        # draft tokens batch:  torch.Size([32, 5])
-
-        # Iterate over batches
-        for batch_idx in tqdm(range(len(prompts)), desc="Processing prompts"):
-            draft_tokens = draft_tokens_batch[batch_idx] # list object of len 5
-
-            print(f'draft token shape : {draft_tokens.shape}')
-            probs_steps = probs_seq[batch_idx]
-            
-            print(f'probs_steps shape: {probs_steps.shape}')  # Is [spec_k, V], should be (357,)
-            # probs_steps shape: torch.Size([357])
-            # for each element in batch, this is the probabilities predicted 
-
-            probs_steps = probs_seq[batch_idx * args.spec_k:(batch_idx + 1) * args.spec_k]
-            print(f'new shape probs_steps {probs_steps.shape}')
-
-            accepted = 0 # length of accepted speculative tokens
-
-            # Decompressing tokens. Verification of speculative tokens, 
-            for step, probs_tensor in enumerate(probs_steps):
-                # Convert to CPU numpy array
-                probs = probs_tensor.detach().cpu().numpy().astype(np.float64)
-
-                # Clip negatives
-                # probs = np.clip(probs, 0, None)
-
-                decoded_idx = decompressor.decompress(probs)
-                draft_token = draft_tokens[step]
-
-                if decoded_idx == draft_token:
-                    accepted += 1
-                else:
-                    print('rejected')
-                    # mismatch → fallback token
-                    next_token = token_predictor_teacher.get_token_by_id(decoded_idx)
-                    prompts[batch_idx].append(next_token)
-                    reconstructed_tokens[batch_idx].append(next_token)
-                    break
-
-            if accepted > 0:
-                accepted_tokens = draft_tokens[:accepted]
-                prompts[batch_idx].extend(accepted_tokens)
-                reconstructed_tokens[batch_idx].extend(accepted_tokens)
-
-        ac_time += time.perf_counter() - t0_ac
-
-    reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
-
-    t0_detokenize = time.perf_counter()
-    detoken_string = token_predictor_teacher.detokenize(reconstructed_tokens)
-    detokenize_time = time.perf_counter() - t0_detokenize
-
-    decompression_time = time.perf_counter() - t0_decompress
-
-
-    return reconstructed_tokens, detoken_string, {
-        "args": args.__dict__,
-        "decompression_time_sec": decompression_time,
-        "input_tokens_cnt": input_tokens_cnt,
-        "total_decompression_time": decompression_time,
-        "detokenize_time": detokenize_time,
-        "inference_time": inference_time,
-        "ac_time": ac_time,
-        "data_copy_time": data_copy_time,
-        "softmax_time": softmax_time,
-        "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
-        "inference_throughput_kibibytes_per_sec": len(detoken_string) / 1024 / inference_time,
-    }
-
-
-
-
-
-def _speculative_batch_lengths(args):
-    chunk_length = args.first_n_tokens // args.batch_size
-    extra = args.first_n_tokens % args.batch_size
-    batch_lengths = [
-        chunk_length + (1 if batch_index < extra else 0)
-        for batch_index in range(args.batch_size)
-    ]
-    return chunk_length, batch_lengths
-
-
-def _trim_active_prompts(prompts, active_indices, retain_tokens, context_length):
-    active_prompts = [prompts[index] for index in active_indices]
-    if active_prompts and len(active_prompts[0]) >= context_length:
-        for index in active_indices:
-            prompts[index] = prompts[index][-retain_tokens:]
-        active_prompts = [prompts[index] for index in active_indices]
-    return active_prompts
-
-
-def _build_teacher_prompts(active_prompts, draft_tokens_batch):
-    teacher_prompts = []
-    for prompt, draft_info in zip(active_prompts, draft_tokens_batch):
-        draft_tokens = draft_info[0]
-        current_prompt = list(prompt)
-        teacher_prompts.append(current_prompt.copy())
-        for token in draft_tokens:
-            current_prompt.append(int(token))
-            teacher_prompts.append(current_prompt.copy())
-    return teacher_prompts
-
-
-def _decode_teacher_distribution(distribution, decompressor):
-    probs = distribution.detach().cpu().numpy().astype(np.float64)
-    return int(decompressor.decompress(probs))
-
-
-def _apply_verified_tokens(prompts, reconstructed_tokens, batch_idx, accepted_tokens):
-    if accepted_tokens:
-        prompts[batch_idx].extend(accepted_tokens)
-        reconstructed_tokens[batch_idx].extend(accepted_tokens)
-
-
-def run_global_mask_speculative_decompression_new(args, first_tokens, bit_string, bitmap):
-    """Run speculative decompression using draft tokens plus teacher verification."""
     if not first_tokens:
         raise ValueError("first_tokens cannot be empty")
 
-    # Keep the historical fixed draft length because the current tests and calling
-    # code rely on it, even when args.spec_k is set differently by the caller.
-    args.spec_k = 5
+    if getattr(args, "spec_k", None) is None:
+        args.spec_k = 5
 
-    teacher = TokenPredictor(args, bitmap_data=bitmap)
-    student = TokenPredictor(args, bitmap_data=bitmap)
+    # Initialize predictors
+    token_predictor_teacher = TokenPredictor(args, bitmap_data=bitmap)
+    token_predictor_student = TokenPredictor(args, bitmap_data=bitmap)
+
     decompressor = LLMDecompressor(bit_string)
 
     batch_size = len(first_tokens)
-    prompts = [[int(token)] for token in first_tokens]
-    reconstructed_tokens = [[int(token)] for token in first_tokens]
-    _, batch_lengths = _speculative_batch_lengths(args)
+
+    # Prompts used as model context
+    prompts = [[tok] for tok in first_tokens]
+
+    # Output tokens reconstructed for each batch item
+    reconstructed_tokens = [[tok] for tok in first_tokens]
+
+    # Distribute target token count across the *actual* batch size
+    chunk_length = args.first_n_tokens // batch_size
+    extra = args.first_n_tokens % batch_size
+    target_lengths = [
+        chunk_length + (1 if i < extra else 0)
+        for i in range(batch_size)
+    ]
 
     input_tokens_cnt = 0
     inference_time = 0.0
     ac_time = 0.0
     data_copy_time = 0.0
     softmax_time = 0.0
-    start_time = time.perf_counter()
 
-    while True:
+    t0_decompress = time.perf_counter()
+
+    while any(len(reconstructed_tokens[i]) < target_lengths[i] for i in range(batch_size)):
         active_indices = [
-            batch_idx
-            for batch_idx in range(batch_size)
-            if len(reconstructed_tokens[batch_idx]) < batch_lengths[batch_idx]
+            i for i in range(batch_size)
+            if len(reconstructed_tokens[i]) < target_lengths[i]
         ]
         if not active_indices:
             break
 
-        active_prompts = _trim_active_prompts(
-            prompts,
-            active_indices,
-            args.retain_tokens,
-            args.context_length,
-        )
-        input_tokens_cnt += sum(len(prompts[batch_idx]) for batch_idx in active_indices)
+        # Trim long contexts if needed
+        active_prompts = []
+        for i in active_indices:
+            prompt_i = prompts[i]
+            if len(prompt_i) >= args.context_length:
+                prompt_i = prompt_i[-args.retain_tokens:]
+                prompts[i] = prompt_i
+            active_prompts.append(prompt_i[:])
 
-        inference_start = time.perf_counter()
-        draft_tokens_batch = [
-            student.generate_draft(prompts[batch_idx], k=args.spec_k, enable_kv_cache=True)
-            for batch_idx in active_indices
+        remaining_per_active = [
+            target_lengths[i] - len(reconstructed_tokens[i])
+            for i in active_indices
         ]
-        teacher_prompts = _build_teacher_prompts(active_prompts, draft_tokens_batch)
-        _, teacher_scores, copy_time, softmax_step_time = teacher.run_batched_inference(
-            teacher_prompts,
-            enable_kv_cache=args.use_kv_cache,
-        )
-        inference_time += time.perf_counter() - inference_start
-        data_copy_time += copy_time
-        softmax_time += softmax_step_time
 
-        ac_start = time.perf_counter()
-        group_size = args.spec_k + 1
+        # Do not draft more than the maximum remaining tokens needed by any active sequence
+        current_k = min(args.spec_k, max(remaining_per_active))
+        if current_k <= 0:
+            break
+
+        input_tokens_cnt += sum(len(p) for p in active_prompts)
+
+        # ------------------------------------------------------------------
+        # STEP 1: student draft generation
+        # ------------------------------------------------------------------
+        t0_inference = time.perf_counter()
+
+        (
+            draft_tokens_batch,
+            _draft_scores,
+            _draft_data_copy_time,
+            _draft_softmax_time,
+        ) = token_predictor_student.generate_draft(
+            active_prompts,
+            k=current_k,
+            enable_kv_cache=False,
+            full_draft=False,
+        )
+
+        data_copy_time += _draft_data_copy_time
+        softmax_time += _draft_softmax_time
+
+        # ------------------------------------------------------------------
+        # STEP 2: build teacher verification prompts
+        #
+        # For each active prompt p and draft d1..dk, build:
+        #   p
+        #   p+d1
+        #   p+d1+d2
+        #   ...
+        #   p+d1+...+dk
+        #
+        # That gives k+1 verifier distributions per active sequence:
+        #   step 0 verifies d1
+        #   step 1 verifies d2
+        #   ...
+        #   step k-1 verifies dk
+        #   step k gives one extra next-token distribution if all drafts accepted
+        # ------------------------------------------------------------------
+        extended_prompts = []
+        for prompt_i, draft_i in zip(active_prompts, draft_tokens_batch):
+            cur = prompt_i[:]
+            extended_prompts.append(cur[:])  # verifies first drafted token
+            for drafted_tok in draft_i:
+                cur = cur + [int(drafted_tok)]
+                extended_prompts.append(cur[:])
+
+        teacher_tokens_list, probs_seq, _teacher_data_copy_time, _teacher_softmax_time = (
+            token_predictor_teacher.run_batched_inference(
+                extended_prompts,
+                enable_kv_cache=False,
+            )
+        )
+
+        data_copy_time += _teacher_data_copy_time
+        softmax_time += _teacher_softmax_time
+        inference_time += time.perf_counter() - t0_inference
+
+        # ------------------------------------------------------------------
+        # STEP 3: arithmetic-coding accept/reject
+        # ------------------------------------------------------------------
+        t0_ac = time.perf_counter()
+
+        group_size = current_k + 1
 
         for local_idx, batch_idx in enumerate(active_indices):
-            remaining = batch_lengths[batch_idx] - len(reconstructed_tokens[batch_idx])
+            remaining = target_lengths[batch_idx] - len(reconstructed_tokens[batch_idx])
             if remaining <= 0:
                 continue
 
-            draft_tokens = [int(token) for token in draft_tokens_batch[local_idx][0]]
+            draft_i = [int(tok) for tok in draft_tokens_batch[local_idx]]
+
             start = local_idx * group_size
-            probs_steps = teacher_scores[start : start + group_size]
+            end = start + group_size
+            probs_steps = probs_seq[start:end]  # shape: (k+1, reduced_vocab) or list of rows
+
             accepted_tokens = []
-            verify_count = min(args.spec_k, remaining)
-            mismatch_token = None
+            mismatch = False
+
+            # Only verify as many drafted tokens as we still need
+            verify_count = min(len(draft_i), remaining)
 
             for step in range(verify_count):
-                decoded_token = _decode_teacher_distribution(probs_steps[step], decompressor)
-                if decoded_token == draft_tokens[step]:
-                    accepted_tokens.append(decoded_token)
-                    continue
+                probs = probs_steps[step].detach().cpu().numpy().astype(np.float64)
 
-                mismatch_token = decoded_token
-                break
+                # decompressor returns a column index in probs
+                decoded_col = int(decompressor.decompress(probs))
+                decoded_token = teacher_tokens_list[decoded_col]
 
-            _apply_verified_tokens(prompts, reconstructed_tokens, batch_idx, accepted_tokens)
+                drafted_token = draft_i[step]
 
-            if mismatch_token is not None:
-                prompts[batch_idx].append(mismatch_token)
-                reconstructed_tokens[batch_idx].append(mismatch_token)
+                if decoded_token == drafted_token:
+                    accepted_tokens.append(drafted_token)
+                else:
+                    # accept prefix, then append verifier-decoded fallback token
+                    prompts[batch_idx].extend(accepted_tokens)
+                    reconstructed_tokens[batch_idx].extend(accepted_tokens)
+
+                    prompts[batch_idx].append(decoded_token)
+                    reconstructed_tokens[batch_idx].append(decoded_token)
+
+                    mismatch = True
+                    break
+
+            if mismatch:
                 continue
 
-            remaining = batch_lengths[batch_idx] - len(reconstructed_tokens[batch_idx])
-            if verify_count == args.spec_k and remaining > 0:
-                extra_token = _decode_teacher_distribution(probs_steps[args.spec_k], decompressor)
-                prompts[batch_idx].append(extra_token)
-                reconstructed_tokens[batch_idx].append(extra_token)
+            # All verified draft tokens accepted
+            prompts[batch_idx].extend(accepted_tokens)
+            reconstructed_tokens[batch_idx].extend(accepted_tokens)
 
-        ac_time += time.perf_counter() - ac_start
+            remaining = target_lengths[batch_idx] - len(reconstructed_tokens[batch_idx])
+
+            # If all drafted tokens were accepted and we still need one more token,
+            # consume one extra verifier distribution.
+            if verify_count == len(draft_i) and remaining > 0:
+                probs = probs_steps[len(draft_i)].detach().cpu().numpy().astype(np.float64)
+                decoded_col = int(decompressor.decompress(probs))
+                decoded_token = teacher_tokens_list[decoded_col]
+
+                prompts[batch_idx].append(decoded_token)
+                reconstructed_tokens[batch_idx].append(decoded_token)
+
+        ac_time += time.perf_counter() - t0_ac
 
     reconstructed_tokens_flat = list(chain.from_iterable(reconstructed_tokens))
-    detokenize_start = time.perf_counter()
-    detoken_string = teacher.detokenize(reconstructed_tokens_flat)
-    detokenize_time = time.perf_counter() - detokenize_start
-    decompression_time = time.perf_counter() - start_time
+
+    t0_detokenize = time.perf_counter()
+    detoken_string = token_predictor_teacher.detokenize(reconstructed_tokens_flat)
+    detokenize_time = time.perf_counter() - t0_detokenize
+
+    decompression_time = time.perf_counter() - t0_decompress
 
     return reconstructed_tokens_flat, detoken_string, {
         "args": args.__dict__,
@@ -861,6 +786,248 @@ def run_global_mask_speculative_decompression_new(args, first_tokens, bit_string
         "ac_time": ac_time,
         "data_copy_time": data_copy_time,
         "softmax_time": softmax_time,
-        "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
+        "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / max(decompression_time, 1e-12),
         "inference_throughput_kibibytes_per_sec": len(detoken_string) / 1024 / max(inference_time, 1e-12),
+    }
+
+
+from itertools import chain
+import time
+import torch
+
+
+def run_global_mask_speculative_decompression(
+    args,
+    first_tokens,
+    bit_string,
+    bitmap,
+):
+    """
+    Speculative decompression for a global-token-mask AC stream.
+
+    Draft tokens are proposed by a draft model, but the arithmetic decoder
+    always consumes probabilities from the verifier model. A drafted token is
+    accepted only if it matches the token recovered from the verifier
+    distribution. On the first mismatch for a batch row, the verifier-decoded
+    token is appended and the remaining drafted suffix for that row is dropped.
+
+    Returns:
+        tuple: (reconstructed_tokens, detoken_string, stats)
+    """
+    print(
+        f"\n----- Running Speculative Decompression: "
+        f"Global Token Mask (first_n_tokens={args.first_n_tokens}, "
+        f"spec_k={args.spec_k}, verifier_kv_cache={args.use_kv_cache}) -----"
+    )
+
+    t0_decompress = time.perf_counter()
+
+    # Verifier model: source of truth for AC decoding
+    verifier = TokenPredictor(args, bitmap_data=bitmap)
+
+    # Draft model: may be smaller/faster; for now can be same config
+    # If you add args.draft_model_name, clone args and replace model_name here.
+    draft_args = args
+    draft = TokenPredictor(draft_args, bitmap_data=bitmap)
+
+    decompressor = LLMDecompressor(bit_string)
+
+    if not first_tokens:
+        raise ValueError("first_tokens must contain one initial token per batch row")
+
+    if len(first_tokens) != args.batch_size:
+        raise ValueError(
+            f"Expected {args.batch_size} first tokens, got {len(first_tokens)}"
+        )
+
+    prompts = [[first_tokens[i]] for i in range(args.batch_size)]
+    reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size)]
+
+    # Per-batch target lengths
+    chunk_length = args.first_n_tokens // args.batch_size
+    extra = args.first_n_tokens % args.batch_size
+    batches_length = [
+        chunk_length + (1 if i < extra else 0)
+        for i in range(args.batch_size)
+    ]
+
+    total_decoded = len(first_tokens)
+    max_tokens = args.first_n_tokens
+
+    input_tokens_cnt = 0
+    inference_time_verifier = 0.0
+    inference_time_draft = 0.0
+    ac_time = 0.0
+    data_copy_time_verifier = 0.0
+    softmax_time_verifier = 0.0
+    data_copy_time_draft = 0.0
+    softmax_time_draft = 0.0
+
+    accepted_draft_tokens = 0
+    rejected_draft_tokens = 0
+    verifier_steps = 0
+    draft_cycles = 0
+
+    while total_decoded < max_tokens:
+        # Active rows still needing tokens
+        active_rows = [
+            i for i in range(args.batch_size)
+            if len(reconstructed_tokens[i]) < batches_length[i]
+        ]
+        if not active_rows:
+            break
+
+        active_prompts = [prompts[i] for i in active_rows]
+
+        # Truncate context if needed, but preserve reconstructed output separately
+        if len(active_prompts[0]) >= args.context_length:
+            for i in active_rows:
+                prompts[i] = prompts[i][-args.retain_tokens:]
+            active_prompts = [prompts[i] for i in active_rows]
+
+            # KV cache is no longer valid after context truncation
+            verifier.reset_kv_cache()
+            draft.reset_kv_cache()
+
+        remaining_per_row = [
+            batches_length[i] - len(reconstructed_tokens[i])
+            for i in active_rows
+        ]
+        current_k = min(args.spec_k, max(remaining_per_row))
+        if current_k <= 0:
+            break
+
+        print(
+            f"\rProcessing speculative cycle, active_rows={len(active_rows)}, k={current_k}",
+            end=""
+        )
+
+        # ------------------------------------------------------------
+        # 1) Draft phase
+        # ------------------------------------------------------------
+        t0_draft = time.perf_counter()
+        _, draft_scores, _dcp_draft, _sm_draft, drafted_prompts = draft.generate_draft(
+            [row[:] for row in active_prompts],
+            k=current_k,
+            enable_kv_cache=False,
+            full_draft=True,
+        )
+        inference_time_draft += time.perf_counter() - t0_draft
+        data_copy_time_draft += _dcp_draft
+        softmax_time_draft += _sm_draft
+        draft_cycles += 1
+
+        # Recover drafted token lists from drafted_prompts delta
+        drafted_tokens = []
+        for base, full in zip(active_prompts, drafted_prompts):
+            drafted_tokens.append(full[len(base):])
+
+        # ------------------------------------------------------------
+        # 2) Verifier + AC decode phase
+        #    Each step uses verifier probs as source of truth.
+        # ------------------------------------------------------------
+        # We keep local working prompts for active rows during this cycle.
+        local_prompts = [row[:] for row in active_prompts]
+        local_done = [False] * len(active_rows)
+
+        # Reset verifier cache and prefill from local prompts.
+        verifier.reset_kv_cache()
+
+        for step_idx in range(current_k):
+            step_rows = [
+                r for r in range(len(active_rows))
+                if (not local_done[r])
+                and (len(reconstructed_tokens[active_rows[r]]) < batches_length[active_rows[r]])
+            ]
+            if not step_rows:
+                break
+
+            step_prompts = [local_prompts[r] for r in step_rows]
+
+            input_tokens_cnt += sum(len(p) for p in step_prompts)
+
+            t0_ver = time.perf_counter()
+            _, probs_values, _dcp_ver, _sm_ver = verifier.run_batched_inference(
+                step_prompts,
+                enable_kv_cache=args.use_kv_cache,
+            )
+            inference_time_verifier += time.perf_counter() - t0_ver
+            data_copy_time_verifier += _dcp_ver
+            softmax_time_verifier += _sm_ver
+            verifier_steps += 1
+
+            t0_ac = time.perf_counter()
+
+            probs_np = probs_values.to(torch.float32).cpu().numpy()
+
+            for j, r in enumerate(step_rows):
+                global_row = active_rows[r]
+
+                if len(reconstructed_tokens[global_row]) >= batches_length[global_row]:
+                    local_done[r] = True
+                    continue
+
+                decoded_idx = decompressor.decompress(probs_np[j])
+                decoded_token = verifier.get_token_by_id(decoded_idx)
+
+                drafted_token = drafted_tokens[r][step_idx]
+
+                # Source of truth is decoded_token from verifier distribution.
+                prompts[global_row].append(decoded_token)
+                reconstructed_tokens[global_row].append(decoded_token)
+                local_prompts[r].append(decoded_token)
+                total_decoded += 1
+
+                if decoded_token == drafted_token:
+                    accepted_draft_tokens += 1
+                    # keep verifying next drafted token
+                else:
+                    rejected_draft_tokens += max(0, current_k - step_idx)
+                    local_done[r] = True
+
+                if total_decoded >= max_tokens:
+                    break
+
+            ac_time += time.perf_counter() - t0_ac
+
+            if total_decoded >= max_tokens:
+                break
+
+        # Draft cache is not reused across cycles in this simple version
+        draft.reset_kv_cache()
+
+    print()
+
+    flat_tokens = list(chain.from_iterable(reconstructed_tokens))
+
+    t0_detok = time.perf_counter()
+    detoken_string = verifier.detokenize(flat_tokens)
+    detokenize_time = time.perf_counter() - t0_detok
+
+    decompression_time = time.perf_counter() - t0_decompress
+
+    return flat_tokens, detoken_string, {
+        "args": args.__dict__,
+        "decompression_time_sec": decompression_time,
+        "input_tokens_cnt": input_tokens_cnt,
+        "total_decompression_time": decompression_time,
+        "detokenize_time": detokenize_time,
+        "verifier_inference_time": inference_time_verifier,
+        "draft_inference_time": inference_time_draft,
+        "ac_time": ac_time,
+        "verifier_data_copy_time": data_copy_time_verifier,
+        "verifier_softmax_time": softmax_time_verifier,
+        "draft_data_copy_time": data_copy_time_draft,
+        "draft_softmax_time": softmax_time_draft,
+        "verifier_steps": verifier_steps,
+        "draft_cycles": draft_cycles,
+        "accepted_draft_tokens": accepted_draft_tokens,
+        "rejected_draft_tokens": rejected_draft_tokens,
+        "acceptance_rate": (
+            accepted_draft_tokens / max(1, accepted_draft_tokens + rejected_draft_tokens)
+        ),
+        "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
+        "verifier_inference_throughput_kibibytes_per_sec": (
+            len(detoken_string) / 1024 / max(inference_time_verifier, 1e-12)
+        ),
     }

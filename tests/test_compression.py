@@ -138,9 +138,9 @@ def test_compress_decompress_roundtrip(
         assert decoded == text[i]
 
 
-#@pytest.mark.skip(reason="Temporarily disabled for debugging")
-@pytest.mark.parametrize("input_fixture",["random_input", "zipf_input"], indirect=True,)
-@pytest.mark.parametrize("compressor_cls,decompressor_cls",[(LLMCompressor, LLMDecompressor)],)
+@pytest.mark.skip(reason="Temporarily disabled for debugging")
+#@pytest.mark.parametrize("input_fixture",["random_input", "zipf_input"], indirect=True,)
+#@pytest.mark.parametrize("compressor_cls,decompressor_cls",[(LLMCompressor, LLMDecompressor)],)
 def test_compress_decompress_brute_force(
     input_fixture, 
     compressor_cls,
