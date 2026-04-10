@@ -5,8 +5,6 @@ import pytest
 import torch
 
 from src.prediction import TokenPredictor
-from src.global_mask_compressor import run_global_mask_speculative_decompression_new
-
 
 @pytest.fixture
 def test_setup():
@@ -25,32 +23,62 @@ def test_setup():
     return predictor, prompts
 
 
-def test_run_batched_inferences(test_setup):
+def test_run_batched_inferences(test_setup, print_on = False):
     """Test the standard batched inference method separately."""
     dummy_predictor, dummy_prompts = test_setup
 
     tokens_list, scores, data_copy_time, softmax_time = dummy_predictor.run_batched_inference(dummy_prompts)
 
-    print("Tokens list shape:", len(tokens_list))
-    print("Most likely next token ids:", [tokens_list[torch.argmax(scores[i]).item()] for i in range(scores.shape[0])])
-    print("Scores shape:", scores.shape)
-    print("Data copy time:", data_copy_time)
-    print("Softmax time:", softmax_time)
-    print("\n")
+    if print_on:
+        print("Tokens list shape:", len(tokens_list))
+        print("Most likely next token ids:", [tokens_list[torch.argmax(scores[i]).item()] for i in range(scores.shape[0])])
+        print("Scores shape:", scores.shape)
+        print("\n")
 
-   
-def test_run_batched_inference_cachefree(test_setup):
+    assert isinstance(tokens_list, list), "Output tokens should be a list"
+    assert all(isinstance(tok, int) for tok in tokens_list), "Each item in tokens list should be an integer token ID"
+    assert isinstance(scores, torch.Tensor), "Scores should be a torch.Tensor"
+    assert scores.dim() == 2, f"Scores should be a 2D tensor with shape (batch_size, vocab_size or reduced_vocab_size). Is {scores.shape} but expected (len(dummy_prompts), len(self.tokens_list))"
+
+
+def test_run_batched_inference_cachefree(test_setup, print_on = True):
     """Test the cachefree inference method separately."""
     dummy_predictor, dummy_prompts = test_setup
 
     # run cachefree inference for testing
     tokens_list_cf, scores_cf, data_copy_time_cf, softmax_time_cf = dummy_predictor.run_batched_inference_cachefree(dummy_prompts)
-    print("Cachefree - Tokens list shape:", len(tokens_list_cf))
-    print("Cachefree - Most likely next token ids:", [tokens_list_cf[torch.argmax(scores_cf[i]).item()] for i in range(scores_cf.shape[0])])
-    print("Cachefree - Scores shape:", scores_cf.shape)
-    print("Cachefree - Data copy time:", data_copy_time_cf)
-    print("Cachefree - Softmax time:", softmax_time_cf)
-    print("\n")
+
+    if print_on:
+        print("Cachefree - Tokens list shape:", len(tokens_list_cf))
+        print("Cachefree - Most likely next token ids:", [tokens_list_cf[torch.argmax(scores_cf[i]).item()] for i in range(scores_cf.shape[0])])
+        print("Cachefree - Scores shape:", scores_cf.shape)
+
+    assert isinstance(tokens_list_cf, list), "Output tokens should be a list"
+    assert all(isinstance(tok, int) for tok in tokens_list_cf), "Each item in tokens list should be an integer token ID"
+    assert isinstance(scores_cf, torch.Tensor), "Scores should be a torch.Tensor"
+    assert scores_cf.dim() == 2, f"Scores should be a 2D tensor with shape (batch_size, vocab_size or reduced_vocab_size). Is {scores_cf.shape} but expected (len(dummy_prompts), len(self.tokens_list))"
+
+
+def test_run_batched_inference_cachefree_uneven_input(test_setup, print_on = False):
+    """Test the cachefree inference method separately."""
+    dummy_predictor, _ = test_setup
+
+    dummy_prompts = [[1, 2], [3, 4, 5, 6]]  # uneven length prompts
+
+    # run cachefree inference for testing
+    tokens_list_cf, scores_cf, data_copy_time_cf, softmax_time_cf = dummy_predictor.run_batched_inference_cachefree(dummy_prompts)
+
+    if print_on:
+        print("Cachefree - Most likely next token ids:", [tokens_list_cf[torch.argmax(scores_cf[i]).item()] for i in range(scores_cf.shape[0])])
+        print("Cachefree - Scores shape:", scores_cf.shape)
+        print("Cachefree - Data copy time:", data_copy_time_cf)
+        print("Cachefree - Softmax time:", softmax_time_cf)
+        print("\n")
+
+    assert all(isinstance(tok, int) for tok in tokens_list_cf), "Each item in tokens list should be an integer token ID"
+    assert isinstance(scores_cf, torch.Tensor), "Scores should be a torch.Tensor"
+    assert scores_cf.dim() == 2, "Scores should be a 2D tensor with shape (batch_size, vocab_size or reduced_vocab_size)"
+
 
 def test_run_batched_inferences_alignment(test_setup):
     """Test that the standard and cachefree inference methods produce the same outputs."""
@@ -85,6 +113,28 @@ def test_generate_draft(test_setup, k):
     assert draft_scores.shape[1] == len(dummy_prompts)
 
     print("test_generate_draft passed.\n")
+
+
+@pytest.mark.parametrize("k", [1, 3])
+def test_generate_draft_uneven_input(test_setup, k):
+    dummy_predictor, dummy_prompts = test_setup
+    dummy_prompts = [[1, 2], [3, 4, 5, 6]] # uneven length prompts
+
+    draft_tokens, draft_scores, total_data_copy_time, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=k)
+
+    print("Draft tokens:", draft_tokens)
+    print("Draft scores shape:", draft_scores.shape)  # should be (k, batch_size, vocab_size_or_reduced_vocab_size)
+    print("Total data copy time for draft generation:", total_data_copy_time)
+    print("Total softmax time for draft generation:", total_softmax_time)
+
+    assert isinstance(draft_tokens, list)
+    assert len(draft_tokens) == len(dummy_prompts)
+    assert all(len(row) == k for row in draft_tokens), f"Expected {k} draft tokens per batch item, got {draft_tokens}"
+    assert isinstance(draft_scores, torch.Tensor)
+    assert draft_scores.shape[0] == k
+    assert draft_scores.shape[1] == len(dummy_prompts)
+
+    print("test_generate_draft_uneven_input passed.\n")
 
 
 def test_reset_kv_cache(test_setup):
@@ -223,8 +273,7 @@ def test_speculative_decode(test_setup, k):
     final_prompts, generated_tokens = dummy_predictor.speculative_decode(
         dummy_prompts,
         max_new_tokens=max_new_tokens,
-        k=k,
-    )
+        k=k,)
 
     print("Original prompts:", dummy_prompts)
     print("Generated tokens:", generated_tokens)
@@ -244,4 +293,3 @@ def test_speculative_decode(test_setup, k):
         )
 
     print("test_speculative_decode passed.\n")
-

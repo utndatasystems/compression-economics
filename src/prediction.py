@@ -7,8 +7,6 @@ This module provides:
 - TokenPredictor: runs batched, one-step LLM inference with optional KV caching and
   returns logits or probabilities depending on the encoding scheme.
 """
-
-
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM, MambaForCausalLM
 import os
 import tarfile
@@ -121,7 +119,6 @@ class TokenDataPreparer:
                     if file_obj is None:
                         raise ValueError("Failed to extract file from tar archive")
                     return file_obj.read().decode("utf-8")
-        
         else:
             with open(input_path, 'r') as f:
                 return f.read()
@@ -143,7 +140,6 @@ class TokenDataPreparer:
         Returns:
             BitMap: A BitMap object representing the reduced token set.
         """
-
         # Create a BitMap from the tokens list
         bitmap = BitMap(self.tokens_list)
         binary_data = bitmap.serialize()
@@ -157,6 +153,7 @@ class TokenDataPreparer:
             Namespace: The arguments used for this data preparation.
         """
         return self.args
+    
 
 class TokenPredictor:
     def __init__(self, args, bitmap_data):
@@ -249,8 +246,7 @@ class TokenPredictor:
         """
         # Build a boolean bitmap and index tensor for fast filtering.
         self.index_tensor = torch.tensor(
-            self.tokens_list, dtype=torch.long, device=self.device
-        )
+            self.tokens_list, dtype=torch.long, device=self.device)
         vocab_size = self.tokenizer.vocab_size
         self.token_bitmap = torch.zeros(vocab_size, dtype=torch.bool, device=self.device)
         self.token_bitmap[self.tokens_list] = True
@@ -264,25 +260,45 @@ class TokenPredictor:
         """
         return self.tokens_list
     
-    def _pad_input(self, prompts):
-        """Pads input to length of maximum sequence and 
-           creates an attention mask for the model to ingore the padded input"""
-        
+
+    def _pad_input(self, prompts, output_tensor=False):
+        """
+        Pads input to the maximum sequence length and creates an attention mask for variable-length prompts.
+        Returns:
+            padded_prompts: List[List[int]]
+            attention_mask: List[List[int]]
+        """
         max_len = max(len(seq) for seq in prompts)
 
-        # choose padding value (e.g. 0 or tokenizer.pad_token_id)
-        pad_token = 0 #self.tokenizer.pad_token_id
+        # Prefer tokenizer pad token, fallback to 0
+        pad_token = getattr(self.tokenizer, "pad_token_id", None)
+        if pad_token is None:
+            pad_token = 0
 
-        # pad all sequences
-        padded_prompts = [
-            seq + [pad_token] * (max_len - len(seq))
-            for seq in prompts]
-        
-        max_len = max(len(seq) for seq in prompts)
-        attention_mask = [[1] * len(seq) + [0] * (max_len - len(seq))
-                          for seq in prompts]
-        
+        padded_prompts = []
+        attention_mask = []
+
+        for seq in prompts:
+            seq_len = len(seq)
+            pad_len = max_len - seq_len
+
+            padded_prompts.append(seq + [pad_token] * pad_len)
+            attention_mask.append([1] * seq_len + [0] * pad_len)
+
+        # Converting to tensor for efficiency.
+        if output_tensor:
+            padded_prompts = torch.tensor(padded_prompts, device=self.device)
+            attention_mask = torch.tensor(attention_mask, device=self.device)
+
         return padded_prompts, attention_mask
+    
+
+    def _check_rectangular(self, prompts):
+        """Returns True if all sequences have the same length."""
+        assert isinstance(prompts, list) and all(isinstance(seq, list) for seq in prompts), "Input prompts must be a list of lists of token IDs."
+
+        lengths = [len(seq) for seq in prompts]
+        return len(set(lengths)) == 1
 
     
     def _finalize_batched_scores(self, logits, data_copy_time):
@@ -298,8 +314,10 @@ class TokenPredictor:
             tuple[list[int], torch.Tensor, float, float]:
                 Same return format as run_batched_inference().
         """
-
+    
         assert isinstance(logits, torch.Tensor), f"Expected logits to be a torch.Tensor, got {type(logits)}"
+        # print(f"Logits shape before reduction: {logits.shape}, device: {logits.device}, dtype: {logits.dtype}")
+        assert logits.shape[1] == self.tokenizer.vocab_size, f"Logits shape {logits.shape} does not match expected (batch_size, vocab_size) where vocab_size is either full tokenizer vocab or reduced tokens list size {len(self.tokens_list)}"
         assert logits.dim() == 2, f"Expected logits of shape (batch_size, vocab_size), got {logits.shape}"
 
         if getattr(self, "reduce_tokens", False):
@@ -327,6 +345,7 @@ class TokenPredictor:
     def run_batched_inference_cachefree(self, prompts):
         """
         Run a full forward pass for every prompt without reusing KV cache state.
+        Can handle uneven prompt lengths by padding and using attention masks.
 
         This is intended as a correctness baseline for comparing against the
         cached path in run_batched_inference().
@@ -347,26 +366,41 @@ class TokenPredictor:
                 raise ValueError(f"Unsupported engine: {self.args.engine}")
 
             t0_data_copy = time.perf_counter()
-            input_ids = torch.tensor(prompts, device=self.device)
+            
+            if self._check_rectangular(prompts):
+                padded_prompts = prompts
+                attention_mask = [[1] * len(seq) for seq in prompts]
+            else:
+                # Pad only if needed
+                padded_prompts, attention_mask = self._pad_input(prompts)
 
-            # Assert that dimensions of input_ids are correct --> tensor of shape (batch_size, seq_len)
-            assert input_ids.shape[0] == len(prompts), (
-                f"Batch size mismatch: expected {len(prompts)}, got {input_ids.shape[0]}")
-            assert input_ids.shape[1] > 0, (
-                f"Sequence length mismatch: expected positive length, got {input_ids.shape[1]}")
+            # Convert to tensor 
+            input_ids = torch.tensor(padded_prompts, device=self.device)
+            attention_mask = torch.tensor(attention_mask, device=self.device)
 
             data_copy_time += time.perf_counter() - t0_data_copy
 
-            outputs = self.model(input_ids, use_cache=False)
-            logits = outputs.logits[:, -1, :]
+            outputs = self.model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=False)
 
-        # assert that logits is of shape (batch_size, vocab_size).
+            # Compute last valid token index per batch from attention mask to extract the correct logits.
+            last_token_idx = attention_mask.sum(dim=1) - 1 # (batch_size,)
+
+            logits = outputs.logits[
+                torch.arange(input_ids.size(0), device=self.device),
+                last_token_idx,
+                :]
+
         assert logits.dim() == 2, f"Expected logits of shape (batch_size, vocab_size), got {logits.shape}"
         assert isinstance(logits, torch.Tensor), f"Expected logits to be a torch.Tensor, got {type(logits)}"
 
         return self._finalize_batched_scores(logits, data_copy_time)
+    
 
     def run_batched_inference(self, prompts, enable_kv_cache=True):
+        # TODO: correct the caching behaviour and make it work with mixed length prompts
         """
         Run a single next-token prediction step for a batch of tokenized prompts.
 
@@ -450,6 +484,10 @@ class TokenPredictor:
             logits are returned so the caller can rank tokens directly.
         """
 
+        if enable_kv_cache is False:
+            # run_batched_inference_cachefree instead
+            return self.run_batched_inference_cachefree(prompts)
+        
         # Initialize cache state on first use.
         if not hasattr(self, "_past_kv"):
             self._past_kv = None
@@ -492,7 +530,6 @@ class TokenPredictor:
 
                         self._past_kv = outputs.past_key_values
                         self._cached_context_len = input_ids.shape[1]
-                        # self._cached_context_len = 0 this was wrong. 
                     else:
                         # Reuse the existing cache by feeding only the newly added
                         # final token of each prompt.
@@ -508,7 +545,6 @@ class TokenPredictor:
                             use_cache=True,
                         )
                         self._past_kv = outputs.past_key_values
-                        #self._cached_context_len += 1 this was wrong 
                         self._cached_context_len += delta.shape[1]
 
                 # Use only the scores for the final position in each sequence.
@@ -562,56 +598,60 @@ class TokenPredictor:
             assert draft_scores.shape == (1, len(prompt), len(self.tokens_list)), f"Expected draft_scores shape (1, {len(prompt)}, {len(self.tokens_list)}), got {draft_scores.shape}"
 
             return draft_tokens, draft_scores, data_copy_time, softmax_time
-        
-        # assert all lists in list are of equal length
-        if len(prompt) > 0:
-            prompt_length = len(prompt[0])
-            assert all(len(row) == prompt_length for row in prompt), "All prompts must be of equal length."
+    
+        elif k > 1:
+            #TODO: 
 
-        draft_tokens = [[] for _ in range(len(prompt))] # make it list of lists to store tokens for each batch element separately
-        draft_scores = torch.zeros((k, len(prompt), len(self.tokens_list)), device=self.device) # preallocate tensor for scores with shape (k, batch_size, vocab_size_or_reduced_vocab_size)
-        
-        current_prompt = [row[:] for row in prompt]
-
-        total_data_copy_time, total_softmax_time = 0.0, 0.0
-
-        for ki in range(k):
-            # Run inference for the current prompt and get scores for the next token.
-            tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference_cachefree([row[:] for row in current_prompt],)
-            assert scores.shape == (len(prompt), len(self.tokens_list)), f"Expected scores shape ({len(prompt)}, {len(self.tokens_list)}), got {scores.shape}" # torch.Size([2, 50257]) 
-
-            # Accumulate timing metrics across steps.
-            total_data_copy_time += data_copy_time
-            total_softmax_time += softmax_time
-
-            # Select the next token based on the scores
-            if isinstance(scores, torch.Tensor):
-                next_idx = torch.argmax(scores, dim=-1) # get the index of the highest scoring token
-                assert next_idx.shape == (len(prompt),), f"Expected next_idx shape ({len(prompt)},), got {next_idx.shape}"
-            else: 
-                raise TypeError(f"Expected torch.Tensor for scores, got {type(scores)}")
-
-            # Get the next tokens for each batch element, all batches share tokens_list
-            next_tokens = [tokens_list[next] for next in next_idx.flatten().tolist()] # convert to list of ints
-            assert len(next_tokens) == len(prompt), f"Expected next_tokens length {len(prompt)}, got {len(next_tokens)}"
-
-            current_prompt = [row + [next_token] for row, next_token in zip(current_prompt, next_tokens)]
-
-            for i, next_token in enumerate(next_tokens):
-                draft_tokens[i].append(next_token)
+            """ assert all lists in list are of equal length
+            #if len(prompt) > 0:
+                prompt_length = len(prompt[0])
+                assert all(len(row) == prompt_length for row in prompt), "All prompts must be of equal length." """ 
             
-            draft_scores[ki] = scores.to(self.device)  # move to cpu for easier handling later
+            B, V = len(prompt), len(self.tokens_list) # number of batches and vocab size (or reduced vocab size)
+            draft_tokens = [[] for _ in range(B)] # make it list of lists to store tokens for each batch element
+            draft_scores = torch.zeros((k, B, V), device=self.device) # pre-allocate tensor for scores with shape (k, batch_size, vocab_size_or_reduced_vocab_size)
+            
+            current_prompt = [row[:] for row in prompt]
 
-        # Wrap draft tokens in one additional layer for each k step, so that the output is a list of lists of lists: batch_size x k x tokens_per_step
-        draft_tokens = [[draft_tokens[i][j] for j in range(k)] for i in range(len(prompt))]
-        
-        assert len(draft_tokens) == len(prompt), f"Expected draft_tokens length {len(prompt)}, got {len(draft_tokens)}"
-        assert draft_scores.shape == (k, len(prompt), len(self.tokens_list)), f"Expected draft_scores shape ({k}, {len(prompt)}, {len(self.tokens_list)}), got {draft_scores.shape}"             #assert that shape is k, B, V 
+            total_data_copy_time, total_softmax_time = 0.0, 0.0
 
-        if full_draft:
-            return draft_tokens, draft_scores, total_data_copy_time, total_softmax_time, current_prompt
-        else:
-            return draft_tokens, draft_scores, total_data_copy_time, total_softmax_time
+            for ki in range(k):
+                # Run inference for the current prompt and get scores for the next token.
+                tokens_list, scores, data_copy_time, softmax_time = self.run_batched_inference_cachefree([row[:] for row in current_prompt],)
+                assert scores.shape == (B, V), f"Expected scores shape ({B}, {V}), got {scores.shape}" # torch.Size([2, 50257]) 
+
+                # Accumulate timing metrics across steps.
+                total_data_copy_time += data_copy_time
+                total_softmax_time += softmax_time
+
+                # Select the next token based on the scores
+                if isinstance(scores, torch.Tensor):
+                    next_idx = torch.argmax(scores, dim=-1) # get the index of the highest scoring token
+                    assert next_idx.shape == (B,), f"Expected next_idx shape ({B},), got {next_idx.shape}"
+                else: 
+                    raise TypeError(f"Expected torch.Tensor for scores, got {type(scores)}")
+
+                # Get the next tokens for each batch element, all batches share tokens_list
+                next_tokens = [tokens_list[next] for next in next_idx.flatten().tolist()] # convert to list of ints
+                assert len(next_tokens) == len(prompt), f"Expected next_tokens length {len(prompt)}, got {len(next_tokens)}"
+
+                current_prompt = [row + [next_token] for row, next_token in zip(current_prompt, next_tokens)]
+
+                for i, next_token in enumerate(next_tokens):
+                    draft_tokens[i].append(next_token)
+                
+                draft_scores[ki] = scores.to(self.device)  # move to cpu for easier handling later
+
+            # Wrap draft tokens in one additional layer for each k step, so that the output is a list of lists of lists: batch_size x k x tokens_per_step
+            draft_tokens = [[draft_tokens[i][j] for j in range(k)] for i in range(len(prompt))]
+            
+            assert len(draft_tokens) == len(prompt), f"Expected draft_tokens length {len(prompt)}, got {len(draft_tokens)}"
+            assert draft_scores.shape == (k, len(prompt), len(self.tokens_list)), f"Expected draft_scores shape ({k}, {len(prompt)}, {len(self.tokens_list)}), got {draft_scores.shape}"             #assert that shape is k, B, V 
+
+            if full_draft:
+                return draft_tokens, draft_scores, total_data_copy_time, total_softmax_time, current_prompt
+            else:
+                return draft_tokens, draft_scores, total_data_copy_time, total_softmax_time
 
 
     def greedy_next_token(self, prompt, enable_kv_cache=True):
