@@ -1,3 +1,7 @@
+"""
+CLI entry point for finetuning and quantization of adapter models.
+"""
+
 import os
 
 from src.config import get_adapter_training_args

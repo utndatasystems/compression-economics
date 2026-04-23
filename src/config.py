@@ -1,30 +1,12 @@
 import argparse
 
-#TODO: as we add more models, we should consider loading the model list from a config file instead of hardcoding it here.
-MODEL_LIST = [
-    "Qwen/Qwen2.5-0.5B",
-    "Qwen/Qwen2.5-3B",
-    "Qwen/Qwen2.5-7B",
-    "Qwen/Qwen3-0.6B",
-    "Qwen/Qwen3-2B",
-    "Qwen/Qwen3-4B",
-    "gpt2",
-    "google/flan-t5-small",
-    "google/flan-t5-base",
-    "google/flan-t5-large",
-    "google/flan-t5-xl",
-    "google/flan-t5-xxl",
-    "meta-llama/Llama-3.2-1B-instruct",
-    "state-spaces/mamba-130m-hf",
-    "state-spaces/mamba-370m-hf",
-    "state-spaces/mamba-790m-hf",
-    "state-spaces/mamba-1.4b-hf",
-    "ai21labs/Jamba-v0.1",  # too large for testing, but included for completeness
-    "bert-base-uncased"
-]
+from src.utils import load_model_list
 
 
 def get_adapter_training_args() -> argparse.Namespace:
+     
+    model_list = load_model_list("./models.json")
+
     parser = argparse.ArgumentParser(description="Adapter Training Script")
 
     # path related
@@ -32,7 +14,7 @@ def get_adapter_training_args() -> argparse.Namespace:
     parser.add_argument("--save_dir", type=str, default=None, help="Directory to save LoRA adapters")
 
     # model related
-    parser.add_argument("--model_id", type=str, choices=MODEL_LIST, default="Qwen/Qwen2.5-0.5B", help="Base model ID")
+    parser.add_argument("--model_id", type=str, choices=model_list, default="Qwen/Qwen2.5-0.5B", help="Base model ID")
     parser.add_argument("--HF_token", type=str, default=None, help="Hugging Face token for rate limits (if needed)")
     
     # Adapter related
@@ -124,6 +106,8 @@ def get_adapter_training_args() -> argparse.Namespace:
 
 
 def get_main_args() -> argparse.Namespace:
+    model_list = load_model_list("./models.json")
+
     parser = argparse.ArgumentParser(description="Run Global Mask Compression Experiment")
 
     # path related
@@ -134,7 +118,7 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--text_input", type=str, required=False, help="The direct text input for LLM inference.")
 
     # model related
-    parser.add_argument("--model_name", type=str, choices=MODEL_LIST, default="Qwen/Qwen2.5-0.5B", help="Model name",)
+    parser.add_argument("--model_name", type=str, choices=model_list, default="Qwen/Qwen2.5-0.5B", help="Model name",)
     parser.add_argument("--HF_token", type=str, default=None, help="Hugging Face token for rate limits (if needed)")
     
     # inference related
@@ -151,7 +135,7 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
     parser.add_argument("--spec_k", type=int, default=None, help="Number of speculative tokens to generate for speculative compression/decompression")
-    parser.add_argument("--draft_model_name", type=str, choices=MODEL_LIST, default=None, help="Draft model name for speculative decompression (if different from teacher)")
+    parser.add_argument("--draft_model_name", type=str, choices=model_list, default=None, help="Draft model name for speculative decompression (if different from teacher)")
     # other
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
     
@@ -173,13 +157,15 @@ def get_main_args() -> argparse.Namespace:
 
 
 def get_quantize_model_args() -> argparse.Namespace:
+    model_list = load_model_list("./models.json")
+
     parser = argparse.ArgumentParser(description="Quantize a model with optional adapter")
     # path related
     parser.add_argument("--adapter_path", type=str, default=None, help="Path to pre-trained adapter")
     parser.add_argument("--save_dir", type=str, default="./output", help="Directory to save quantized models")
 
     # model related
-    parser.add_argument("--model_id", type=str, choices=MODEL_LIST, required=True, help="Base model ID or path")
+    parser.add_argument("--model_id", type=str, choices=model_list, required=True, help="Base model ID or path")
 
     # quantization related
     parser.add_argument("--quantization_bits", type=int, choices=[4, 8], required=True)
