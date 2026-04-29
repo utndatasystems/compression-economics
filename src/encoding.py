@@ -1,6 +1,4 @@
-from string import printable
 import numpy as np
-import random
 import math
 from collections import Counter
 import heapq
@@ -8,17 +6,31 @@ from dataclasses import dataclass
 from typing import Optional, Dict, Any, List
 import zstandard as zstd
 
+# =============================================================================
+# Huffman coding for rank lists
+# =============================================================================
+
 @dataclass
 class HuffmanNode:
-    symbol: Optional[int]
-    left: Optional["HuffmanNode"]
-    right: Optional["HuffmanNode"]
+    """A node in a binary Huffman tree."""
+
+    symbol: Optional[int] = None
+    left: Optional["HuffmanNode"] = None
+    right: Optional["HuffmanNode"] = None
+
+    @property
+    def is_leaf(self) -> bool:
+        return self.symbol is not None
 
 def build_huffman_code(rank_list: List[int]) -> Dict[int, str]:
-    """
+    """Build a Huffman codebook for a sequence of integer symbols.
     Given a rank_list, e.g., [3,5,3,1,5,...]
     Returns a dict: { symbol -> bitstring code }
+
+    Returns:
+        A dictionary mapping each symbol to a bitstring, e.g. {7: "010"}.
     """
+
     if not rank_list:
         return {}
 
@@ -115,6 +127,12 @@ def huffman_decode(bit_string: str, codebook: Dict[int, str]) -> List[int]:
             node = root
 
     return result
+
+
+# =============================================================================
+# Arithmetic coding core
+# =============================================================================
+
 
 class ArithmeticCoderBase(object):
     # Constructs an arithmetic coder, which initializes the code range.
@@ -289,40 +307,21 @@ class ArithmeticDecoder(ArithmeticCoderBase):
             self.code = self.code << 1 | self.read_code_bit()
 
 
-    def read(self, cumul, alphabet_size):
+    def read(self, cumulative: np.ndarray, alphabet_size: int) -> int:
         """Decodes the next symbol based on the given frequency table and returns it.
             Also updates this arithmetic coder's state and may read in some bits."""
-    #		if not isinstance(freqs, CheckedFrequencyTable):
-    #			freqs = CheckedFrequencyTable(freqs)
-
-        # Translate from coding range scale to frequency table scale
-        total = cumul[-1].item()
-    #		if total > self.MAX_TOTAL:
-    #			raise ValueError("Cannot decode symbol because total is too large")
-        range = self.high - self.low + 1
+        """Decode and return one symbol."""
+        total = int(cumulative[-1])
+        current_range = self.high - self.low + 1
         offset = self.code - self.low
-        value = ((offset + 1) * total - 1) // range
-    #		assert value * range // total <= offset
-    #		assert 0 <= value < total
+        value = ((offset + 1) * total - 1) // current_range
 
-        # A kind of binary search. Find highest symbol such that freqs.get_low(symbol) <= value.
-        start = 0
-        end = alphabet_size
-        while end - start > 1:
-            middle = (start + end) >> 1
-            if cumul[middle] > value:
-                end = middle
-            else:
-                start = middle
-    #		assert start + 1 == end
-
-        symbol = start
-    #		assert freqs.get_low(symbol) * range // total <= offset < freqs.get_high(symbol) * range // total
-        self.update(cumul, symbol)
-    #		if not (self.low <= self.code <= self.high):
-    #			raise AssertionError("Code out of range")
+        # `searchsorted(..., side="right") - 1` finds the symbol whose interval
+        # contains `value`.
+        symbol = int(np.searchsorted(cumulative, value, side="right") - 1)
+        self.update(cumulative, symbol)
         return symbol
-
+    
 
     def shift(self):
         self.code = ((self.code << 1) & self.MASK) | self.read_code_bit()
@@ -416,6 +415,12 @@ def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
     cumul[0] = 0
     cumul[1:] = np.cumsum(freq)
     return cumul
+
+
+# =============================================================================
+# LLM-facing compressor/decompressor
+# =============================================================================
+
 
 class LLMCompressor:
     def __init__(self):
