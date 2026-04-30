@@ -90,11 +90,28 @@ python adapter_training.py \
 - `--reduce_tokens/--no_reduce_tokens`: Toggle global vocabulary reduction. Default: enabled.
 - `--encoding`: `AC`, `bitpacked`, or `huffman`. Default: `AC`.
 - `--gpu_memory_utilization`: vLLM-only. Override the fraction of GPU memory reserved for model weights and KV cache.
+- `--tensorrt_engine_dir`: TensorRT-only. Path to a prebuilt TensorRT-LLM engine directory.
+- `--sglang_mem_fraction_static`: SGlang-only. Override the fraction of GPU memory reserved by the SGlang engine.
+- `--sglang_enable_deterministic_inference/--no_sglang_enable_deterministic_inference`: SGlang-only. Control deterministic engine execution.
+- `--llamacpp_model_path`: llama.cpp-only. Path to a local GGUF file served by a managed `llama-server` process.
+- `--llamacpp_binary`: llama.cpp-only. Path to the `llama-server` binary. Default: `llama-server`.
+- `--llamacpp_host`: llama.cpp-only. Host for the managed local server. Default: `127.0.0.1`.
+- `--llamacpp_port`: llama.cpp-only. Port for the managed local server. Default: `8080`.
+- `--llamacpp_threads`: llama.cpp-only. CPU thread count passed to `llama-server`.
+- `--llamacpp_n_gpu_layers`: llama.cpp-only. Number of layers to offload to GPU.
 - `--print_results`: Print detailed stats to stdout. Default: disabled.
 
 When `--engine vllm` is used and `CUDA_VISIBLE_DEVICES` is not already set, the runtime will prefer the visible GPU with the most free memory and will clamp the requested memory reservation to fit current free memory.
 
 Native vLLM arithmetic coding is verified against vLLM `0.17.1` in this repo. Rank-based encodings still use the bulk `prompt_logprobs` path, while arithmetic coding uses a separate internal full-logits compatibility path to retrieve dense next-token logits before sampler truncation.
+
+The TensorRT backend expects a prebuilt TensorRT-LLM engine directory via `--tensorrt_engine_dir`. The current implementation is scoped to CUDA plus prebuilt engine artifacts and keeps HuggingFace tokenization outside the runtime for compression/decompression consistency. LoRA adapters are not yet supported on this backend in this repo.
+
+The SGlang backend uses the embedded `sglang.Engine` API and reconstructs per-step next-token scores by probing the active token set with `token_ids_logprob`. This keeps the predictor contract identical to the transformer and vLLM backends. In reduced-token mode this is a practical AC path; in unreduced full-vocab mode it is functionally correct but heavier than vLLM's native dense-logits capture path.
+
+The validated environment for this backend used `sglang 0.5.9`. Older SGlang releases such as `0.5.2` can fail during engine initialization against the current `transformers` build with `TypeError: AutoImageProcessor.register() got multiple values for argument 'exist_ok'`. If you see that error, upgrade SGlang in the active environment before retrying.
+
+The llama.cpp backend manages a local `llama-server` subprocess and expects a local GGUF model via `--llamacpp_model_path`. Unlike the Hugging Face-based engines, tokenization and detokenization are performed through llama.cpp runtime endpoints so compression and decompression stay aligned with the loaded GGUF tokenizer. The current implementation is correctness-first and currently requires `--reduce_tokens`; unreduced full-vocab mode is rejected with a clear error. For rank-based encodings the backend returns reduced-set log-prob scores rather than raw logits, which preserves token ranking.
 
 If that compatibility path is unavailable for the installed environment, the runtime falls back to the transformer backend for arithmetic coding with a warning that names the missing capability. The verified native AC path is currently limited to `tensor_parallel_size=1`.
 
