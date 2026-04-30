@@ -13,13 +13,20 @@ This module provides:
 import inspect
 import struct
 import time
+import importlib
 import torch
 import numpy as np
 from multiprocessing import shared_memory
 from pyroaring import BitMap
 
 from src.hf_cache import get_model_cache_dir
-from vllm.v1.sample.logits_processor import LogitsProcessor
+
+try:
+    from vllm.v1.sample.logits_processor import LogitsProcessor
+    _VLLM_IMPORT_ERROR = None
+except Exception as exc:
+    LogitsProcessor = object
+    _VLLM_IMPORT_ERROR = exc
 
 # Well-known shared memory name used by the processor ↔ host handshake.
 _SHM_NAME = "vllm_ac_logits_capture"
@@ -38,20 +45,45 @@ def probe_vllm_ac_support(args):
     Returns:
         tuple: (supported: bool, reason: str | None)
     """
-    try:
-        import vllm  # noqa: F401
-    except ImportError:
-        return False, "vllm is not installed"
+    supported, reason = probe_vllm_backend_support(args)
+    if not supported:
+        return False, reason
 
     if not torch.cuda.is_available():
         return False, "CUDA is not available"
 
     try:
+        import vllm
         sig = inspect.signature(vllm.LLM.__init__)
         if "logits_processors" not in sig.parameters:
             return False, "vllm.LLM does not accept logits_processors"
     except Exception as e:
         return False, f"failed to inspect vllm.LLM.__init__: {e}"
+
+    return True, None
+
+
+def probe_vllm_backend_support(args):
+    """
+    Check whether the installed vLLM runtime can be imported and used.
+
+    Returns:
+        tuple: (supported: bool, reason: str | None)
+    """
+    del args
+
+    try:
+        importlib.import_module("vllm")
+    except ImportError:
+        return False, "vllm is not installed"
+    except Exception as exc:
+        return False, f"failed to import vllm: {exc}"
+
+    if _VLLM_IMPORT_ERROR is not None:
+        return False, f"failed to import vllm internals: {_VLLM_IMPORT_ERROR}"
+
+    if not torch.cuda.is_available():
+        return False, "CUDA is not available"
 
     return True, None
 
@@ -127,6 +159,10 @@ class VLLMTokenPredictor:
     """
 
     def __init__(self, args, bitmap_data):
+        supported, reason = probe_vllm_backend_support(args)
+        if not supported:
+            raise ValueError(f"vLLM backend is not available: {reason}")
+
         from vllm import LLM
         from transformers import AutoTokenizer
 
