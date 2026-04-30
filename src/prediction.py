@@ -465,7 +465,15 @@ def create_predictor(args, bitmap_data):
     if args.engine == "transformer":
         return TokenPredictor(args, bitmap_data)
     elif args.engine == "vllm":
-        from src.vllm_prediction import VLLMTokenPredictor, probe_vllm_ac_support
+        from src.vllm_prediction import (
+            VLLMTokenPredictor,
+            probe_vllm_ac_support,
+            probe_vllm_backend_support,
+        )
+
+        backend_supported, backend_reason = probe_vllm_backend_support(args)
+        if not backend_supported:
+            raise ValueError(f"vLLM backend is not available: {backend_reason}")
 
         if args.encoding == "AC":
             supported, reason = probe_vllm_ac_support(args)
