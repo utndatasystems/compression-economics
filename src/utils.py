@@ -13,6 +13,8 @@ import os
 import tarfile
 from datetime import datetime
 import torch
+from pathlib import Path
+from typing import List
 
 def count_parameters(model):
     total, trainable = 0, 0
@@ -228,9 +230,30 @@ def folder_to_tar(folder_path, tar_path):
     return tar_path
 
 
+def load_model_list(path: str) -> List[str]:
+    p = Path(path)
+
+    if not p.exists():
+        raise FileNotFoundError(f"Model list file not found: {path}")
+
+    with p.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    if not isinstance(data, list) or not all(isinstance(x, str) for x in data):
+        raise ValueError("Model file must be a JSON list of strings.")
+
+    if len(data) == 0:
+        raise ValueError("Model list cannot be empty.")
+
+    return data
+
+
 if __name__ == "__main__":
     # Example usage of folder_to_tar
     folder_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8"
     tar_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8.tar"
     created_tar = folder_to_tar(folder_path, tar_path)
     print(f"Created tar archive: {created_tar}")
+
+
+    

@@ -136,8 +136,10 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
     parser.add_argument("--spec_k", type=int, default=None, help="Number of speculative tokens to generate for speculative compression/decompression")
     parser.add_argument("--draft_model_name", type=str, choices=model_list, default=None, help="Draft model name for speculative decompression (if different from teacher)")
+    
     # other
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
+    parser.add_argument("--force", action="store_true", help="Run the experiment even if results already exist.",)
     
     args = parser.parse_args()
 

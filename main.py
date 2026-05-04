@@ -46,10 +46,14 @@ def main():
             # ========================
             results_db = load_results(RESULTS_FILE)
             exp_key = make_key(args)
-            if exp_key in results_db:
+
+            if exp_key in results_db and not args.force:
                 print(f"\n⚠️  Experiment already exists for {exp_key}, skipping run.")
                 print(f"Stored Results: {results_db[exp_key]}")
+                print("Use --force to rerun and overwrite the stored results.")
                 return
+            elif exp_key in results_db and args.force:
+                print(f"\n⚠️  Experiment already exists for {exp_key}, but --force was set. Rerunning.")
 
             # ========================
             # Print experiment settings
@@ -155,7 +159,6 @@ def main():
         print(f"  Spec_k           : {args.spec_k}")
 
         print("\n===== Decompress Data =====")
-        #args.spec_k = 5
 
         # NEW 
         if args.spec_k is not None:
@@ -168,6 +171,7 @@ def main():
                 bitmap=bitmask_data)
             
         else:
+            print(f"\nRunning standard decompression without speculative draft generation.")
             _, results, decomp_stats = run_global_mask_decompression(
                 args=args,
                 first_tokens=first_token,
