@@ -133,7 +133,7 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
     parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
-    parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
+    parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman", "PMATIC"], default="AC", help="Encoding method for compression")
     parser.add_argument("--spec_k", type=int, default=None, help="Number of speculative tokens to generate for speculative compression/decompression")
     parser.add_argument("--draft_model_name", type=str, choices=model_list, default=None, help="Draft model name for speculative decompression (if different from teacher)")
     
