@@ -278,11 +278,4 @@ if __name__ == "__main__":
     #tar_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8.tar"
     #created_tar = folder_to_tar(folder_path, tar_path)
     #print(f"Created tar archive: {created_tar}")
-
-    check_mismatch("/home/hpc/v164be/v164be10/src/compression-economics/text_results_gt.txt", output_path="/home/hpc/v164be/v164be10/src/compression-economics/text_results.txt")
-    check_mismatch("/home/hpc/v164be/v164be10/src/compression-economics/text_results.txt", output_path="/home/hpc/v164be/v164be10/src/compression-economics/text_results.txt")
-
-
-
-
-    
+    #TODO: move this to setup? 
