@@ -5,13 +5,11 @@ from string import printable
 from tqdm import tqdm
 from typing import Optional, Dict, Any, List
 
-from src.encoding import * #LLMCompressor, LLMDecompressor, 
-
+from src.encoding import *
 
 @pytest.fixture(scope="session")
 def alphabet_size():
     return len(printable)
-
 
 @pytest.fixture
 def rng():
@@ -21,7 +19,6 @@ def rng():
     """
     random.seed(42)
     np.random.seed(42)
-
 
 @pytest.fixture
 def random_input(rng, alphabet_size):

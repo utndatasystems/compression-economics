@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 import pytest
 import torch
+from tqdm import tqdm
 
 from src.prediction import TokenPredictor
 
@@ -59,8 +60,8 @@ def test_run_batched_inference_cachefree(test_setup, print_on = True):
     assert scores_cf.dim() == 2, f"Scores should be a 2D tensor with shape (batch_size, vocab_size or reduced_vocab_size). Is {scores_cf.shape} but expected (len(dummy_prompts), len(self.tokens_list))"
 
 
-def test_run_batched_inference_cachefree_uneven_input(test_setup, print_on = False):
-    """Test the cachefree inference method separately."""
+def test_run_batched_inference_cachefree_uneven_input(test_setup, print_on = True):
+    """Test the cachefree inference method with uneven input lengths --> needed for draft generation."""
     dummy_predictor, _ = test_setup
 
     dummy_prompts = [[1, 2], [3, 4, 5, 6]]  # uneven length prompts
@@ -81,10 +82,10 @@ def test_run_batched_inference_cachefree_uneven_input(test_setup, print_on = Fal
 
 
 def test_run_batched_inferences_alignment(test_setup):
-    """Test that the standard and cachefree inference methods produce the same outputs."""
+    """Test that the standard and cachefree inference methods produce the same outputs when kv_cache is enabled."""
     dummy_predictor, dummy_prompts = test_setup
 
-    tokens_list, scores, _, _ = dummy_predictor.run_batched_inference(dummy_prompts, enable_kv_cache=False)
+    tokens_list, scores, _, _ = dummy_predictor.run_batched_inference(dummy_prompts, enable_kv_cache=True)
     tokens_list_cf, scores_cf, _, _ = dummy_predictor.run_batched_inference_cachefree(dummy_prompts)
 
     print("Standard vs Cachefree - Tokens list shape:", len(tokens_list), "vs", len(tokens_list_cf))
@@ -95,15 +96,16 @@ def test_run_batched_inferences_alignment(test_setup):
 
 
 @pytest.mark.parametrize("k", [1, 3])
-def test_generate_draft(test_setup, k):
+def test_generate_draft(test_setup, k, print_on = False):
     dummy_predictor, dummy_prompts = test_setup
 
     draft_tokens, draft_scores, total_data_copy_time, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=k)
 
-    print("Draft tokens:", draft_tokens)
-    print("Draft scores shape:", draft_scores.shape)  # should be (k, batch_size, vocab_size_or_reduced_vocab_size)
-    print("Total data copy time for draft generation:", total_data_copy_time)
-    print("Total softmax time for draft generation:", total_softmax_time)
+    if print_on:
+        print("Draft tokens:", draft_tokens)
+        print("Draft scores shape:", draft_scores.shape)  # should be (k, batch_size, vocab_size_or_reduced_vocab_size)
+        print("Total data copy time for draft generation:", total_data_copy_time)
+        print("Total softmax time for draft generation:", total_softmax_time)
 
     assert isinstance(draft_tokens, list)
     assert len(draft_tokens) == len(dummy_prompts)
@@ -115,8 +117,43 @@ def test_generate_draft(test_setup, k):
     print("test_generate_draft passed.\n")
 
 
+@pytest.mark.parametrize("k", [2])
+def test_generate_draft_correctness(test_setup, k, print_on = True):
+    """Do two steps of draft generation manually and verify that the output matches the generate_draft method."""
+    dummy_predictor, dummy_prompts = test_setup
+
+    draft_tokens, draft_scores, total_data_copy_time, total_softmax_time = dummy_predictor.generate_draft(dummy_prompts, k=k)
+    B = len(dummy_prompts)
+    if print_on:
+        print('Test generate_draft correctness with k=2')
+        print("Draft tokens:", draft_tokens)
+        print("Draft scores shape:", draft_scores.shape)  # should be (k, batch_size, vocab_size_or_reduced_vocab_size)
+        print("Total data copy time for draft generation:", total_data_copy_time)
+        print("Total softmax time for draft generation:", total_softmax_time)
+
+    # do steps manually to verfiy correctness of draft generation
+    manual_draft_tokens = []
+
+    for i in tqdm(range(k)):
+        tokens_list, scores, _, _ = dummy_predictor.run_batched_inference_cachefree(dummy_prompts)
+        most_likely_tokens = [tokens_list[torch.argmax(scores[j]).item()] for j in range(scores.shape[0])]
+        manual_draft_tokens.append(most_likely_tokens) # store tokens for each step separately for easier debugging
+        print(f"Manual draft tokens for step {i}:", most_likely_tokens)
+
+        # Update prompts for next step 
+        dummy_prompts = [dummy_prompts[j] + manual_draft_tokens[j] for j in range(B)]
+        print(f"Updated prompts after step {i}:", dummy_prompts)
+
+    # Transpose manual_draft_tokens to match the shape of draft_tokens
+    manual_draft_tokens = list(map(list, zip(*manual_draft_tokens)))
+
+    assert draft_tokens == manual_draft_tokens, f"Draft tokens mismatch. Expected {manual_draft_tokens}, got {draft_tokens}"
+
+    print("test_generate_draft passed.\n")
+
+
 @pytest.mark.parametrize("k", [1, 3])
-def test_generate_draft_uneven_input(test_setup, k):
+def test_generate_draft_uneven_input(test_setup, k, print_on = True):
     dummy_predictor, dummy_prompts = test_setup
     dummy_prompts = [[1, 2], [3, 4, 5, 6]] # uneven length prompts
 
@@ -230,19 +267,22 @@ def test_accept_reject_loop(test_setup, k):
 
     print("test_accept_reject_loop passed.\n")
 
-
 def test_accept_reject_loop_forced_rejection(test_setup):
-    """Test the accept/reject loop with a forced mismatch to verify that rejections are handled correctly."""
+    """
+    Test the accept/reject loop with a forced mismatch to verify that rejections are handled correctly.
+    Mismatch is forced between first token in first batch element. Rest of batches align with the draft to isolate the effect of a single mismatch.
+    """
     dummy_predictor, dummy_prompts = test_setup
-
-    draft_tokens, _, _, _ = dummy_predictor.generate_draft(dummy_prompts, k=3)
+    true_tokens, _, _, _ = dummy_predictor.generate_draft(dummy_prompts, k=3)
 
     # Force a mismatch in the first batch element by corrupting the first draft token
-    forced_draft_tokens = [row[:] for row in draft_tokens]
-    forced_draft_tokens[0][0] = forced_draft_tokens[0][0] + 1
+    draft_tokens = [row[:] for row in true_tokens] # deep copy to avoid modifying original true_tokens
+    
+    # assuming token IDs are integers, this will create a mismatch with the verifier's prediction for the second token in the first batch element
+    draft_tokens[0][1] = draft_tokens[0][1] + 1 
 
-    print("Original draft tokens:", draft_tokens)
-    print("Forced draft tokens:", forced_draft_tokens)
+    print("Original / True draft tokens:", true_tokens)
+    print("Draft tokens:", draft_tokens)
 
     (   accepted_tokens,
         accepted_lengths,
@@ -250,7 +290,7 @@ def test_accept_reject_loop_forced_rejection(test_setup):
         rejected,
         total_data_copy_time,
         total_softmax_time,
-    ) = dummy_predictor.accept_reject_loop(dummy_prompts, forced_draft_tokens)
+    ) = dummy_predictor.accept_reject_loop(dummy_prompts, draft_tokens)
 
     print("Accepted tokens:", accepted_tokens)
     print("Accepted lengths:", accepted_lengths)
@@ -258,7 +298,7 @@ def test_accept_reject_loop_forced_rejection(test_setup):
     print("Rejected flags:", rejected)
 
     assert rejected[0] is True, "Expected forced rejection in batch element 0"
-    assert accepted_lengths[0] == 0, f"Expected zero accepted tokens before first forced mismatch, got {accepted_lengths[0]}"
+    assert accepted_lengths[0] == 1, f"Expected one accepted token before first forced mismatch, got {accepted_lengths[0]}"
 
     print("test_accept_reject_loop_forced_rejection passed.\n")
 
