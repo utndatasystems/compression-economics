@@ -7,7 +7,7 @@ import os
 
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression, run_global_mask_speculative_decompression
 from src.config import get_main_args
-from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params
+from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params, check_mismatch
 from src.prediction import TokenPredictor
 
 RESULTS_FILE = "compression_results.json"
@@ -196,6 +196,12 @@ def main():
         # Save the reconstructed text to a file
         with open(args.output_path, "w") as f:
             f.write(results)
+
+        # Check if decompressed text matches original input (if available)
+        if check_mismatch(input_path=args.input_path, output_path=args.output_path, first_n_tokens=args.first_n_tokens) == False:
+            print("\n⚠️  Warning: Decompressed text does not match original input!")
+        else:
+            print("\n✅ Decompressed text matches original input.")
 
         print("\n\n===== Decompression Complete =====")
         print(f"Decompression stats saved to: {RESULTS_FILE}")

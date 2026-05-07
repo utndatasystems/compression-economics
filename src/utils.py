@@ -247,7 +247,7 @@ def load_model_list(path: str) -> List[str]:
 
     return data
 
-def check_mismatch(input_path, first_n_tokens = None, output_path = None):
+def check_mismatch(input_path = None, output_path = None, first_n_tokens = None,):
     """
         Function that checks if input and output files (after compression-decompression) match, 
         and returns True if they match, False otherwise. It also prints a warning if a mismatch is detected.
@@ -266,16 +266,15 @@ def check_mismatch(input_path, first_n_tokens = None, output_path = None):
         reconstructed = reconstructed[:first_n_tokens]
     
     if original != reconstructed:
-        print("⚠️  Mismatch detected between original and reconstructed text!")
         return False
     else:
-        print("✅ Original and reconstructed text match perfectly.")
         return True
 
 if __name__ == "__main__":
+    pass
+     #TODO: move this to setup? 
     # Example usage of folder_to_tar
     #folder_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8"
     #tar_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8.tar"
     #created_tar = folder_to_tar(folder_path, tar_path)
     #print(f"Created tar archive: {created_tar}")
-    #TODO: move this to setup? 
