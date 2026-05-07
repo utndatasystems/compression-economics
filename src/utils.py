@@ -92,7 +92,13 @@ def save_global_mask_file(
         "first_n_tokens": args.first_n_tokens,
         "retain_tokens": args.retain_tokens,
         "use_kv_cache": args.use_kv_cache,
-        "batch_size": args.batch_size
+        "batch_size": args.batch_size,
+        "encoding": getattr(args, "encoding", None),
+        "reduce_tokens": getattr(args, "reduce_tokens", None),
+        "engine": getattr(args, "engine", None),
+        "lora_path": getattr(args, "lora_path", None),
+        "pmatic_delta": getattr(args, "pmatic_delta", None),
+        "pmatic_r": getattr(args, "pmatic_r", None),
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -149,6 +155,12 @@ def load_global_mask_file(args):
     args.retain_tokens = header["retain_tokens"]
     args.use_kv_cache = header["use_kv_cache"]
     args.batch_size = header["batch_size"]
+    args.encoding = header.get("encoding", args.encoding)
+    args.reduce_tokens = header.get("reduce_tokens", args.reduce_tokens)
+    args.engine = header.get("engine", args.engine)
+    args.lora_path = header.get("lora_path", args.lora_path)
+    args.pmatic_delta = header.get("pmatic_delta", getattr(args, "pmatic_delta", None))
+    args.pmatic_r = header.get("pmatic_r", getattr(args, "pmatic_r", None))
     args.input_path = header["input_path"]
 
     return args, first_token, bit_string, bitmask_data

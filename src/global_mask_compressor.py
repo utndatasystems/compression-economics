@@ -26,6 +26,39 @@ from wandb.plot import line
 from itertools import chain
 from copy import copy
 
+PMATIC_DELTA = 1e-3
+
+
+def _get_pmatic_params(args):
+    delta = getattr(args, "pmatic_delta", None)
+    if delta is None:
+        delta = PMATIC_DELTA
+    r = getattr(args, "pmatic_r", None)
+    if r is None:
+        r = choose_pmatic_r(delta)
+        args.pmatic_r = r
+    args.pmatic_delta = delta
+    return delta, r
+
+
+def _make_arithmetic_decompressor(args, bit_string, alphabet_size):
+    if args.encoding == "AC":
+        return LLMDecompressor(bit_string, algorithm="AC")
+
+    if args.encoding == "PMATIC":
+        delta, r = _get_pmatic_params(args)
+        return LLMDecompressor(
+            bit_string,
+            algorithm="PMATIC",
+            alphabet_size=alphabet_size,
+            delta=delta,
+            r=r,
+        )
+
+    raise NotImplementedError(
+        f"Encoding method '{args.encoding}' is not implemented for decompression."
+    )
+
 
 def run_global_mask_compression(args):
     """
@@ -98,12 +131,16 @@ def run_global_mask_compression(args):
     if args.encoding in {"AC"}:
         llm_compressor = LLMCompressor()
     elif args.encoding == "PMATIC":
-        delta = 1e-3
-        r = choose_pmatic_r(delta) 
+        delta, r = _get_pmatic_params(args)
         print(f"Using PMATIC compressor with delta={delta}, r={r}")
         alphabet_size = len(token_predictor.tokens_list)
         # alternatively alphabet_size = token_predictor.tokenizer.vocab_size
-        llm_compressor = LLMCompressor(alphabet_size=alphabet_size, delta=1e-3, r=0.05, algorithm = "PMATIC")
+        llm_compressor = LLMCompressor(
+            alphabet_size=alphabet_size,
+            delta=delta,
+            r=r,
+            algorithm="PMATIC",
+        )
 
     # Per-batch prompt buffers that grow token-by-token.
     prompts = [[] for _ in range(args.batch_size)]
@@ -301,7 +338,11 @@ def run_global_mask_decompression(
     token_predictor = TokenPredictor(args, bitmap_data=bitmap)
 
     # Get the original tokens to know the starting token and the total length.
-    decompressor = LLMDecompressor(bit_string)
+    decompressor = _make_arithmetic_decompressor(
+        args,
+        bit_string,
+        alphabet_size=len(token_predictor.tokens_list),
+    )
 
     # Seed each batch with its initial token from the original data (required for autoregressive decoding)
     prompts = [[first_tokens[i]] for i in range(args.batch_size)]
@@ -441,7 +482,11 @@ def run_global_mask_speculative_decompression(
     else:
         draft_args = args
 
-    decompressor = LLMDecompressor(bit_string)
+    decompressor = _make_arithmetic_decompressor(
+        args,
+        bit_string,
+        alphabet_size=len(verifier.tokens_list),
+    )
 
     if not first_tokens:
         raise ValueError("first_tokens must contain one initial token per batch row")
@@ -810,7 +855,11 @@ def run_global_mask_speculative_decompression_old(
     draft_args.model_name = draft_model_name
 
     draft = TokenPredictor(draft_args, bitmap_data=bitmap)
-    decompressor = LLMDecompressor(bit_string)
+    decompressor = _make_arithmetic_decompressor(
+        args,
+        bit_string,
+        alphabet_size=len(verifier.tokens_list),
+    )
 
     prompts = [[first_tokens[i]] for i in range(args.batch_size)]
     reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size)]
