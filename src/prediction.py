@@ -314,17 +314,16 @@ class TokenPredictor:
             tuple[list[int], torch.Tensor, float, float]:
                 Same return format as run_batched_inference().
         """
-    
+
         assert isinstance(logits, torch.Tensor), f"Expected logits to be a torch.Tensor, got {type(logits)}"
-        # print(f"Logits shape before reduction: {logits.shape}, device: {logits.device}, dtype: {logits.dtype}")
-        assert logits.shape[1] == self.tokenizer.vocab_size, f"Logits shape {logits.shape} does not match expected (batch_size, vocab_size) where vocab_size is either full tokenizer vocab or reduced tokens list size {len(self.tokens_list)}"
+        #print(f"Logits shape: {logits.shape}, expected (batch_size, vocab_size) where vocab_size is {self.model.config.vocab_size}")
         assert logits.dim() == 2, f"Expected logits of shape (batch_size, vocab_size), got {logits.shape}"
 
         if getattr(self, "reduce_tokens", False):
             logits = logits.index_select(1, self.index_tensor.to(logits.device))
 
         softmax_time = 0.0
-        if self.args.encoding == "AC":
+        if self.args.encoding in {"AC", "PMATIC"}:
             t0_softmax = time.perf_counter()
             probs = torch.softmax(logits, dim=-1)
             softmax_time = time.perf_counter() - t0_softmax
@@ -357,7 +356,7 @@ class TokenPredictor:
         - tokens_list: list of token IDs corresponding to the score columns in the returned tensor.
         - scores: tensor of shape (batch_size, vocab_size_or_reduced_vocab_size)
         - data_copy_time: approximate time spent moving tensors between host and device during this call.
-        - softmax_time: time spent computing the softmax (only non-zero when encoding == "AC").
+        - softmax_time: time spent computing the softmax (only non-zero when encoding == "AC" / "PMATIC").
         """
         data_copy_time = 0.0
 
@@ -461,7 +460,7 @@ class TokenPredictor:
                 tensor. This is the reduced token list when token reduction is
                 enabled, otherwise the full vocabulary index range.
                 - ``scores``:
-                If ``self.args.encoding == "AC"``, a probability tensor on CPU.
+                If ``self.args.encoding == "AC" or "PMATIC"``, a probability tensor on CPU.
                 If ``self.args.encoding in {"bitpacked", "huffman"}``, a logits
                 tensor on the active device.
                 - ``data_copy_time``:

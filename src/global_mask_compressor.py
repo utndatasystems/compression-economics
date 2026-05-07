@@ -11,7 +11,9 @@ Decompression mirrors compression using the same model and
 bitmap to reconstruct tokens from the bitstream.
 """
 
-from src.encoding import LLMCompressor, LLMDecompressor
+import sys
+
+from src.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
 from src.prediction import TokenDataPreparer, TokenPredictor
 from itertools import chain
 from collections import defaultdict
@@ -19,7 +21,7 @@ from collections import defaultdict
 import numpy as np
 import time
 import torch
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from wandb.plot import line
 from itertools import chain
 from copy import copy
@@ -56,6 +58,7 @@ def run_global_mask_compression(args):
             - args (argparse.Namespace): Possibly updated args from token preparation.
     """
     print(f"\n----- Running Compression: Global Token Mask (tokens={args.first_n_tokens}, kv_cache={args.use_kv_cache}) -----")
+    use_tqdm = sys.stderr.isatty()
 
     t0_tokenize = time.perf_counter()
     input_token_cnt = 0
@@ -89,9 +92,18 @@ def run_global_mask_compression(args):
     bitmask_data = token_data_preparer.get_bitmap()
     total_bitmap_size = len(bitmask_data) * 8
     tokenize_time = time.perf_counter() - t0_tokenize
-
-    llm_compressor = LLMCompressor()
+        
     token_predictor = TokenPredictor(args, bitmap_data=bitmask_data)
+
+    if args.encoding in {"AC"}:
+        llm_compressor = LLMCompressor()
+    elif args.encoding == "PMATIC":
+        delta = 1e-3
+        r = choose_pmatic_r(delta) 
+        print(f"Using PMATIC compressor with delta={delta}, r={r}")
+        alphabet_size = len(token_predictor.tokens_list)
+        # alternatively alphabet_size = token_predictor.tokenizer.vocab_size
+        llm_compressor = LLMCompressor(alphabet_size=alphabet_size, delta=1e-3, r=0.05, algorithm = "PMATIC")
 
     # Per-batch prompt buffers that grow token-by-token.
     prompts = [[] for _ in range(args.batch_size)]
@@ -103,10 +115,9 @@ def run_global_mask_compression(args):
     entropy = 0.0
     rank_list = []
     probs_list = []
+    
     # Process each token in the dataset to compress it.
-    for token_idx in tqdm(range(chunk_length)):
-        print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
-
+    for token_idx in tqdm(range(chunk_length), disable=not use_tqdm):
         # Append the current token from each batch to its prompt context.
         for i in range(args.batch_size):
             prompts[i].append(batches[i][token_idx])
@@ -136,6 +147,7 @@ def run_global_mask_compression(args):
             else:
                 actual_next_tokens.append(0)
                 valid_mask.append(False)
+
         if args.engine == "transformer":
             if args.encoding == "AC":
                 t0_ac = time.perf_counter()
@@ -146,6 +158,21 @@ def run_global_mask_compression(args):
                     if not valid_mask[idx]:
                         continue
                     target_idx = actual_next_tokens[idx]
+                    llm_compressor.next_token(target_idx, probs)
+                    entropy += -np.log2(probs[target_idx])
+                    probs_list.append(probs[target_idx])
+
+                ac_time += time.perf_counter() - t0_ac
+
+            elif args.encoding == "PMATIC":
+                t0_ac = time.perf_counter()
+                probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
+
+                for idx, probs in enumerate(probs_cpu):
+                    if not valid_mask[idx]:
+                        continue
+                    target_idx = actual_next_tokens[idx]
+        
                     llm_compressor.next_token(target_idx, probs)
                     entropy += -np.log2(probs[target_idx])
                     probs_list.append(probs[target_idx])
@@ -181,6 +208,9 @@ def run_global_mask_compression(args):
     if args.engine == "transformer":
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")
+        elif args.encoding == "PMATIC": 
+            pass
+            bit_string = llm_compressor.compress(encoding="PMATIC")
         elif args.encoding == "bitpacked":
             print(f"len of rank list: {len(rank_list)}")
             print(f"max rank: {max(rank_list)}")
@@ -303,7 +333,7 @@ def run_global_mask_decompression(
             break
 
         # Bitstring is unbatched, therefore we have to calculate batch id again using chunk-length
-        print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
+        #print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
         # Truncate context if it exceeds model limit (prevents overflow)
         if len(prompts[0]) >= args.context_length:
@@ -580,10 +610,10 @@ def run_global_mask_speculative_decompression(
         if current_k <= 0:
             break
 
-        print(
-            f"\rProcessing speculative cycle, active_rows={len(active_rows)}, k={current_k}",
-            end=""
-        )
+        #print(
+        #    f"\rProcessing speculative cycle, active_rows={len(active_rows)}, k={current_k}",
+        #    end=""
+        #)
 
         # --- Draft phase: generate k tokens from the draft model for each active row ---
                 # 1) Draft phase
@@ -838,10 +868,10 @@ def run_global_mask_speculative_decompression_old(
         if current_k <= 0:
             break
 
-        print(
-            f"\rProcessing speculative cycle, active_rows={len(active_rows)}, k={current_k}",
-            end=""
-        )
+        #print(
+        #    f"\rProcessing speculative cycle, active_rows={len(active_rows)}, k={current_k}",
+        #    end=""
+        #)
 
         # ------------------------------------------------------------------
         # 1) Draft phase: produce k proposals per active row

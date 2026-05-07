@@ -466,24 +466,32 @@ class LLMCompressor:
 
             prefix.append(bit)
 
-    def compress(self, encoding: str = "AC", rank_list=None):
-        if encoding == "AC":
+        
+    def compress(self, encoding: Optional[str] = None, rank_list=None):
+        encoding_name = self.algorithm if encoding is None else encoding.upper()
+
+        if encoding_name in {"AC", "PMATIC"}:
+            if encoding_name != self.algorithm:
+                raise ValueError(
+                    f"compress encoding '{encoding}' does not match compressor "
+                    f"algorithm '{self.algorithm}'"
+                )
             self.encoder.finish()
             return self.bitout.get_bits()
 
-        elif encoding == "bitpacked":
+        elif encoding in {"bitpacked", "BITPACKED"}:
             assert rank_list is not None, "rank_list must be provided for bitpacked encoding"
             max_rank = max(rank_list) if rank_list else 0
             num_bits = max_rank.bit_length()
             return "".join(format(rank, f"0{num_bits}b") for rank in rank_list)
 
-        elif encoding == "huffman":
+        elif encoding in {"huffman", "HUFFMAN"}:
             assert rank_list is not None, "rank_list must be provided for huffman encoding"
             codebook = build_huffman_code(rank_list)
             bit_string = huffman_encode(rank_list, codebook)
             return bit_string, codebook
 
-        elif encoding == "zstd":
+        elif encoding in {"zstd", "ZSTD"}:
             assert rank_list is not None, "rank_list must be provided for zstd encoding"
             ranks_arr = np.asarray(rank_list, dtype=np.uint32)
             raw_bytes = ranks_arr.tobytes()
