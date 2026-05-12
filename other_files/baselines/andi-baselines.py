@@ -72,7 +72,6 @@ TOOLS = {
     },
 }
 
-
 def run_command(cmd):
     start = time.time()
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
