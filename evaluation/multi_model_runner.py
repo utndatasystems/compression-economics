@@ -1,22 +1,8 @@
 #!/usr/bin/env python3
-"""
-Run all LLM compression experiments + traditional baselines
+"""Run all LLM compression experiments plus traditional baselines.
 
 Usage:
-    python run_all_experiments.py [OPTIONS]
-
-Options:
-    --skip-llm          Skip LLM compression/decompression experiments
-    --skip-baselines    Skip traditional compressor baselines
-    --first-n-tokens N  Override token count for LLM experiments (default: full dataset)
-    --datasets D [D ..] Datasets to run (default: data/text8)
-    --output FILE       Output TSV path (default: experiment_results.tsv)
-    --results-json FILE JSON file for LLM results (default: compression_results.json)
-    --dry-run           Print commands without executing
-    --gpu-label LABEL   Label for the GPU hardware (default: auto-detected)
-    --gpu-cost COST     Hourly cost in USD for the GPU instance (default: 0.804)
-    --cpu-label LABEL   Label for the CPU hardware (default: auto-detected)
-    --cpu-cost COST     Hourly cost in USD for the CPU (default: 0.019)
+    python evaluation/multi_model_runner.py [OPTIONS]
 """
 
 import argparse
