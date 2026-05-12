@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -22,7 +23,61 @@ DEFAULT_FIGURES_DIR = "figures"
 DEFAULT_ARTIFACTS_DIR = "artifacts/grid_search"
 REPO_ROOT = Path(__file__).resolve().parent
 
-matplotlib.rcParams.update({'font.size': 11, 'font.family': 'serif', 'axes.titlesize': 'medium', 'figure.titlesize': 'medium', 'text.usetex': True, 'text.latex.preamble': '\\usepackage{amsmath}\\usepackage{amssymb}\\usepackage{siunitx}[=v2]', 'pgf.rcfonts': False, 'pgf.texsystem': 'pdflatex'})
+
+def configure_matplotlib() -> None:
+    matplotlib.rcParams.update(
+        {
+            "font.size": 11,
+            "font.family": "serif",
+            "axes.titlesize": "medium",
+            "figure.titlesize": "medium",
+            "text.usetex": False,
+        }
+    )
+
+    latex_binary = shutil.which("latex")
+    kpsewhich_binary = shutil.which("kpsewhich")
+    if latex_binary is None or kpsewhich_binary is None:
+        print("LaTeX plotting disabled: latex or kpsewhich is not installed.", flush=True)
+        return
+
+    required_packages = [
+        "type1cm.sty",
+        "type1ec.sty",
+        "amsmath.sty",
+        "amssymb.sty",
+        "siunitx.sty",
+    ]
+    missing_packages = []
+    for package in required_packages:
+        result = subprocess.run(
+            [kpsewhich_binary, package],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if result.returncode != 0:
+            missing_packages.append(package)
+
+    if missing_packages:
+        missing_list = ", ".join(missing_packages)
+        print(
+            f"LaTeX plotting disabled: missing TeX package(s): {missing_list}.",
+            flush=True,
+        )
+        return
+
+    matplotlib.rcParams.update(
+        {
+            "text.usetex": True,
+            "text.latex.preamble": "\\usepackage{amsmath}\\usepackage{amssymb}\\usepackage{siunitx}[=v2]",
+            "pgf.rcfonts": False,
+            "pgf.texsystem": "pdflatex",
+        }
+    )
+
+
+configure_matplotlib()
 
 
 def parse_int_list(value):
@@ -41,9 +96,14 @@ def parse_args():
     parser.add_argument("--results_file", default=DEFAULT_RESULTS_FILE, help="JSON file where run metrics are stored")
     parser.add_argument("--figures_dir", default=DEFAULT_FIGURES_DIR, help="Directory where heatmaps are written")
     parser.add_argument("--artifacts_dir", default=DEFAULT_ARTIFACTS_DIR, help="Directory where per-experiment compression files are written")
-    parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vLLM")
-    parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="GPU memory fraction reserved by vLLM")
+    parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vLLM, SGlang, and TensorRT")
+    parser.add_argument("--gpu_memory_utilization", type=float, default=0.96, help="GPU memory fraction reserved by vLLM")
+    parser.add_argument("--gpu_id", type=int, default=None, help="Physical CUDA device id to use for every experiment; overrides round-robin GPU assignment")
+    parser.add_argument("--tensorrt_engine_dir", default=None, help="Path to a prebuilt TensorRT-LLM engine directory")
     parser.add_argument("--sglang_mem_fraction_static", type=float, default=0.8, help="GPU memory fraction reserved by SGlang")
+    parser.add_argument("--sglang_use_streaming_session_kv", action="store_true", help="Enable SGlang streaming-session KV reuse during grid search")
+    parser.add_argument("--no_sglang_use_streaming_session_kv", dest="sglang_use_streaming_session_kv", action="store_false", help="Disable SGlang streaming-session KV reuse during grid search")
+    parser.set_defaults(sglang_use_streaming_session_kv=False)
     parser.add_argument("--max_workers", type=int, default=None, help="Override the number of concurrent workers; defaults to detected GPU count")
     return parser.parse_args()
 
@@ -64,6 +124,16 @@ def validate_backend_or_raise(args):
         supported, reason = probe_sglang_ac_support(SimpleNamespace())
         if not supported:
             raise RuntimeError(f"SGlang backend is not available: {reason}")
+
+    if args.engine == "tensorrt":
+        from types import SimpleNamespace
+        from src.tensorrt_prediction import probe_tensorrt_ac_support
+
+        supported, reason = probe_tensorrt_ac_support(
+            SimpleNamespace(tensorrt_engine_dir=args.tensorrt_engine_dir)
+        )
+        if not supported:
+            raise RuntimeError(f"TensorRT backend is not available: {reason}")
 
 
 def plot(metric, title, label, figname, results_file, figures_dir, batch_sizes, context_lengths, engine):
@@ -113,7 +183,7 @@ def plot(metric, title, label, figname, results_file, figures_dir, batch_sizes, 
 def run_experiment(task):
     batch_size, context_length, gpu_id, config = task
     env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    # env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
     output_path = Path(config["artifacts_dir"]) / f"{config['engine']}_b{batch_size}_c{context_length}.bin"
     cmd = [
@@ -135,6 +205,14 @@ def run_experiment(task):
         "--gpu_memory_utilization", str(config["gpu_memory_utilization"]),
         "--sglang_mem_fraction_static", str(config["sglang_mem_fraction_static"]),
     ]
+    if config["engine"] == "sglang":
+        cmd.append(
+            "--sglang_use_streaming_session_kv"
+            if config["sglang_use_streaming_session_kv"]
+            else "--no_sglang_use_streaming_session_kv"
+        )
+    if config["engine"] == "tensorrt":
+        cmd.extend(["--tensorrt_engine_dir", str(config["tensorrt_engine_dir"])])
     prefix = f"[{config['engine']}:GPU {gpu_id} b={batch_size} c={context_length}]"
     print(f"{prefix} starting", flush=True)
 
@@ -165,12 +243,22 @@ if __name__ == "__main__":
     args = parse_args()
     validate_backend_or_raise(args)
 
+    if args.gpu_id is not None and args.gpu_id < 0:
+        raise ValueError("--gpu_id must be a non-negative integer")
+
     num_gpus = torch.cuda.device_count()
     if num_gpus == 0:
         raise RuntimeError("No GPUs detected on the system.")
 
-    max_workers = args.max_workers or num_gpus
-    print(f"Detected {num_gpus} GPU(s). Running up to {max_workers} task(s) for engine={args.engine}.")
+    default_workers = 1 if args.gpu_id is not None else num_gpus
+    max_workers = args.max_workers or default_workers
+    if args.gpu_id is not None:
+        print(
+            f"Detected {num_gpus} visible GPU(s). Using manual GPU override cuda:{args.gpu_id} and running up to {max_workers} task(s) for engine={args.engine}.",
+            flush=True,
+        )
+    else:
+        print(f"Detected {num_gpus} GPU(s). Running up to {max_workers} task(s) for engine={args.engine}.")
 
     Path(args.figures_dir).mkdir(parents=True, exist_ok=True)
     Path(args.artifacts_dir).mkdir(parents=True, exist_ok=True)
@@ -190,13 +278,21 @@ if __name__ == "__main__":
         "artifacts_dir": args.artifacts_dir,
         "tensor_parallel_size": args.tensor_parallel_size,
         "gpu_memory_utilization": args.gpu_memory_utilization,
+        "tensorrt_engine_dir": args.tensorrt_engine_dir,
         "sglang_mem_fraction_static": args.sglang_mem_fraction_static,
+        "sglang_use_streaming_session_kv": args.sglang_use_streaming_session_kv,
     }
 
-    tasks = [
-        (batch_size, context_length, idx % num_gpus, config)
-        for idx, (batch_size, context_length) in enumerate(experiments)
-    ]
+    if args.gpu_id is not None:
+        tasks = [
+            (batch_size, context_length, args.gpu_id, config)
+            for batch_size, context_length in experiments
+        ]
+    else:
+        tasks = [
+            (batch_size, context_length, idx % num_gpus, config)
+            for idx, (batch_size, context_length) in enumerate(experiments)
+        ]
 
     if max_workers == 1:
         total_tasks = len(tasks)

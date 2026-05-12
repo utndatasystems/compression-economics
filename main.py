@@ -38,7 +38,7 @@ def main():
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
-    parser.add_argument("--engine", type=str, choices=["transformer", "vllm", "tensorrt", "sglang", "llamacpp"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--engine", type=str, choices=["transformer", "vllm", "onnxruntime", "tensorrt", "sglang", "llamacpp", "llamacpp_direct", "mlx"], default="transformer", help="Inference engine to use")
     parser.add_argument("--tensor_parallel_size", type=int, default=1, help="Tensor parallel size for vLLM")
     parser.add_argument("--gpu_memory_utilization", type=float, default=0.9, help="GPU memory utilization for vLLM")
     parser.add_argument("--tensorrt_engine_dir", type=str, default=None, help="Path to a prebuilt TensorRT-LLM engine directory")
@@ -46,12 +46,31 @@ def main():
     parser.add_argument("--sglang_enable_deterministic_inference", action="store_true", help="Enable deterministic SGlang inference")
     parser.add_argument("--no_sglang_enable_deterministic_inference", dest="sglang_enable_deterministic_inference", action="store_false", help="Disable deterministic SGlang inference")
     parser.set_defaults(sglang_enable_deterministic_inference=True)
-    parser.add_argument("--llamacpp_model_path", type=str, default=None, help="Path to a local GGUF model for llama.cpp")
-    parser.add_argument("--llamacpp_binary", type=str, default="llama-server", help="Path to the llama-server binary")
-    parser.add_argument("--llamacpp_host", type=str, default="127.0.0.1", help="Host for the managed llama-server process")
-    parser.add_argument("--llamacpp_port", type=int, default=8080, help="Port for the managed llama-server process")
-    parser.add_argument("--llamacpp_threads", type=int, default=max(1, os.cpu_count() or 1), help="CPU threads for llama.cpp")
+    parser.add_argument("--sglang_use_streaming_session_kv", action="store_true", help="Reuse SGlang streaming sessions for append-only KV-cache state")
+    parser.add_argument("--no_sglang_use_streaming_session_kv", dest="sglang_use_streaming_session_kv", action="store_false", help="Disable SGlang streaming-session KV reuse")
+    parser.set_defaults(sglang_use_streaming_session_kv=False)
+    parser.add_argument("--llamacpp_model_path", type=str, default=None, help="Path to a local GGUF model for llama.cpp backends")
+    parser.add_argument("--llamacpp_binary", type=str, default="llama-server", help="Path to the llama-server binary used by --engine llamacpp")
+    parser.add_argument("--llamacpp_host", type=str, default="127.0.0.1", help="Host for the managed llama-server process used by --engine llamacpp")
+    parser.add_argument("--llamacpp_port", type=int, default=8080, help="Port for the managed llama-server process used by --engine llamacpp")
+    parser.add_argument("--llamacpp_threads", type=int, default=max(1, os.cpu_count() or 1), help="CPU threads for llama.cpp server evaluation or direct prompt evaluation")
+    parser.add_argument("--llamacpp_direct_threads_batch", type=int, default=0, help="Batch-processing thread count for --engine llamacpp_direct (0 = auto)")
+    parser.add_argument("--llamacpp_direct_n_batch", type=int, default=0, help="Prompt-processing batch size for --engine llamacpp_direct (0 = context length)")
+    parser.add_argument("--llamacpp_direct_n_ubatch", type=int, default=0, help="Physical micro-batch size for --engine llamacpp_direct (0 = n_batch)")
+    parser.add_argument("--llamacpp_direct_use_mmap", dest="llamacpp_direct_use_mmap", action="store_true", help="Enable mmap-backed model loading for --engine llamacpp_direct")
+    parser.add_argument("--no_llamacpp_direct_use_mmap", dest="llamacpp_direct_use_mmap", action="store_false", help="Disable mmap-backed model loading for --engine llamacpp_direct")
+    parser.add_argument("--llamacpp_direct_use_mlock", dest="llamacpp_direct_use_mlock", action="store_true", help="Lock GGUF weights in RAM for --engine llamacpp_direct")
+    parser.add_argument("--no_llamacpp_direct_use_mlock", dest="llamacpp_direct_use_mlock", action="store_false", help="Do not lock GGUF weights in RAM for --engine llamacpp_direct")
+    parser.set_defaults(llamacpp_direct_use_mmap=True, llamacpp_direct_use_mlock=False)
     parser.add_argument("--llamacpp_n_gpu_layers", type=int, default=0, help="Number of llama.cpp layers to offload to GPU")
+    parser.add_argument("--mlx_model_source", type=str, default=None, help="Local MLX model directory or MLX-compatible Hugging Face repo")
+    parser.add_argument("--mlx_tokenizer_source", type=str, default=None, help="Optional tokenizer source for the MLX backend")
+    parser.add_argument("--onnx_model_dir", type=str, default=None, help="Path to a local exported ONNX model directory")
+    parser.add_argument("--onnx_tokenizer_source", type=str, default=None, help="Optional tokenizer source for the ONNX Runtime backend")
+    parser.add_argument("--onnx_execution_provider", type=str, choices=["CPUExecutionProvider"], default="CPUExecutionProvider", help="Execution provider for the ONNX Runtime backend")
+    parser.add_argument("--onnx_intra_op_threads", type=int, default=max(1, os.cpu_count() or 1), help="ONNX Runtime intra-op CPU threads")
+    parser.add_argument("--onnx_inter_op_threads", type=int, default=1, help="ONNX Runtime inter-op CPU threads")
+    parser.add_argument("--onnx_graph_optimization_level", type=str, choices=["ORT_DISABLE_ALL", "ORT_ENABLE_BASIC", "ORT_ENABLE_EXTENDED", "ORT_ENABLE_ALL"], default="ORT_ENABLE_ALL", help="Graph optimization level for the ONNX Runtime backend")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
     parser.add_argument("--results_file", type=str, default=RESULTS_FILE, help="Path to the aggregated experiment-results JSON file")
@@ -103,9 +122,48 @@ def main():
                 base_params = _n * 12 * _h * _h + _v * _h
                 base_size_mb = base_params * 2 / (1024 ** 2)
                 adapter_params, adapter_size_mb = 0, 0.0
+            elif args.engine == "onnxruntime":
+                from src.onnxruntime_prediction import (
+                    estimate_onnx_artifact_size_mb,
+                    estimate_onnx_parameter_count,
+                    probe_onnxruntime_backend_support,
+                )
+
+                supported, reason = probe_onnxruntime_backend_support(args)
+                if not supported:
+                    raise ValueError(f"ONNX Runtime backend is not available: {reason}")
+
+                base_params = estimate_onnx_parameter_count(args)
+                base_size_mb = estimate_onnx_artifact_size_mb(args.onnx_model_dir)
+                adapter_params, adapter_size_mb = 0, 0.0
+            elif args.engine == "mlx":
+                from src.mlx_prediction import (
+                    estimate_mlx_artifact_size_mb,
+                    estimate_mlx_parameter_count,
+                    get_mlx_model_source,
+                    probe_mlx_backend_support,
+                )
+
+                supported, reason = probe_mlx_backend_support(args)
+                if not supported:
+                    raise ValueError(f"MLX backend is not available: {reason}")
+
+                base_params = estimate_mlx_parameter_count(args)
+                base_size_mb = estimate_mlx_artifact_size_mb(get_mlx_model_source(args))
+                adapter_params, adapter_size_mb = 0, 0.0
             elif args.engine == "llamacpp":
                 base_params = 0
                 base_size_mb = 0.0
+                adapter_params, adapter_size_mb = 0, 0.0
+            elif args.engine == "llamacpp_direct":
+                from src.llamacpp_direct_prediction import probe_llamacpp_direct_support
+
+                supported, reason = probe_llamacpp_direct_support(args)
+                if not supported:
+                    raise ValueError(f"llama.cpp direct backend is not available: {reason}")
+
+                base_params = 0
+                base_size_mb = os.path.getsize(args.llamacpp_model_path) / (1024 ** 2)
                 adapter_params, adapter_size_mb = 0, 0.0
             else:
                 token_predictor = create_predictor(args, bitmap_data=None)

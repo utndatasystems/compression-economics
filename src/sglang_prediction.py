@@ -78,6 +78,17 @@ class SGLangTokenPredictor:
         )
         self.args = args
         self.device = torch.device("cuda")
+        self._use_streaming_session_kv = bool(
+            getattr(args, "sglang_use_streaming_session_kv", False)
+        )
+        self._session_timeout = getattr(args, "sglang_session_timeout", None)
+        self._session_capacity = max(
+            int(getattr(args, "context_length", 0) or 0),
+            int(getattr(args, "retain_tokens", 0) or 0),
+            1,
+        )
+        self._session_lanes = []
+        self._session_batch_size = None
 
         tp = getattr(args, "tensor_parallel_size", 1)
         mem_fraction = getattr(args, "sglang_mem_fraction_static", 0.8)
@@ -115,8 +126,6 @@ class SGLangTokenPredictor:
         """
         Run one-step SGlang inference and return the same 4-tuple as other backends.
         """
-        del enable_kv_cache
-
         sampling_params = {
             "temperature": 1.0,
             "top_p": 1.0,
@@ -124,16 +133,19 @@ class SGLangTokenPredictor:
             "ignore_eos": True,
         }
 
-        token_ids_logprob = [self._probe_token_ids for _ in prompts]
-
-        outputs = self.engine.generate(
-            input_ids=prompts,
-            sampling_params=sampling_params,
-            return_logprob=True,
-            top_logprobs_num=0,
-            token_ids_logprob=token_ids_logprob,
-            lora_path=getattr(self.args, "lora_path", None),
-        )
+        if self._should_use_streaming_session_kv(enable_kv_cache):
+            outputs = self._generate_with_streaming_sessions(prompts, sampling_params)
+        else:
+            self._reset_streaming_sessions()
+            token_ids_logprob = [self._probe_token_ids for _ in prompts]
+            outputs = self.engine.generate(
+                input_ids=prompts,
+                sampling_params=sampling_params,
+                return_logprob=True,
+                top_logprobs_num=0,
+                token_ids_logprob=token_ids_logprob,
+                lora_path=getattr(self.args, "lora_path", None),
+            )
 
         if isinstance(outputs, dict):
             outputs = [outputs]
@@ -171,6 +183,7 @@ class SGLangTokenPredictor:
         return self.tokens_list
 
     def cleanup(self):
+        self._reset_streaming_sessions()
         if hasattr(self, "engine") and self.engine is not None:
             self.engine.shutdown()
             self.engine = None
@@ -241,3 +254,98 @@ class SGLangTokenPredictor:
             self.base_size_mb = 0.0
         self.adapter_params = 0
         self.adapter_size_mb = 0.0
+
+    def _should_use_streaming_session_kv(self, enable_kv_cache):
+        return (
+            enable_kv_cache
+            and self._use_streaming_session_kv
+            and hasattr(self.engine, "open_session")
+            and hasattr(self.engine, "close_session")
+        )
+
+    def _generate_with_streaming_sessions(self, prompts, sampling_params):
+        self._ensure_streaming_session_lanes(len(prompts))
+
+        outputs = []
+        for lane_idx, prompt in enumerate(prompts):
+            input_ids, session_params = self._prepare_streaming_request(lane_idx, prompt)
+            output = self.engine.generate(
+                input_ids=input_ids,
+                sampling_params=sampling_params,
+                return_logprob=True,
+                top_logprobs_num=0,
+                token_ids_logprob=self._probe_token_ids,
+                lora_path=getattr(self.args, "lora_path", None),
+                session_params=session_params,
+            )
+            if isinstance(output, list):
+                if len(output) != 1:
+                    raise RuntimeError(
+                        "SGlang streaming-session call returned more than one output "
+                        f"for lane {lane_idx}."
+                    )
+                output = output[0]
+            self._session_lanes[lane_idx]["last_prompt"] = [int(token_id) for token_id in prompt]
+            outputs.append(output)
+
+        return outputs
+
+    def _ensure_streaming_session_lanes(self, batch_size):
+        if self._session_batch_size == batch_size:
+            return
+
+        self._reset_streaming_sessions()
+        self._session_lanes = [self._new_streaming_session_lane() for _ in range(batch_size)]
+        self._session_batch_size = batch_size
+
+    def _prepare_streaming_request(self, lane_idx, prompt):
+        prompt_ids = [int(token_id) for token_id in prompt]
+        lane = self._session_lanes[lane_idx]
+
+        if lane["session_id"] is None:
+            lane["session_id"] = self._open_streaming_session()
+            return prompt_ids, {"id": lane["session_id"]}
+
+        previous_prompt = lane["last_prompt"]
+        if self._is_prefix_extension(previous_prompt, prompt_ids):
+            delta_ids = prompt_ids[len(previous_prompt):]
+            return delta_ids, {"id": lane["session_id"]}
+
+        self._reset_streaming_session_lane(lane)
+        lane["session_id"] = self._open_streaming_session()
+        return prompt_ids, {"id": lane["session_id"]}
+
+    def _open_streaming_session(self):
+        return self.engine.open_session(
+            capacity_of_str_len=self._session_capacity,
+            streaming=True,
+            timeout=self._session_timeout,
+        )
+
+    def _reset_streaming_sessions(self):
+        for lane in self._session_lanes:
+            self._reset_streaming_session_lane(lane)
+        self._session_lanes = []
+        self._session_batch_size = None
+
+    def _reset_streaming_session_lane(self, lane):
+        session_id = lane.get("session_id")
+        if session_id is not None:
+            try:
+                self.engine.close_session(session_id)
+            except Exception:
+                pass
+        lane["session_id"] = None
+        lane["last_prompt"] = None
+
+    @staticmethod
+    def _new_streaming_session_lane():
+        return {"session_id": None, "last_prompt": None}
+
+    @staticmethod
+    def _is_prefix_extension(previous_prompt, prompt):
+        return (
+            previous_prompt is not None
+            and len(prompt) > len(previous_prompt)
+            and prompt[: len(previous_prompt)] == previous_prompt
+        )

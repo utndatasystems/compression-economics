@@ -16,6 +16,7 @@ from copy import copy
 from pyroaring import BitMap
 import time
 
+from src.cache_prompt_state import freeze_prompts, prompts_extend_one_token
 from src.hf_cache import get_model_cache_dir
 
 class TokenDataPreparer:
@@ -81,6 +82,47 @@ class TokenDataPreparer:
                 raise ValueError(f"llama.cpp backend is not available: {reason}")
 
             return LlamaCppTokenizer(args)
+
+        if args.engine == "llamacpp_direct":
+            from src.llamacpp_direct_prediction import (
+                LlamaCppDirectTokenizer,
+                probe_llamacpp_direct_support,
+            )
+
+            supported, reason = probe_llamacpp_direct_support(args)
+            if not supported:
+                raise ValueError(f"llama.cpp direct backend is not available: {reason}")
+
+            return LlamaCppDirectTokenizer(args)
+
+        if args.engine == "mlx":
+            from src.mlx_prediction import (
+                get_mlx_tokenizer_source,
+                load_mlx_tokenizer,
+                probe_mlx_backend_support,
+            )
+
+            supported, reason = probe_mlx_backend_support(args)
+            if not supported:
+                raise ValueError(f"MLX backend is not available: {reason}")
+
+            tokenizer_source = get_mlx_tokenizer_source(args)
+            return load_mlx_tokenizer(tokenizer_source)
+
+        if args.engine == "onnxruntime":
+            from src.onnxruntime_prediction import (
+                get_onnx_tokenizer_source,
+                probe_onnxruntime_backend_support,
+            )
+
+            supported, reason = probe_onnxruntime_backend_support(args)
+            if not supported:
+                raise ValueError(f"ONNX Runtime backend is not available: {reason}")
+
+            tokenizer_source = get_onnx_tokenizer_source(args)
+            if os.path.isdir(tokenizer_source):
+                return AutoTokenizer.from_pretrained(tokenizer_source)
+            return AutoTokenizer.from_pretrained(tokenizer_source, cache_dir=get_model_cache_dir())
 
         cache_dir = get_model_cache_dir()
         return AutoTokenizer.from_pretrained(args.model_name, cache_dir=cache_dir)
@@ -326,6 +368,7 @@ class TokenPredictor:
         if not hasattr(self, "_past_kv"):
             self._past_kv = None
             self._cached_context_len = 0
+            self._cached_prompts = None
 
         data_copy_time = 0
         with torch.inference_mode():
@@ -340,11 +383,15 @@ class TokenPredictor:
                     # Ensure cache is cleared when not in use.
                     self._past_kv = None
                     self._cached_context_len = 0
+                    self._cached_prompts = None
                 else:
-                    # Check if the cache needs to be reset. This happens if the external
-                    # context management has shortened the prompt.
-                    # Reset if external context management shortened the prompt.
-                    reset_cache = len(prompts[0]) < self._cached_context_len
+                    # Rebuild the cache unless the new prompt is exactly the old prompt
+                    # plus one appended token for every batch row.
+                    can_advance_cache = (
+                        self._past_kv is not None
+                        and prompts_extend_one_token(self._cached_prompts, prompts)
+                    )
+                    reset_cache = not can_advance_cache
 
                     if self._past_kv is None or reset_cache:
                         # Rebuild the cache from the full prompt (first step or reset).
@@ -353,7 +400,7 @@ class TokenPredictor:
                         data_copy_time += time.perf_counter() - t0_data_copy
                         outputs = self.model(input_ids, use_cache=True)
                         self._past_kv = outputs.past_key_values
-                        self._cached_context_len = 0
+                        self._cached_context_len = len(prompts[0])
                     else:
                         # Incremental step: process only the last token with cache.
                         delta = [row[-1:] for row in prompts]
@@ -363,7 +410,9 @@ class TokenPredictor:
 
                         outputs = self.model(delta, past_key_values=self._past_kv, use_cache=True)
                         self._past_kv = outputs.past_key_values
-                        self._cached_context_len += 1
+                        self._cached_context_len = len(prompts[0])
+
+                    self._cached_prompts = freeze_prompts(prompts)
                 logits = outputs.logits[:, -1, :]
             else:
                 raise ValueError(f"Unsupported engine: {self.args.engine}")
@@ -456,7 +505,7 @@ def create_predictor(args, bitmap_data):
     Factory function that returns the appropriate predictor based on args.engine.
 
     Args:
-        args (argparse.Namespace): Must include 'engine' ("transformer", "vllm", "tensorrt", "sglang", or "llamacpp").
+        args (argparse.Namespace): Must include 'engine' ("transformer", "vllm", "onnxruntime", "tensorrt", "sglang", "llamacpp", "llamacpp_direct", or "mlx").
         bitmap_data (bytes | None): Serialized roaring bitmap of allowed tokens.
 
     Returns:
@@ -491,6 +540,17 @@ def create_predictor(args, bitmap_data):
             return TokenPredictor(fallback_args, bitmap_data)
 
         return VLLMTokenPredictor(args, bitmap_data)
+    elif args.engine == "onnxruntime":
+        from src.onnxruntime_prediction import (
+            ONNXRuntimeTokenPredictor,
+            probe_onnxruntime_backend_support,
+        )
+
+        supported, reason = probe_onnxruntime_backend_support(args)
+        if not supported:
+            raise ValueError(f"ONNX Runtime backend is not available: {reason}")
+
+        return ONNXRuntimeTokenPredictor(args, bitmap_data)
     elif args.engine == "tensorrt":
         from src.tensorrt_prediction import TensorRTTokenPredictor, probe_tensorrt_ac_support
 
@@ -515,5 +575,24 @@ def create_predictor(args, bitmap_data):
             raise ValueError(f"llama.cpp backend is not available: {reason}")
 
         return LlamaCppTokenPredictor(args, bitmap_data)
+    elif args.engine == "llamacpp_direct":
+        from src.llamacpp_direct_prediction import (
+            LlamaCppDirectTokenPredictor,
+            probe_llamacpp_direct_support,
+        )
+
+        supported, reason = probe_llamacpp_direct_support(args)
+        if not supported:
+            raise ValueError(f"llama.cpp direct backend is not available: {reason}")
+
+        return LlamaCppDirectTokenPredictor(args, bitmap_data)
+    elif args.engine == "mlx":
+        from src.mlx_prediction import MLXTokenPredictor, probe_mlx_backend_support
+
+        supported, reason = probe_mlx_backend_support(args)
+        if not supported:
+            raise ValueError(f"MLX backend is not available: {reason}")
+
+        return MLXTokenPredictor(args, bitmap_data)
     else:
         raise ValueError(f"Unsupported engine: {args.engine}")

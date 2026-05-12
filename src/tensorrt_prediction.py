@@ -51,6 +51,12 @@ def _select_supported_kwargs(factory, kwargs):
     except (TypeError, ValueError):
         return kwargs
 
+    if any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    ):
+        return kwargs
+
     supported = set(signature.parameters)
     return {key: value for key, value in kwargs.items() if key in supported}
 
@@ -190,7 +196,25 @@ class TensorRTTokenPredictor:
             "pad_id": self.pad_token_id,
         }
         if self._sampling_config is not None:
-            generate_kwargs["sampling_config"] = self._sampling_config
+            if self.runner_name == "ModelRunnerCpp":
+                # TensorRT-LLM 1.0.0's C++ runner leaves sampling_config_list
+                # undefined when a prebuilt SamplingConfig is supplied. Route
+                # through the legacy kwargs path so the runtime constructs its
+                # own per-request sampling config objects.
+                for source_name, target_name in (
+                    ("num_beams", "num_beams"),
+                    ("beam_width", "num_beams"),
+                    ("top_k", "top_k"),
+                    ("top_p", "top_p"),
+                    ("temperature", "temperature"),
+                    ("num_return_sequences", "num_return_sequences"),
+                    ("random_seed", "random_seed"),
+                ):
+                    value = getattr(self._sampling_config, source_name, None)
+                    if value is not None and target_name not in generate_kwargs:
+                        generate_kwargs[target_name] = value
+            else:
+                generate_kwargs["sampling_config"] = self._sampling_config
 
         call_kwargs = _select_supported_kwargs(self.runner.generate, generate_kwargs)
 
@@ -273,7 +297,7 @@ class TensorRTTokenPredictor:
         try:
             from tensorrt_llm.runtime import SamplingConfig
 
-            return SamplingConfig(
+            sampling_config = SamplingConfig(
                 end_id=self.eos_token_id,
                 pad_id=self.pad_token_id,
                 max_new_tokens=1,
@@ -281,6 +305,14 @@ class TensorRTTokenPredictor:
                 top_p=0.0,
                 temperature=1.0,
             )
+            # Older TensorRT-LLM Python runtimes expose num_beams on
+            # SamplingConfig while ModelRunnerCpp still reads beam_width.
+            # Mirror the field so both code paths work.
+            if hasattr(sampling_config, "num_beams") and not hasattr(
+                sampling_config, "beam_width"
+            ):
+                sampling_config.beam_width = sampling_config.num_beams
+            return sampling_config
         except Exception:
             return None
 

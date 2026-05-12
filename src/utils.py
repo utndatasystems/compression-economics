@@ -82,12 +82,26 @@ def save_global_mask_file(
         "tensorrt_engine_dir": getattr(args, "tensorrt_engine_dir", None),
         "sglang_mem_fraction_static": getattr(args, "sglang_mem_fraction_static", 0.8),
         "sglang_enable_deterministic_inference": getattr(args, "sglang_enable_deterministic_inference", True),
+        "sglang_use_streaming_session_kv": getattr(args, "sglang_use_streaming_session_kv", False),
         "llamacpp_model_path": getattr(args, "llamacpp_model_path", None),
         "llamacpp_binary": getattr(args, "llamacpp_binary", "llama-server"),
         "llamacpp_host": getattr(args, "llamacpp_host", "127.0.0.1"),
         "llamacpp_port": getattr(args, "llamacpp_port", 8080),
         "llamacpp_threads": getattr(args, "llamacpp_threads", 1),
+        "llamacpp_direct_threads_batch": getattr(args, "llamacpp_direct_threads_batch", 0),
+        "llamacpp_direct_n_batch": getattr(args, "llamacpp_direct_n_batch", 0),
+        "llamacpp_direct_n_ubatch": getattr(args, "llamacpp_direct_n_ubatch", 0),
+        "llamacpp_direct_use_mmap": getattr(args, "llamacpp_direct_use_mmap", True),
+        "llamacpp_direct_use_mlock": getattr(args, "llamacpp_direct_use_mlock", False),
         "llamacpp_n_gpu_layers": getattr(args, "llamacpp_n_gpu_layers", 0),
+        "mlx_model_source": getattr(args, "mlx_model_source", None),
+        "mlx_tokenizer_source": getattr(args, "mlx_tokenizer_source", None),
+        "onnx_model_dir": getattr(args, "onnx_model_dir", None),
+        "onnx_tokenizer_source": getattr(args, "onnx_tokenizer_source", None),
+        "onnx_execution_provider": getattr(args, "onnx_execution_provider", "CPUExecutionProvider"),
+        "onnx_intra_op_threads": getattr(args, "onnx_intra_op_threads", 1),
+        "onnx_inter_op_threads": getattr(args, "onnx_inter_op_threads", 1),
+        "onnx_graph_optimization_level": getattr(args, "onnx_graph_optimization_level", "ORT_ENABLE_ALL"),
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -151,12 +165,26 @@ def load_global_mask_file(args):
     args.tensorrt_engine_dir = header.get("tensorrt_engine_dir", None)
     args.sglang_mem_fraction_static = header.get("sglang_mem_fraction_static", 0.8)
     args.sglang_enable_deterministic_inference = header.get("sglang_enable_deterministic_inference", True)
+    args.sglang_use_streaming_session_kv = header.get("sglang_use_streaming_session_kv", False)
     args.llamacpp_model_path = header.get("llamacpp_model_path", None)
     args.llamacpp_binary = header.get("llamacpp_binary", "llama-server")
     args.llamacpp_host = header.get("llamacpp_host", "127.0.0.1")
     args.llamacpp_port = header.get("llamacpp_port", 8080)
     args.llamacpp_threads = header.get("llamacpp_threads", 1)
+    args.llamacpp_direct_threads_batch = header.get("llamacpp_direct_threads_batch", 0)
+    args.llamacpp_direct_n_batch = header.get("llamacpp_direct_n_batch", 0)
+    args.llamacpp_direct_n_ubatch = header.get("llamacpp_direct_n_ubatch", 0)
+    args.llamacpp_direct_use_mmap = header.get("llamacpp_direct_use_mmap", True)
+    args.llamacpp_direct_use_mlock = header.get("llamacpp_direct_use_mlock", False)
     args.llamacpp_n_gpu_layers = header.get("llamacpp_n_gpu_layers", 0)
+    args.mlx_model_source = header.get("mlx_model_source", None)
+    args.mlx_tokenizer_source = header.get("mlx_tokenizer_source", None)
+    args.onnx_model_dir = header.get("onnx_model_dir", None)
+    args.onnx_tokenizer_source = header.get("onnx_tokenizer_source", None)
+    args.onnx_execution_provider = header.get("onnx_execution_provider", "CPUExecutionProvider")
+    args.onnx_intra_op_threads = header.get("onnx_intra_op_threads", 1)
+    args.onnx_inter_op_threads = header.get("onnx_inter_op_threads", 1)
+    args.onnx_graph_optimization_level = header.get("onnx_graph_optimization_level", "ORT_ENABLE_ALL")
 
     return args, first_token, bit_string, bitmask_data
 
@@ -199,12 +227,26 @@ def make_key(args):
         f"|trt_engine={getattr(args, 'tensorrt_engine_dir', None)}"
         f"|sg_mem={getattr(args, 'sglang_mem_fraction_static', 0.8)}"
         f"|sg_det={getattr(args, 'sglang_enable_deterministic_inference', True)}"
+        f"|sg_stream={getattr(args, 'sglang_use_streaming_session_kv', False)}"
         f"|llamacpp_model={getattr(args, 'llamacpp_model_path', None)}"
         f"|llamacpp_bin={getattr(args, 'llamacpp_binary', 'llama-server')}"
         f"|llamacpp_host={getattr(args, 'llamacpp_host', '127.0.0.1')}"
         f"|llamacpp_port={getattr(args, 'llamacpp_port', 8080)}"
         f"|llamacpp_threads={getattr(args, 'llamacpp_threads', 1)}"
+        f"|llamacpp_direct_threads_batch={getattr(args, 'llamacpp_direct_threads_batch', 0)}"
+        f"|llamacpp_direct_n_batch={getattr(args, 'llamacpp_direct_n_batch', 0)}"
+        f"|llamacpp_direct_n_ubatch={getattr(args, 'llamacpp_direct_n_ubatch', 0)}"
+        f"|llamacpp_direct_mmap={getattr(args, 'llamacpp_direct_use_mmap', True)}"
+        f"|llamacpp_direct_mlock={getattr(args, 'llamacpp_direct_use_mlock', False)}"
         f"|llamacpp_ngl={getattr(args, 'llamacpp_n_gpu_layers', 0)}"
+        f"|mlx_model={getattr(args, 'mlx_model_source', None)}"
+        f"|mlx_tokenizer={getattr(args, 'mlx_tokenizer_source', None)}"
+        f"|onnx_model={getattr(args, 'onnx_model_dir', None)}"
+        f"|onnx_tokenizer={getattr(args, 'onnx_tokenizer_source', None)}"
+        f"|onnx_provider={getattr(args, 'onnx_execution_provider', 'CPUExecutionProvider')}"
+        f"|onnx_intra={getattr(args, 'onnx_intra_op_threads', 1)}"
+        f"|onnx_inter={getattr(args, 'onnx_inter_op_threads', 1)}"
+        f"|onnx_opt={getattr(args, 'onnx_graph_optimization_level', 'ORT_ENABLE_ALL')}"
     )
 
 

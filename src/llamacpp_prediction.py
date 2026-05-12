@@ -17,6 +17,8 @@ from urllib import error, parse, request
 import torch
 from pyroaring import BitMap
 
+from src.cache_prompt_state import freeze_prompt, prompt_extends_one_token
+
 
 def _resolve_llamacpp_binary(binary):
     if not binary:
@@ -343,6 +345,7 @@ class LlamaCppTokenPredictor:
 
         self.reduce_tokens = args.reduce_tokens
         self._slot_prompt_lengths = {}
+        self._slot_prompts = {}
         self._disallowed_bias = self._build_disallowed_bias()
 
     def _build_disallowed_bias(self):
@@ -356,21 +359,23 @@ class LlamaCppTokenPredictor:
     def _should_reset_slot(self, slot_id, prompt_tokens, enable_kv_cache):
         if not enable_kv_cache:
             return True
-        previous_length = self._slot_prompt_lengths.get(slot_id)
-        if previous_length is None:
+        previous_prompt = self._slot_prompts.get(slot_id)
+        if previous_prompt is None:
             return False
-        return len(prompt_tokens) < previous_length
+        return not prompt_extends_one_token(previous_prompt, prompt_tokens)
 
     def _reset_slot(self, slot_id):
         path = f"/slots/{int(slot_id)}?{parse.urlencode({'action': 'erase'})}"
         _json_request(self.base_url, path, payload={}, timeout=10.0)
         self._slot_prompt_lengths.pop(slot_id, None)
+        self._slot_prompts.pop(slot_id, None)
 
     def _prepare_slot(self, slot_id, prompt_tokens, enable_kv_cache):
         reset_slot = self._should_reset_slot(slot_id, prompt_tokens, enable_kv_cache)
         if reset_slot:
             self._reset_slot(slot_id)
         self._slot_prompt_lengths[slot_id] = len(prompt_tokens)
+        self._slot_prompts[slot_id] = freeze_prompt(prompt_tokens)
         return enable_kv_cache and not reset_slot
 
     def _request_completion(self, prompt_tokens, slot_id, cache_prompt):
