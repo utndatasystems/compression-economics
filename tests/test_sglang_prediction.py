@@ -9,6 +9,85 @@ import pytest
 import torch
 
 
+class _FakeSGLangEngine:
+    def __init__(self):
+        self.calls = []
+        self.closed_sessions = []
+        self.opened_sessions = []
+        self._session_counter = 0
+
+    def open_session(self, capacity_of_str_len, streaming, timeout):
+        session_id = f"session-{self._session_counter}"
+        self._session_counter += 1
+        self.opened_sessions.append(
+            {
+                "session_id": session_id,
+                "capacity_of_str_len": capacity_of_str_len,
+                "streaming": streaming,
+                "timeout": timeout,
+            }
+        )
+        return session_id
+
+    def close_session(self, session_id):
+        self.closed_sessions.append(session_id)
+
+    def generate(self, **kwargs):
+        self.calls.append(kwargs)
+        token_ids = kwargs["token_ids_logprob"]
+        if token_ids and isinstance(token_ids[0], list):
+            return [
+                {
+                    "meta_info": {
+                        "output_token_ids_logprobs": [
+                            [(-0.1 * (index + 1), token_id) for index, token_id in enumerate(token_row)]
+                        ]
+                    }
+                }
+                for token_row in token_ids
+            ]
+
+        return {
+            "meta_info": {
+                "output_token_ids_logprobs": [
+                    [(-0.1 * (index + 1), token_id) for index, token_id in enumerate(token_ids)]
+                ]
+            }
+        }
+
+    def shutdown(self):
+        return None
+
+
+def _make_unit_predictor(use_streaming_sessions=True):
+    from src.sglang_prediction import SGLangTokenPredictor
+
+    predictor = SGLangTokenPredictor.__new__(SGLangTokenPredictor)
+    predictor.args = SimpleNamespace(
+        encoding="bitpacked",
+        lora_path=None,
+        context_length=8,
+        retain_tokens=4,
+        sglang_use_streaming_session_kv=use_streaming_sessions,
+        sglang_session_timeout=None,
+    )
+    predictor.engine = _FakeSGLangEngine()
+    predictor.device = torch.device("cpu")
+    predictor.tokens_list = [11, 22]
+    predictor._probe_token_ids = [11, 22]
+    predictor._use_streaming_session_kv = use_streaming_sessions
+    predictor._session_timeout = None
+    predictor._session_capacity = 8
+    predictor._session_lanes = []
+    predictor._session_batch_size = None
+    predictor.base_params = 0
+    predictor.base_size_mb = 0.0
+    predictor.adapter_params = 0
+    predictor.adapter_size_mb = 0.0
+    predictor.tokenizer = SimpleNamespace(decode=lambda token_ids: " ".join(map(str, token_ids)))
+    return predictor
+
+
 def test_probe_sglang_ac_support():
     """probe_sglang_ac_support reports availability and a reason consistently."""
     from src.sglang_prediction import probe_sglang_ac_support
@@ -21,6 +100,48 @@ def test_probe_sglang_ac_support():
         assert reason is None
     else:
         assert isinstance(reason, str) and reason
+
+
+def test_streaming_session_reuses_delta_and_reopens_on_truncation():
+    predictor = _make_unit_predictor(use_streaming_sessions=True)
+
+    predictor.run_batched_inference([[10], [20]], enable_kv_cache=True)
+    predictor.run_batched_inference([[10, 11], [20, 21]], enable_kv_cache=True)
+    predictor.run_batched_inference([[11], [20, 21, 22]], enable_kv_cache=True)
+
+    first_lane_first = predictor.engine.calls[0]
+    second_lane_first = predictor.engine.calls[1]
+    first_lane_second = predictor.engine.calls[2]
+    second_lane_second = predictor.engine.calls[3]
+    first_lane_third = predictor.engine.calls[4]
+    second_lane_third = predictor.engine.calls[5]
+
+    assert first_lane_first["input_ids"] == [10]
+    assert second_lane_first["input_ids"] == [20]
+    assert first_lane_second["input_ids"] == [11]
+    assert second_lane_second["input_ids"] == [21]
+    assert first_lane_third["input_ids"] == [11]
+    assert second_lane_third["input_ids"] == [22]
+
+    assert first_lane_first["session_params"] == {"id": "session-0"}
+    assert second_lane_first["session_params"] == {"id": "session-1"}
+    assert first_lane_second["session_params"] == {"id": "session-0"}
+    assert second_lane_second["session_params"] == {"id": "session-1"}
+    assert first_lane_third["session_params"] == {"id": "session-2"}
+    assert second_lane_third["session_params"] == {"id": "session-1"}
+
+    assert predictor.engine.closed_sessions == ["session-0"]
+
+
+def test_streaming_session_feature_flag_falls_back_to_batched_generate():
+    predictor = _make_unit_predictor(use_streaming_sessions=False)
+
+    predictor.run_batched_inference([[10], [20]], enable_kv_cache=True)
+
+    assert len(predictor.engine.opened_sessions) == 0
+    assert len(predictor.engine.calls) == 1
+    assert predictor.engine.calls[0]["input_ids"] == [[10], [20]]
+    assert predictor.engine.calls[0]["token_ids_logprob"] == [[11, 22], [11, 22]]
 
 
 @pytest.fixture(scope="module")
