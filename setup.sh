@@ -3,10 +3,33 @@ set -euo pipefail
 
 MODEL_CACHE_DIR="${COMPRESSION_ECONOMICS_MODEL_CACHE:-$PWD/.cache}"
 DOWNLOAD_MODELS=1
+BACKEND_PROFILE="transformer"
 DATA_DIR="./data"
 TEXT8_ZIP="$DATA_DIR/text8.zip"
 TEXT8_FILE="$DATA_DIR/text8"
 MODEL_CACHE_CONFIG_FILE=".model_cache_dir"
+
+backend_extra_for_profile() {
+  case "$1" in
+    transformer)
+      printf '%s\n' transformer
+      ;;
+    vllm)
+      printf '%s\n' vllm
+      ;;
+    sglang)
+      printf '%s\n' sglang
+      ;;
+    tensorrt|llamacpp)
+      # These backends still rely on the shared torch/transformers runtime.
+      printf '%s\n' transformer
+      ;;
+    *)
+      echo "[ERROR] Unsupported backend profile: $1" >&2
+      exit 1
+      ;;
+  esac
+}
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -21,6 +44,14 @@ while [[ $# -gt 0 ]]; do
     --skip-model-downloads)
       DOWNLOAD_MODELS=0
       shift
+      ;;
+    --backend-profile)
+      if [[ $# -lt 2 ]]; then
+        echo "[ERROR] --backend-profile requires a value" >&2
+        exit 1
+      fi
+      BACKEND_PROFILE="$2"
+      shift 2
       ;;
     *)
       echo "[ERROR] Unknown argument: $1" >&2
@@ -38,6 +69,7 @@ export HF_HUB_CACHE="$MODEL_CACHE_DIR/hub"
 export TRANSFORMERS_CACHE="$MODEL_CACHE_DIR/transformers"
 
 echo "[INFO] Model cache directory: $MODEL_CACHE_DIR"
+echo "[INFO] Backend profile     : $BACKEND_PROFILE"
 
 # Install uv if not already installed
 if ! command -v uv &> /dev/null; then
@@ -56,8 +88,10 @@ else
   echo "[SKIP] Python virtual environment already exists"
 fi
 source ./.venv/bin/activate
+export PATH="$PWD/.venv/bin:$PATH"
 echo "[INFO] Installing Python dependencies with uv"
-uv sync --group dev
+BACKEND_EXTRA="$(backend_extra_for_profile "$BACKEND_PROFILE")"
+uv sync --group dev --extra "$BACKEND_EXTRA"
 
 # Download text8 dataset 
 
