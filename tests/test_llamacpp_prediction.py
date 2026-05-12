@@ -100,6 +100,7 @@ def test_slot_reset_behavior_without_real_server():
     predictor.args = _make_args()
     predictor.tokens_list = [11, 13]
     predictor._slot_prompt_lengths = {}
+    predictor._slot_prompts = {}
     predictor._disallowed_bias = {}
 
     reset_calls = []
@@ -108,6 +109,7 @@ def test_slot_reset_behavior_without_real_server():
     def fake_reset(slot_id):
         reset_calls.append(slot_id)
         predictor._slot_prompt_lengths.pop(slot_id, None)
+        predictor._slot_prompts.pop(slot_id, None)
 
     def fake_request(prompt_tokens, slot_id, cache_prompt):
         request_calls.append((list(prompt_tokens), slot_id, cache_prompt))
@@ -138,3 +140,47 @@ def test_slot_reset_behavior_without_real_server():
     assert torch.allclose(probs_1, torch.tensor([[0.6, 0.4]], dtype=torch.float32))
     assert torch.allclose(probs_2, torch.tensor([[0.6, 0.4]], dtype=torch.float32))
     assert torch.allclose(probs_3, torch.tensor([[0.6, 0.4]], dtype=torch.float32))
+
+
+def test_slot_reset_behavior_when_prompt_window_slides():
+    from src.llamacpp_prediction import LlamaCppTokenPredictor
+
+    predictor = LlamaCppTokenPredictor.__new__(LlamaCppTokenPredictor)
+    predictor.args = _make_args()
+    predictor.tokens_list = [11, 13]
+    predictor._slot_prompt_lengths = {}
+    predictor._slot_prompts = {}
+    predictor._disallowed_bias = {}
+
+    reset_calls = []
+    request_calls = []
+
+    def fake_reset(slot_id):
+        reset_calls.append(slot_id)
+        predictor._slot_prompt_lengths.pop(slot_id, None)
+        predictor._slot_prompts.pop(slot_id, None)
+
+    def fake_request(prompt_tokens, slot_id, cache_prompt):
+        request_calls.append((list(prompt_tokens), slot_id, cache_prompt))
+        return {
+            "completion_probabilities": [
+                {
+                    "top_probs": [
+                        {"id": 11, "prob": 0.6},
+                        {"id": 13, "prob": 0.4},
+                    ]
+                }
+            ]
+        }
+
+    predictor._reset_slot = fake_reset
+    predictor._request_completion = fake_request
+
+    predictor.run_batched_inference([[1, 2, 3]], enable_kv_cache=True)
+    predictor.run_batched_inference([[2, 3, 4]], enable_kv_cache=True)
+
+    assert reset_calls == [0]
+    assert request_calls == [
+        ([1, 2, 3], 0, True),
+        ([2, 3, 4], 0, False),
+    ]
