@@ -3,7 +3,7 @@ name = "compression-economics"
 version = "0.1.0"
 description = "LLM-guided text compression experiments with global token masks"
 readme = "README.md"
-requires-python = ">=3.12,<3.14"
+requires-python = ">=3.10,<3.14"
 dependencies = [
     "accelerate>=1.12.0",
     "datasets>=4.5.0",
@@ -23,6 +23,7 @@ transformer = [
     "torchaudio==2.10.0",
     "torchvision==0.25.0",
 ]
+
 vllm = [
     "flashinfer-cubin==0.6.4",
     "flashinfer-python==0.6.4",
@@ -31,6 +32,7 @@ vllm = [
     "torchvision==0.25.0",
     "vllm==0.17.1",
 ]
+
 sglang = [
     "flashinfer-cubin==0.6.3",
     "flashinfer-python==0.6.3",
@@ -38,6 +40,26 @@ sglang = [
     "torch==2.9.1",
     "torchaudio==2.9.1",
     "transformers==4.57.1",
+]
+
+mlx = [
+    "mlx-lm>=0.31.3; platform_system == 'Darwin' and platform_machine == 'arm64'",
+]
+
+onnx = [
+    "onnxruntime-gpu",
+    "onnx",
+]
+llamacpp = [
+    "llama-cpp-python>=0.3.0",
+]
+
+tensorrt = [
+    "tensorrt",
+    "tensorrt_llm<=1.0.0",
+    "tensorrt-cu12",
+    "nvidia-nccl-cu12",
+    "nvidia-cublas-cu12",
 ]
 
 [dependency-groups]

@@ -15,13 +15,10 @@ RESULTS_FILE = "compression_results_grid_search.json"
 COMPRESSION_FILE = "compression_data.bin"
 DECOMPRESSION_FILE = "text_results.txt"
 
-def main():
+def build_arg_parser():
     """
-    Parse CLI arguments and run compression or decompression.
+    Build the command-line parser for compression experiments.
     """
-    # ========================
-    # Parse command-line arguments
-    # ========================
     parser = argparse.ArgumentParser(description="Run Global Mask Compression Experiment")
     parser.add_argument("--mode", type=str, choices=["compress", "decompress"], required=True, help="Mode: compress or decompress")
     parser.add_argument("--input_path", type=str, default="data/text8",help="Input path: For compress mode, dataset path. For decompress mode, compression file path.")
@@ -74,6 +71,14 @@ def main():
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman"], default="AC", help="Encoding method for compression")
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
     parser.add_argument("--results_file", type=str, default=RESULTS_FILE, help="Path to the aggregated experiment-results JSON file")
+    return parser
+
+
+def main():
+    """
+    Parse CLI arguments and run compression or decompression.
+    """
+    parser = build_arg_parser()
 
     args = parser.parse_args()
 
