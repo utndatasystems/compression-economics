@@ -6,7 +6,11 @@ quantized_models/*
 
 logs/*
 *.job
+jobs/*
+gguf_models/*
+models/*
 results/*
+trt*
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
