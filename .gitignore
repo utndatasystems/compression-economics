@@ -191,3 +191,5 @@ cython_debug/
 compression_result*
 *.bin
 *.txt
+
+.apptainer_cache

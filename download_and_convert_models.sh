@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -euo pipefail
 
 # Configuration
 MODELS_DIR="models"
@@ -7,6 +7,7 @@ TRT_CKPT_DIR="trt_checkpoints"
 TRT_ENG_DIR="trt_engines"
 GGUF_DIR="gguf_models"
 DTYPE="bfloat16"
+SKIP_GGUF="${SKIP_GGUF:-0}"
 
 # Ensure directories exist
 mkdir -p "$MODELS_DIR"
@@ -45,6 +46,15 @@ for MODEL_REPO in "${MODELS[@]}"; do
     LOCAL_TRT_ENG_DIR="$TRT_ENG_DIR/$MODEL_NAME"
     LOCAL_GGUF_FILE="$GGUF_DIR/${MODEL_NAME}.gguf"
 
+    if [[ -f "$LOCAL_TRT_ENG_DIR/config.json" ]]; then
+        echo "TensorRT engine already exists for $MODEL_NAME at $LOCAL_TRT_ENG_DIR; skipping rebuild."
+        if [[ "$SKIP_GGUF" == "1" || -f "$LOCAL_GGUF_FILE" ]]; then
+            echo "Finished processing $MODEL_NAME successfully!"
+            echo "------------------------------------------------------------"
+            continue
+        fi
+    fi
+
     # Step 1: Download from Hugging Face
     echo "[1/4] Downloading $MODEL_REPO to $LOCAL_MODEL_DIR..."
     huggingface-cli download "$MODEL_REPO" --local-dir "$LOCAL_MODEL_DIR"
@@ -69,17 +79,21 @@ for MODEL_REPO in "${MODELS[@]}"; do
         --gather_generation_logits
 
     # Step 4: Convert to GGUF format
-    echo "[4/4] Exporting to GGUF format ($LOCAL_GGUF_FILE)..."
-    if [ ! -f "llama.cpp/convert_hf_to_gguf.py" ]; then
-        echo "Error: llama.cpp/convert_hf_to_gguf.py not found. Ensure llama.cpp is cloned in the root directory."
-        exit 1
+    if [[ "$SKIP_GGUF" == "1" ]]; then
+        echo "[4/4] Skipping GGUF export for $MODEL_NAME."
+    else
+        echo "[4/4] Exporting to GGUF format ($LOCAL_GGUF_FILE)..."
+        if [ ! -f "llama.cpp/convert_hf_to_gguf.py" ]; then
+            echo "Error: llama.cpp/convert_hf_to_gguf.py not found. Ensure llama.cpp is cloned in the root directory."
+            exit 1
+        fi
+
+        # We use bf16 for outtype to match the bfloat16 request
+        python llama.cpp/convert_hf_to_gguf.py \
+            "$LOCAL_MODEL_DIR" \
+            --outfile "$LOCAL_GGUF_FILE" \
+            --outtype bf16
     fi
-    
-    # We use bf16 for outtype to match the bfloat16 request
-    python llama.cpp/convert_hf_to_gguf.py \
-        "$LOCAL_MODEL_DIR" \
-        --outfile "$LOCAL_GGUF_FILE" \
-        --outtype bf16
 
     echo "Finished processing $MODEL_NAME successfully!"
     echo "------------------------------------------------------------"

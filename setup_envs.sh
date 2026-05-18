@@ -8,7 +8,7 @@ MAPPINGS=(
   "vllm-env:vllm"
   "sglang-env:sglang"
   "transformers-env:transformer"
-#   "tensorrt-llm-env:tensorrt"
+  "tensorrt-llm-env:tensorrt"
   "onnx-env:onnx"
   "lamacpp-cpu-env:llamacpp"
   "lamacpp-gpu-env:llamacpp"
@@ -34,8 +34,7 @@ for MAP in "${MAPPINGS[@]}"; do
         uv pip install -p "$ENV_DIR" -e ".[$EXTRA]"
     elif [ "$ENV_DIR" == "tensorrt-llm-env" ]; then
         echo "Installing specific dependencies for $ENV_DIR..."
-        uv pip install -p "$ENV_DIR" "tensorrt_llm<=1.0.0" tensorrt-cu12 nvidia-nccl-cu12 nvidia-cublas-cu12
-        uv pip install -p "$ENV_DIR" -e ".[$EXTRA]"
+        uv pip install -p "$ENV_DIR" --extra-index-url https://pypi.nvidia.com -e ".[$EXTRA]"
     else
         uv pip install -p "$ENV_DIR" -e ".[$EXTRA]"
     fi
