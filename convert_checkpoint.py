@@ -1,4 +1,5 @@
 import argparse
+import json
 import os
 import time
 import traceback
@@ -313,6 +314,24 @@ def execute(workers, func, args):
             ) == 0, "Checkpoint conversion failed, please check error log."
 
 
+def sanitize_checkpoint_config(output_dir):
+    config_path = os.path.join(output_dir, 'config.json')
+
+    if not os.path.exists(config_path):
+        return
+
+    with open(config_path, 'r', encoding='utf-8') as config_file:
+        config = json.load(config_file)
+
+    mapping = config.get('mapping')
+    if isinstance(mapping, dict) and 'auto_parallel' in mapping:
+        del mapping['auto_parallel']
+
+        with open(config_path, 'w', encoding='utf-8') as config_file:
+            json.dump(config, config_file, indent=4)
+            config_file.write('\n')
+
+
 def main():
     # emit_engine_arch_deprecation("convert_checkpoint.py")
     print(tensorrt_llm.__version__)
@@ -336,6 +355,7 @@ def main():
 
     assert args.model_dir is not None
     convert_and_save_hf(args)
+    sanitize_checkpoint_config(args.output_dir)
 
     tok = time.time()
     t = time.strftime('%H:%M:%S', time.gmtime(tok - tik))
