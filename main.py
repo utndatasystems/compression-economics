@@ -29,6 +29,7 @@ def build_arg_parser():
     parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length exceeded (only with KV cache)")
     parser.add_argument("--first_n_tokens", type=int, default=10001, help="Number of tokens to compress")
     parser.add_argument("--use_kv_cache", action="store_true", help="Enable KV cache for compression")
+    parser.add_argument("--no_use_kv_cache", dest="use_kv_cache", action="store_false", help="Disable KV cache for compression")
     parser.set_defaults(use_kv_cache=True)
     parser.add_argument("--text_input", type=str, required=False, help="The direct text input for LLM inference.")
     parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")
@@ -89,6 +90,10 @@ def main():
                 parser.error("--input_path is required in compress mode")
             if not args.output_path:
                 args.output_path = COMPRESSION_FILE
+
+            if args.engine == "onnxruntime" and args.use_kv_cache:
+                print("\nONNX Runtime uses full-prompt inference in this repo; disabling KV cache.")
+                args.use_kv_cache = False
 
             # ========================
             # Check if experiment already exists
@@ -238,6 +243,10 @@ def main():
             args.input_path = COMPRESSION_FILE
         if not args.output_path:
             args.output_path = DECOMPRESSION_FILE
+
+        if args.engine == "onnxruntime" and args.use_kv_cache:
+            print("\nONNX Runtime uses full-prompt inference in this repo; disabling KV cache.")
+            args.use_kv_cache = False
         # ========================
         # Load binary compression file
         # ========================

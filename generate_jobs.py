@@ -31,7 +31,8 @@ ENGINES = {
     },
     "onnx": {
         "engine_arg": "onnxruntime",
-        "env": "onnx-env"
+        "env": "onnx-env",
+        "extra_args": "--no_use_kv_cache"
     }
 }
 
@@ -52,8 +53,8 @@ DATASETS = {
 
 BATCH_SIZE = 256
 CONTEXT_LENGTH = 128
-# FIRST_N_TOKENS = 50000000 
-FIRST_N_TOKENS = 1000
+FIRST_N_TOKENS = 50000000 
+# FIRST_N_TOKENS = 1000
 
 JOBS_DIR_ROOT = Path("jobs")
 

@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 from contextlib import nullcontext
@@ -23,61 +22,7 @@ DEFAULT_FIGURES_DIR = "figures"
 DEFAULT_ARTIFACTS_DIR = "artifacts/grid_search"
 REPO_ROOT = Path(__file__).resolve().parent
 
-
-def configure_matplotlib() -> None:
-    matplotlib.rcParams.update(
-        {
-            "font.size": 11,
-            "font.family": "serif",
-            "axes.titlesize": "medium",
-            "figure.titlesize": "medium",
-            "text.usetex": False,
-        }
-    )
-
-    latex_binary = shutil.which("latex")
-    kpsewhich_binary = shutil.which("kpsewhich")
-    if latex_binary is None or kpsewhich_binary is None:
-        print("LaTeX plotting disabled: latex or kpsewhich is not installed.", flush=True)
-        return
-
-    required_packages = [
-        "type1cm.sty",
-        "type1ec.sty",
-        "amsmath.sty",
-        "amssymb.sty",
-        "siunitx.sty",
-    ]
-    missing_packages = []
-    for package in required_packages:
-        result = subprocess.run(
-            [kpsewhich_binary, package],
-            check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        if result.returncode != 0:
-            missing_packages.append(package)
-
-    if missing_packages:
-        missing_list = ", ".join(missing_packages)
-        print(
-            f"LaTeX plotting disabled: missing TeX package(s): {missing_list}.",
-            flush=True,
-        )
-        return
-
-    matplotlib.rcParams.update(
-        {
-            "text.usetex": True,
-            "text.latex.preamble": "\\usepackage{amsmath}\\usepackage{amssymb}\\usepackage{siunitx}[=v2]",
-            "pgf.rcfonts": False,
-            "pgf.texsystem": "pdflatex",
-        }
-    )
-
-
-configure_matplotlib()
+matplotlib.rcParams.update({'font.size': 11, 'font.family': 'serif', 'axes.titlesize': 'medium', 'figure.titlesize': 'medium', 'text.usetex': True, 'text.latex.preamble': '\\usepackage{amsmath}\\usepackage{amssymb}\\usepackage{siunitx}[=v2]', 'pgf.rcfonts': False, 'pgf.texsystem': 'pdflatex'})
 
 
 def parse_int_list(value):
