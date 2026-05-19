@@ -14,7 +14,7 @@ bitmap to reconstruct tokens from the bitstream.
 import sys
 
 from src.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
-from src.prediction import TokenDataPreparer, TokenPredictor
+from src.prediction import TokenDataPreparer, TokenPredictor, get_token_predictor
 from itertools import chain
 from collections import defaultdict
 
@@ -22,7 +22,6 @@ import numpy as np
 import time
 import torch
 from tqdm.auto import tqdm
-from wandb.plot import line
 from itertools import chain
 from copy import copy
 
@@ -58,6 +57,12 @@ def _make_arithmetic_decompressor(args, bit_string, alphabet_size):
     raise NotImplementedError(
         f"Encoding method '{args.encoding}' is not implemented for decompression."
     )
+
+
+def _cleanup_predictor(token_predictor):
+    cleanup = getattr(token_predictor, "cleanup", None)
+    if callable(cleanup):
+        cleanup()
 
 
 def run_global_mask_compression(args):
@@ -126,66 +131,65 @@ def run_global_mask_compression(args):
     total_bitmap_size = len(bitmask_data) * 8
     tokenize_time = time.perf_counter() - t0_tokenize
         
-    token_predictor = TokenPredictor(args, bitmap_data=bitmask_data)
+    token_predictor = get_token_predictor(args, bitmap_data=bitmask_data)
+    try:
+        if args.encoding in {"AC"}:
+            llm_compressor = LLMCompressor()
+        elif args.encoding == "PMATIC":
+            delta, r = _get_pmatic_params(args)
+            print(f"Using PMATIC compressor with delta={delta}, r={r}")
+            alphabet_size = len(token_predictor.tokens_list)
+            # alternatively alphabet_size = token_predictor.tokenizer.vocab_size
+            llm_compressor = LLMCompressor(
+                alphabet_size=alphabet_size,
+                delta=delta,
+                r=r,
+                algorithm="PMATIC",
+            )
 
-    if args.encoding in {"AC"}:
-        llm_compressor = LLMCompressor()
-    elif args.encoding == "PMATIC":
-        delta, r = _get_pmatic_params(args)
-        print(f"Using PMATIC compressor with delta={delta}, r={r}")
-        alphabet_size = len(token_predictor.tokens_list)
-        # alternatively alphabet_size = token_predictor.tokenizer.vocab_size
-        llm_compressor = LLMCompressor(
-            alphabet_size=alphabet_size,
-            delta=delta,
-            r=r,
-            algorithm="PMATIC",
-        )
-
-    # Per-batch prompt buffers that grow token-by-token.
-    prompts = [[] for _ in range(args.batch_size)]
-    compression_time = time.perf_counter()
-    inference_time = 0
-    ac_time = 0
-    data_copy_time = 0
-    softmax_time = 0
-    entropy = 0.0
-    rank_list = []
-    probs_list = []
+        # Per-batch prompt buffers that grow token-by-token.
+        prompts = [[] for _ in range(args.batch_size)]
+        compression_time = time.perf_counter()
+        inference_time = 0
+        ac_time = 0
+        data_copy_time = 0
+        softmax_time = 0
+        entropy = 0.0
+        rank_list = []
+        probs_list = []
     
-    # Process each token in the dataset to compress it.
-    for token_idx in tqdm(range(chunk_length), disable=not use_tqdm):
-        # Append the current token from each batch to its prompt context.
-        for i in range(args.batch_size):
-            prompts[i].append(batches[i][token_idx])
+        # Process each token in the dataset to compress it.
+        for token_idx in tqdm(range(chunk_length), disable=not use_tqdm):
+            # Append the current token from each batch to its prompt context.
+            for i in range(args.batch_size):
+                prompts[i].append(batches[i][token_idx])
 
-        # Trim context to keep inference cost bounded.
-        if len(prompts[0]) >= args.context_length:
-            prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
+            # Trim context to keep inference cost bounded.
+            if len(prompts[0]) >= args.context_length:
+                prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
         
-        input_token_cnt += args.batch_size * len(prompts[0])
+            input_token_cnt += args.batch_size * len(prompts[0])
 
-        # Run LLM inference
-        t0_inference = time.perf_counter()
-        token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
-        data_copy_time += _data_copy_time
-        softmax_time += _softmax_time
-        inference_time += time.perf_counter() - t0_inference
+            # Run LLM inference
+            t0_inference = time.perf_counter()
+            token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
+            data_copy_time += _data_copy_time
+            softmax_time += _softmax_time
+            inference_time += time.perf_counter() - t0_inference
 
-        actual_next_tokens = []
-        valid_mask = [] 
+            actual_next_tokens = []
+            valid_mask = [] 
 
-        # Build a mask for batches that still have a "next token" at this step.
-        for idx in range(args.batch_size):
-            if token_idx + 1 < batches_length[idx]:
-                token = batches[idx][token_idx + 1]
-                actual_next_tokens.append(token_ids.index(token))
-                valid_mask.append(True)
-            else:
-                actual_next_tokens.append(0)
-                valid_mask.append(False)
+            # Build a mask for batches that still have a "next token" at this step.
+            for idx in range(args.batch_size):
+                if token_idx + 1 < batches_length[idx]:
+                    token = batches[idx][token_idx + 1]
+                    actual_next_tokens.append(token_ids.index(token))
+                    valid_mask.append(True)
+                else:
+                    actual_next_tokens.append(0)
+                    valid_mask.append(False)
 
-        if args.engine == "transformer":
             if args.encoding == "AC":
                 t0_ac = time.perf_counter()
                 probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
@@ -239,10 +243,7 @@ def run_global_mask_compression(args):
 
             else:
                 raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
-        else:
-            raise ValueError(f"Unsupported engine: {args.engine}")
 
-    if args.engine == "transformer":
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")
         elif args.encoding == "PMATIC": 
@@ -258,50 +259,50 @@ def run_global_mask_compression(args):
             bit_string, codebook = llm_compressor.compress(encoding="huffman", rank_list=rank_list)
         else:
             raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
-    else:
-        raise ValueError(f"Unsupported engine: {args.engine}")
-    
-    compression_time = time.perf_counter() - compression_time
-    
-    total_compression_time = time.perf_counter() - t0_tokenize
-    # Bitstream length (in bits) plus bitmap size yields the final compressed size.
-    total_arithmetic_code_size = len(bit_string)
-    if args.encoding == "huffman":
-        # Estimate the size of the codebook in bits
-        codebook_size = sum(len(code) for code in codebook.values())
-        total_arithmetic_code_size += codebook_size
-        print(f"Estimated codebook size (bits): {codebook_size}")
 
-    # Calculate final size and compression ratio.
-    final_size = total_arithmetic_code_size + total_bitmap_size
-    original_size_bytes = len(token_predictor.detokenize(data_tokens))
+        compression_time = time.perf_counter() - compression_time
+        
+        total_compression_time = time.perf_counter() - t0_tokenize
+        # Bitstream length (in bits) plus bitmap size yields the final compressed size.
+        total_arithmetic_code_size = len(bit_string)
+        if args.encoding == "huffman":
+            # Estimate the size of the codebook in bits
+            codebook_size = sum(len(code) for code in codebook.values())
+            total_arithmetic_code_size += codebook_size
+            print(f"Estimated codebook size (bits): {codebook_size}")
 
-    return first_tokens, bit_string, bitmask_data, {
-        "args": args.__dict__,
-        "chunk_length": chunk_length,
-        "chunk_size": -1, # -1 indicates global mask, not chunking
-        "original_size_bytes": original_size_bytes,
-        "arithmetic_code_size_bytes": total_arithmetic_code_size / 8,
-        "bitmap_size_bytes": total_bitmap_size / 8,
-        "final_size_bytes": final_size / 8,
-        "pure_compression_factor": original_size_bytes / (total_arithmetic_code_size / 8),
-        "compression_factor": original_size_bytes / (final_size / 8),
-        "input_tokens_count": input_token_cnt,
-        "entropy": float(entropy),
-        # Timings
-        "total_compression_time": total_compression_time,
-        "tokenize_time": tokenize_time,
-        "compression_time": compression_time,
-        "inference_time": inference_time,
-        "ac_time": ac_time,
-        "data_copy_time": data_copy_time,
-        "softmax_time": softmax_time,
-        # Throughput
-        "throughput_tokens_per_sec": input_token_cnt / total_compression_time,
-        "throughput_kibibytes_per_sec": original_size_bytes / 1024 / total_compression_time,
-        "inference_throughput_tokens_per_sec": input_token_cnt / inference_time,
-        "inference_throughput_kibibytes_per_sec": original_size_bytes / 1024 / inference_time,
-    }, args
+        # Calculate final size and compression ratio.
+        final_size = total_arithmetic_code_size + total_bitmap_size
+        original_size_bytes = len(token_predictor.detokenize(data_tokens))
+
+        return first_tokens, bit_string, bitmask_data, {
+            "args": args.__dict__,
+            "chunk_length": chunk_length,
+            "chunk_size": -1, # -1 indicates global mask, not chunking
+            "original_size_bytes": original_size_bytes,
+            "arithmetic_code_size_bytes": total_arithmetic_code_size / 8,
+            "bitmap_size_bytes": total_bitmap_size / 8,
+            "final_size_bytes": final_size / 8,
+            "pure_compression_factor": original_size_bytes / (total_arithmetic_code_size / 8),
+            "compression_factor": original_size_bytes / (final_size / 8),
+            "input_tokens_count": input_token_cnt,
+            "entropy": float(entropy),
+            # Timings
+            "total_compression_time": total_compression_time,
+            "tokenize_time": tokenize_time,
+            "compression_time": compression_time,
+            "inference_time": inference_time,
+            "ac_time": ac_time,
+            "data_copy_time": data_copy_time,
+            "softmax_time": softmax_time,
+            # Throughput
+            "throughput_tokens_per_sec": input_token_cnt / total_compression_time,
+            "throughput_kibibytes_per_sec": original_size_bytes / 1024 / total_compression_time,
+            "inference_throughput_tokens_per_sec": input_token_cnt / inference_time,
+            "inference_throughput_kibibytes_per_sec": original_size_bytes / 1024 / inference_time,
+        }, args
+    finally:
+        _cleanup_predictor(token_predictor)
 
 
 def run_global_mask_decompression(
@@ -335,99 +336,101 @@ def run_global_mask_decompression(
     t0_decompress = time.perf_counter()
 
     # Initialize the token predictor.
-    token_predictor = TokenPredictor(args, bitmap_data=bitmap)
+    token_predictor = get_token_predictor(args, bitmap_data=bitmap)
+    try:
+        # Get the original tokens to know the starting token and the total length.
+        decompressor = _make_arithmetic_decompressor(
+            args,
+            bit_string,
+            alphabet_size=len(token_predictor.tokens_list),
+        )
 
-    # Get the original tokens to know the starting token and the total length.
-    decompressor = _make_arithmetic_decompressor(
-        args,
-        bit_string,
-        alphabet_size=len(token_predictor.tokens_list),
-    )
+        # Seed each batch with its initial token from the original data (required for autoregressive decoding)
+        prompts = [[first_tokens[i]] for i in range(args.batch_size)]
+        reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
 
-    # Seed each batch with its initial token from the original data (required for autoregressive decoding)
-    prompts = [[first_tokens[i]] for i in range(args.batch_size)]
-    reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
+        # Set minimum tokens per batch = chunk_length 
+        chunk_length = args.first_n_tokens // args.batch_size
+        extra = args.first_n_tokens % args.batch_size
 
-    # Set minimum tokens per batch = chunk_length 
-    chunk_length = args.first_n_tokens // args.batch_size
-    extra = args.first_n_tokens % args.batch_size
+        # Adjust length for extra tokens 
+        batches_length = [
+            chunk_length + (1 if i < extra else 0)
+            for i in range(args.batch_size)]
+        
+        input_tokens_cnt = 0
+        inference_time = 0
+        ac_time = 0
+        data_copy_time = 0
+        softmax_time = 0
 
-    # Adjust length for extra tokens 
-    batches_length = [
-        chunk_length + (1 if i < extra else 0)
-        for i in range(args.batch_size)]
-    
-    input_tokens_cnt = 0
-    inference_time = 0
-    ac_time = 0
-    data_copy_time = 0
-    softmax_time = 0
+        # Determine max tokens to decode, set to first_n_tokens if not specified
+        max_tokens = args.first_n_tokens
+        total_decoded = len(first_tokens) if first_tokens else 0
 
-    # Determine max tokens to decode, set to first_n_tokens if not specified
-    max_tokens = args.first_n_tokens
-    total_decoded = len(first_tokens) if first_tokens else 0
+        # Iterate through all tokens in chunk length 
+        for token_idx in range(chunk_length):
+            if total_decoded >= max_tokens: 
+                # if max_tokens are reached, break 
+                break
 
-    # Iterate through all tokens in chunk length 
-    for token_idx in range(chunk_length):
-        if total_decoded >= max_tokens: 
-            # if max_tokens are reached, break 
-            break
+            # Bitstring is unbatched, therefore we have to calculate batch id again using chunk-length
+            #print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
-        # Bitstring is unbatched, therefore we have to calculate batch id again using chunk-length
-        #print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
+            # Truncate context if it exceeds model limit (prevents overflow)
+            if len(prompts[0]) >= args.context_length:
+                prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
 
-        # Truncate context if it exceeds model limit (prevents overflow)
-        if len(prompts[0]) >= args.context_length:
-            prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
+            input_tokens_cnt += args.batch_size * len(prompts[0]) 
 
-        input_tokens_cnt += args.batch_size * len(prompts[0]) 
+            # Run LLM inference
+            t0_inference = time.perf_counter()
+            _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, enable_kv_cache=args.use_kv_cache)
+            data_copy_time += _data_copy_time
+            softmax_time += _softmax_time
+            inference_time += time.perf_counter() - t0_inference
 
-        # Run LLM inference
-        t0_inference = time.perf_counter()
-        _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, enable_kv_cache=args.use_kv_cache)
-        data_copy_time += _data_copy_time
-        softmax_time += _softmax_time
-        inference_time += time.perf_counter() - t0_inference
+            t0_ac = time.perf_counter()
+            # Provide the actual token's indexes and the probability distributions to the compressor.
+            for idx, probs in enumerate(probs_values.to(torch.float32).numpy()):
+                if token_idx + 1 < batches_length[idx]:
+                    # Decompress the next token's index from the bit string.
+                    #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
+                    next_token_idx = decompressor.decompress(probs)
+                    next_token = token_predictor.get_token_by_id(next_token_idx)
+                    
+                    # Append the decompressed token to the context for the next step.
+                    prompts[idx].append(next_token)
+                    reconstructed_tokens[idx].append(next_token)
 
-        t0_ac = time.perf_counter()
-        # Provide the actual token's indexes and the probability distributions to the compressor.
-        for idx, probs in enumerate(probs_values.to(torch.float32).numpy()):
-            if token_idx + 1 < batches_length[idx]:
-                # Decompress the next token's index from the bit string.
-                #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
-                next_token_idx = decompressor.decompress(probs)
-                next_token = token_predictor.get_token_by_id(next_token_idx)
-                
-                # Append the decompressed token to the context for the next step.
-                prompts[idx].append(next_token)
-                reconstructed_tokens[idx].append(next_token)
+                    total_decoded += 1 
 
-                total_decoded += 1 
+            ac_time += time.perf_counter() - t0_ac
+        
+        reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
+        t0_detokenize = time.perf_counter()
+        detoken_string = token_predictor.detokenize(reconstructed_tokens)
+        detokenize_time = time.perf_counter() - t0_detokenize
 
-        ac_time += time.perf_counter() - t0_ac
-    
-    reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
-    t0_detokenize = time.perf_counter()
-    detoken_string = token_predictor.detokenize(reconstructed_tokens)
-    detokenize_time = time.perf_counter() - t0_detokenize
+        decompression_time = time.perf_counter() - t0_decompress
 
-    decompression_time = time.perf_counter() - t0_decompress
-
-    return reconstructed_tokens, detoken_string, {
-        "args": args.__dict__,
-        "decompression_time_sec": decompression_time,
-        "input_tokens_cnt": input_tokens_cnt,
-        # Timings
-        "total_decompression_time": decompression_time,
-        "detokenize_time": detokenize_time,
-        "inference_time": inference_time,
-        "ac_time": ac_time,
-        "data_copy_time": data_copy_time,
-        "softmax_time": softmax_time,
-        # Throughput
-        "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
-        "inference_throughput_kibibytes_per_sec": len(detoken_string) / 1024 / inference_time,
-    }
+        return reconstructed_tokens, detoken_string, {
+            "args": args.__dict__,
+            "decompression_time_sec": decompression_time,
+            "input_tokens_cnt": input_tokens_cnt,
+            # Timings
+            "total_decompression_time": decompression_time,
+            "detokenize_time": detokenize_time,
+            "inference_time": inference_time,
+            "ac_time": ac_time,
+            "data_copy_time": data_copy_time,
+            "softmax_time": softmax_time,
+            # Throughput
+            "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
+            "inference_throughput_kibibytes_per_sec": len(detoken_string) / 1024 / inference_time,
+        }
+    finally:
+        _cleanup_predictor(token_predictor)
 
 def run_global_mask_speculative_decompression(
     args,
@@ -457,6 +460,11 @@ def run_global_mask_speculative_decompression(
     Returns:
         tuple: (reconstructed_tokens_flat, detoken_string, stats)
     """
+
+    if args.engine != "transformer":
+        raise NotImplementedError(
+            "Speculative decompression is currently supported only with --engine transformer."
+        )
 
     print(
         f"\n----- Running Speculative Decompression: "

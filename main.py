@@ -8,7 +8,7 @@ import os
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression, run_global_mask_speculative_decompression
 from src.config import get_main_args
 from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params, check_mismatch
-from src.prediction import TokenPredictor
+from src.prediction import get_token_predictor
 
 RESULTS_FILE = "compression_results.json"
 COMPRESSION_FILE = "compression_data.bin"
@@ -66,12 +66,19 @@ def main():
             print(f"  First n tokens   : {args.first_n_tokens}")
             print(f"  Use KV cache     : {args.use_kv_cache}")
             print(f"  Batch size       : {args.batch_size}")
+            print(f"  Engine           : {args.engine}")
             print(f"  Encoding         : {args.encoding}")
         
             # add parameters to comp_stats for saving in results JSON
-            token_predictor = TokenPredictor(args, bitmap_data=None)
-            base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
-            base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
+            token_predictor = get_token_predictor(args, bitmap_data=None)
+            try:
+                base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
+                base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
+            finally:
+                cleanup = getattr(token_predictor, "cleanup", None)
+                if callable(cleanup):
+                    cleanup()
+
             total_params = base_params + adapter_params
             total_size_mb = base_size_mb + adapter_size_mb
 
@@ -88,6 +95,7 @@ def main():
 
             comp_stats = {
                 **comp_stats,
+                "engine": args.engine,
                 "total_params": total_params,
                 "adapter_params": adapter_params,
                 "base_model_params": base_params,
@@ -156,6 +164,7 @@ def main():
         print(f"  First n tokens   : {args.first_n_tokens}")
         print(f"  Use KV cache     : {args.use_kv_cache}")
         print(f"  Batch size       : {args.batch_size}")
+        print(f"  Engine           : {args.engine}")
         print(f"  Spec_k           : {args.spec_k}")
 
         print("\n===== Decompress Data =====")
@@ -177,6 +186,11 @@ def main():
                 first_tokens=first_token,
                 bit_string=bit_string,
                 bitmap=bitmask_data)
+
+        decomp_stats = {
+            **decomp_stats,
+            "engine": args.engine,
+        }
 
         # ========================
         # Save results (JSON stats)

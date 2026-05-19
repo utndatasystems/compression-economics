@@ -7,12 +7,14 @@ import torch
 
 from src.encoding import LLMCompressor, choose_pmatic_r
 from src.global_mask_compressor import (
+    run_global_mask_compression,
     run_global_mask_decompression,
     run_global_mask_speculative_decompression,
 )
 
 
-def test_global_mask_pmatic_decompression_uses_pmatic_decoder(monkeypatch):
+@pytest.mark.parametrize("engine", ["transformer", "vllm"])
+def test_global_mask_pmatic_decompression_uses_pmatic_decoder(monkeypatch, engine):
     probs_by_prompt = {
         (0,): np.array([0.1, 0.7, 0.1, 0.1], dtype=np.float64),
         (2,): np.array([0.1, 0.1, 0.1, 0.7], dtype=np.float64),
@@ -42,9 +44,12 @@ def test_global_mask_pmatic_decompression_uses_pmatic_decoder(monkeypatch):
         def detokenize(self, tokens):
             return " ".join(str(token) for token in tokens)
 
+    def fake_get_token_predictor(args, bitmap_data=None):
+        return FakeTokenPredictor(args, bitmap_data)
+
     monkeypatch.setattr(
-        "src.global_mask_compressor.TokenPredictor",
-        FakeTokenPredictor,
+        "src.global_mask_compressor.get_token_predictor",
+        fake_get_token_predictor,
     )
 
     delta = 1e-3
@@ -65,7 +70,7 @@ def test_global_mask_pmatic_decompression_uses_pmatic_decoder(monkeypatch):
 
     args = SimpleNamespace(
         model_name="fake",
-        engine="transformer",
+        engine=engine,
         reduce_tokens=True,
         encoding="PMATIC",
         is_seq2seq=False,
@@ -90,6 +95,101 @@ def test_global_mask_pmatic_decompression_uses_pmatic_decoder(monkeypatch):
 
     assert reconstructed_tokens == [0, 1, 2, 2, 3, 1]
     assert detoken_string == "0 1 2 2 3 1"
+
+
+@pytest.mark.parametrize("engine", ["transformer", "vllm"])
+def test_global_mask_compression_uses_selected_engine(monkeypatch, engine):
+    created_engines = []
+
+    class FakeTokenDataPreparer:
+        def __init__(self, args):
+            self.args = args
+
+        def get_data_tokens(self):
+            return [0, 1]
+
+        def get_args(self):
+            return self.args
+
+        def get_bitmap(self):
+            return b"bitmap"
+
+    class FakeTokenPredictor:
+        tokens_list = [0, 1]
+
+        def __init__(self, args, bitmap_data=None):
+            created_engines.append(args.engine)
+            self.args = args
+            self.bitmap_data = bitmap_data
+
+        def run_batched_inference(self, prompts, enable_kv_cache=True):
+            del prompts, enable_kv_cache
+            return self.tokens_list, torch.tensor([[0.2, 0.8]], dtype=torch.float32), 0.0, 0.0
+
+        def detokenize(self, tokens):
+            return "".join(str(token) for token in tokens)
+
+        def cleanup(self):
+            return None
+
+    class FakeLLMCompressor:
+        def __init__(self, *args, **kwargs):
+            self.encoded = []
+
+        def next_token(self, token_idx, probs):
+            self.encoded.append((token_idx, probs[token_idx]))
+
+        def compress(self, encoding="AC", rank_list=None):
+            del encoding, rank_list
+            return "101"
+
+    monkeypatch.setattr(
+        "src.global_mask_compressor.TokenDataPreparer",
+        FakeTokenDataPreparer,
+    )
+    monkeypatch.setattr(
+        "src.global_mask_compressor.get_token_predictor",
+        lambda args, bitmap_data=None: FakeTokenPredictor(args, bitmap_data),
+    )
+    monkeypatch.setattr(
+        "src.global_mask_compressor.LLMCompressor",
+        FakeLLMCompressor,
+    )
+
+    args = SimpleNamespace(
+        input_path="data/text8",
+        model_name="fake",
+        context_length=128,
+        first_n_tokens=2,
+        batch_size=1,
+        use_kv_cache=True,
+        retain_tokens=64,
+        engine=engine,
+        encoding="AC",
+        reduce_tokens=True,
+        is_seq2seq=False,
+        is_mamba=False,
+        lora_path=None,
+    )
+
+    first_tokens, bit_string, bitmask_data, stats, returned_args = run_global_mask_compression(args)
+
+    assert created_engines == [engine]
+    assert first_tokens == [0]
+    assert bit_string == "101"
+    assert bitmask_data == b"bitmap"
+    assert stats["args"]["engine"] == engine
+    assert returned_args.engine == engine
+
+
+def test_run_global_mask_speculative_decompression_rejects_vllm():
+    with pytest.raises(NotImplementedError, match="Speculative decompression"):
+        run_global_mask_speculative_decompression(
+            args=SimpleNamespace(engine="vllm"),
+            first_tokens=[0],
+            bit_string="dummy",
+            bitmap=None,
+        )
 
 @pytest.mark.skip(reason="Temporarily disabled for debugging")
 def test_run_global_mask_speculative_decompression(monkeypatch):
