@@ -17,7 +17,7 @@ from pyroaring import BitMap
 import time
 
 from src.cache_prompt_state import freeze_prompts, prompts_extend_one_token
-from src.hf_cache import get_model_cache_dir
+from src.hf_cache import get_model_cache_dir, resolve_pretrained_model_source
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -125,7 +125,10 @@ class TokenDataPreparer:
             return AutoTokenizer.from_pretrained(tokenizer_source, cache_dir=get_model_cache_dir())
 
         cache_dir = get_model_cache_dir()
-        return AutoTokenizer.from_pretrained(args.model_name, cache_dir=cache_dir)
+        tokenizer_source = resolve_pretrained_model_source(args.model_name)
+        if os.path.isdir(tokenizer_source):
+            return AutoTokenizer.from_pretrained(tokenizer_source)
+        return AutoTokenizer.from_pretrained(tokenizer_source, cache_dir=cache_dir)
 
     def _get_data_from_file(self, input_path):
         """
@@ -193,7 +196,11 @@ class TokenPredictor:
 
         # Load tokenizer and model (from cache or download).
         cache_dir = get_model_cache_dir()
-        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=cache_dir)
+        model_source = resolve_pretrained_model_source(args.model_name)
+        if os.path.isdir(model_source):
+            self.tokenizer = AutoTokenizer.from_pretrained(model_source)
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_source, cache_dir=cache_dir)
         self.args = args
         self.device = None
         if torch.cuda.is_available():
@@ -213,11 +220,17 @@ class TokenPredictor:
             dtype = "auto"  # Let HF auto-detect dtype for non-FP8 models
 
         if args.engine == "transformer":
-            self.model = AutoModelForCausalLM.from_pretrained(
-                args.model_name,
-                cache_dir=cache_dir,
-                dtype=dtype,
-            )
+            if os.path.isdir(model_source):
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_source,
+                    dtype=dtype,
+                )
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_source,
+                    cache_dir=cache_dir,
+                    dtype=dtype,
+                )
             self.base_params = self.count_parameters(self.model)[0]
             self.base_size_mb = self.estimate_model_size_mb(self.model)[0]
             self.adapter_params, self.adapter_size_mb = 0, 0

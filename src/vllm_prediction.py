@@ -11,6 +11,7 @@ This module provides:
 """
 
 import inspect
+import os
 import struct
 import time
 import importlib
@@ -36,6 +37,14 @@ _SHM_NAME = "vllm_ac_logits_capture"
 #   bytes [4:8]   — uint32 num_cols  (padded vocab width written by processor)
 #   bytes [8: ]   — float32 logits data  (num_rows * num_cols * 4 bytes)
 _HEADER_BYTES = 8
+
+
+def _flag_enabled(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
 
 
 def probe_vllm_ac_support(args):
@@ -153,9 +162,9 @@ class VLLMTokenPredictor:
     """
     Token predictor backed by vLLM for next-token probability extraction.
 
-    V1 (current): processes one prompt at a time through ``llm.generate()``
-    to guarantee deterministic row ordering.  vLLM prefix caching provides
-    KV reuse across incrementally-growing prompts.
+    Runs one batched ``llm.generate()`` call per predictor step and captures the
+    dense next-token logits for the whole prompt batch from shared memory.
+    vLLM prefix caching provides KV reuse across incrementally-growing prompts.
     """
 
     def __init__(self, args, bitmap_data):
@@ -174,11 +183,30 @@ class VLLMTokenPredictor:
 
         tp = getattr(args, "tensor_parallel_size", 1)
         gpu_mem = getattr(args, "gpu_memory_utilization", 0.9)
+        batch_capacity = max(int(getattr(args, "batch_size", 1) or 1), 1)
+        env_batch_invariant = os.environ.get("VLLM_BATCH_INVARIANT")
+        batch_invariant = _flag_enabled(
+            getattr(args, "vllm_batch_invariant", None),
+            default=_flag_enabled(env_batch_invariant, default=True),
+        )
+        attention_config = None
+        if batch_invariant:
+            # Batched logits must stay invariant to co-batched prompts for the
+            # compression predictor contract to hold.
+            os.environ["VLLM_BATCH_INVARIANT"] = "1"
+            attention_backend = (
+                getattr(args, "vllm_attention_backend", None)
+                or os.environ.get("VLLM_ATTENTION_BACKEND")
+                or "FLASH_ATTN"
+            )
+            attention_config = {"backend": attention_backend}
+        else:
+            os.environ["VLLM_BATCH_INVARIANT"] = "0"
 
         # Pre-allocate shared memory for logit capture.
         # vLLM pads vocab to multiples of 64/128; use 2× headroom for safety.
         padded_vocab = (self.tokenizer.vocab_size + 1024) * 2
-        shm_size = _HEADER_BYTES + padded_vocab * 4
+        shm_size = _HEADER_BYTES + batch_capacity * padded_vocab * 4
         # Clean up any stale segment from a previous run.
         try:
             old = shared_memory.SharedMemory(name=_SHM_NAME, create=False)
@@ -197,6 +225,7 @@ class VLLMTokenPredictor:
             logits_processors=[CaptureLogitsProcessor],
             tensor_parallel_size=tp,
             gpu_memory_utilization=gpu_mem,
+            attention_config=attention_config,
             enforce_eager=True,
             enable_prefix_caching=True,
             max_model_len=args.context_length,
@@ -221,52 +250,36 @@ class VLLMTokenPredictor:
 
     def run_batched_inference(self, prompts, enable_kv_cache=True):
         """
-        Run one-step inference for each prompt and return scores.
-
-        V1: processes prompts sequentially (one ``llm.generate`` call each)
-        to guarantee captured-logit row order matches prompt order.
+        Run one batched vLLM decode step and return scores.
 
         Returns the same 4-tuple as TokenPredictor.run_batched_inference:
             (tokens_list, scores, data_copy_time, softmax_time)
         """
+        del enable_kv_cache
+
         from vllm import SamplingParams
 
         sp = SamplingParams(max_tokens=1, temperature=0)
 
-        all_logits = []
-        data_copy_time = 0.0
+        # Reset the shared-memory header (rows=0 → "not ready") before the
+        # batched generate call. If the engine needs a larger capture buffer,
+        # the processor will recreate the segment and we reattach afterwards.
+        self._reattach_capture_shm()
+        struct.pack_into("II", self._shm.buf, 0, 0, 0)
 
-        for prompt_tokens in prompts:
-            # Reset the shared-memory header (rows=0 → "not ready").
-            struct.pack_into("II", self._shm.buf, 0, 0, 0)
-
-            # Run one-prompt generate.  vLLM prefix caching handles KV reuse.
-            # PromptType accepts list[int] as token IDs directly.
-            self.llm.generate(
-                prompts=[prompt_tokens],
-                sampling_params=sp,
-                use_tqdm=False,
+        outputs = self.llm.generate(
+            prompts=prompts,
+            sampling_params=sp,
+            use_tqdm=False,
+        )
+        if len(outputs) != len(prompts):
+            raise RuntimeError(
+                f"vLLM returned {len(outputs)} outputs for {len(prompts)} prompts."
             )
 
-            # Read captured logits from shared memory.
-            t0 = time.perf_counter()
-            rows, cols = struct.unpack_from("II", self._shm.buf, 0)
-            if rows == 0:
-                raise RuntimeError(
-                    "CaptureLogitsProcessor did not fire. "
-                    "Ensure is_argmax_invariant() returns False."
-                )
-
-            data_bytes = rows * cols * 4
-            raw = bytes(self._shm.buf[_HEADER_BYTES: _HEADER_BYTES + data_bytes])
-            logits_np = np.frombuffer(raw, dtype=np.float32).reshape(rows, cols)
-            logits_row = torch.from_numpy(logits_np.copy()).to(self.device)
-            data_copy_time += time.perf_counter() - t0
-
-            all_logits.append(logits_row)
-
-        # Stack: [batch_size, padded_vocab]
-        logits = torch.cat(all_logits, dim=0)
+        t0 = time.perf_counter()
+        logits = self._read_captured_logits(expected_rows=len(prompts))
+        data_copy_time = time.perf_counter() - t0
 
         # Slice off vLLM padding columns beyond the real vocabulary.
         vocab_size = self.tokenizer.vocab_size
@@ -317,6 +330,31 @@ class VLLMTokenPredictor:
 
     def __del__(self):
         self.cleanup()
+
+    def _reattach_capture_shm(self):
+        if hasattr(self, "_shm") and self._shm is not None:
+            self._shm.close()
+        self._shm = shared_memory.SharedMemory(name=_SHM_NAME, create=False)
+
+    def _read_captured_logits(self, expected_rows):
+        self._reattach_capture_shm()
+
+        rows, cols = struct.unpack_from("II", self._shm.buf, 0)
+        if rows == 0:
+            raise RuntimeError(
+                "CaptureLogitsProcessor did not fire. "
+                "Ensure is_argmax_invariant() returns False."
+            )
+        if rows != expected_rows:
+            raise RuntimeError(
+                "Captured logits row count did not match prompt count: "
+                f"expected {expected_rows}, got {rows}"
+            )
+
+        data_bytes = rows * cols * 4
+        raw = bytes(self._shm.buf[_HEADER_BYTES: _HEADER_BYTES + data_bytes])
+        logits_np = np.frombuffer(raw, dtype=np.float32).reshape(rows, cols)
+        return torch.from_numpy(logits_np.copy()).to(self.device)
 
     def _estimate_params_from_config(self, model_name, cache_dir):
         """Rough parameter estimate from HF config (avoids loading full weights)."""

@@ -124,8 +124,16 @@ def main():
             # created inside run_global_mask_compression).
             if args.engine in {"vllm", "tensorrt", "sglang"}:
                 from transformers import AutoConfig
-                from src.hf_cache import get_model_cache_dir as _cache_dir
-                _cfg = AutoConfig.from_pretrained(args.model_name, cache_dir=_cache_dir())
+                from src.hf_cache import (
+                    get_model_cache_dir as _cache_dir,
+                    resolve_pretrained_model_source,
+                )
+
+                _model_source = resolve_pretrained_model_source(args.model_name)
+                if os.path.isdir(_model_source):
+                    _cfg = AutoConfig.from_pretrained(_model_source)
+                else:
+                    _cfg = AutoConfig.from_pretrained(_model_source, cache_dir=_cache_dir())
                 _h = getattr(_cfg, "hidden_size", 0)
                 _n = getattr(_cfg, "num_hidden_layers", 0)
                 _v = getattr(_cfg, "vocab_size", 0)

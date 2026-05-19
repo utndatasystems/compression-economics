@@ -142,3 +142,74 @@ def test_run_batched_inference_uses_legacy_sampling_kwargs_for_cpp_runner():
     assert predictor.runner.kwargs["top_k"] == 1
     assert predictor.runner.kwargs["top_p"] == 0.0
     assert predictor.runner.kwargs["temperature"] == 1.0
+
+
+def test_tensorrt_init_prefers_local_model_source(monkeypatch, tmp_path):
+    """TensorRT startup should load tokenizer/config from a resolved local snapshot."""
+    from src.tensorrt_prediction import TensorRTTokenPredictor
+
+    local_model_dir = tmp_path / "Qwen2.5-0.5B"
+    local_model_dir.mkdir(parents=True, exist_ok=True)
+    tokenizer_calls = []
+    estimated = {}
+
+    class FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(model_name, **kwargs):
+            tokenizer_calls.append((model_name, kwargs))
+            return SimpleNamespace(pad_token_id=1, eos_token_id=2, vocab_size=8)
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.AutoTokenizer = FakeAutoTokenizer
+
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setattr(
+        "src.tensorrt_prediction.probe_tensorrt_ac_support",
+        lambda args: (True, None),
+    )
+    monkeypatch.setattr(
+        "src.tensorrt_prediction.resolve_pretrained_model_source",
+        lambda model_name: str(local_model_dir),
+    )
+    monkeypatch.setattr(
+        "src.tensorrt_prediction.get_model_cache_dir",
+        lambda: "/tmp/compression-cache",
+    )
+    monkeypatch.setattr(
+        TensorRTTokenPredictor,
+        "_build_runner",
+        lambda self: (SimpleNamespace(), "ModelRunner"),
+    )
+    monkeypatch.setattr(
+        TensorRTTokenPredictor,
+        "_build_sampling_config",
+        lambda self: None,
+    )
+
+    def fake_estimate(self, model_name, cache_dir):
+        estimated["model_name"] = model_name
+        estimated["cache_dir"] = cache_dir
+        self.base_params = 0
+        self.base_size_mb = 0.0
+        self.adapter_params = 0
+        self.adapter_size_mb = 0.0
+
+    monkeypatch.setattr(TensorRTTokenPredictor, "_estimate_params_from_config", fake_estimate)
+    monkeypatch.setattr("src.tensorrt_prediction.torch.device", lambda *_args, **_kwargs: "cpu")
+
+    args = SimpleNamespace(
+        model_name="Qwen/Qwen2.5-0.5B",
+        tensorrt_engine_dir="trt_engines/Qwen2.5-0.5B",
+        lora_path=None,
+        reduce_tokens=False,
+        encoding="AC",
+    )
+
+    predictor = TensorRTTokenPredictor(args, bitmap_data=None)
+
+    assert predictor.engine_dir == "trt_engines/Qwen2.5-0.5B"
+    assert tokenizer_calls == [(str(local_model_dir), {})]
+    assert estimated == {
+        "model_name": str(local_model_dir),
+        "cache_dir": "/tmp/compression-cache",
+    }

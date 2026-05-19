@@ -16,7 +16,7 @@ import time
 import torch
 from pyroaring import BitMap
 
-from src.hf_cache import get_model_cache_dir
+from src.hf_cache import get_model_cache_dir, resolve_pretrained_model_source
 
 
 def probe_tensorrt_ac_support(args):
@@ -142,10 +142,14 @@ class TensorRTTokenPredictor:
             )
 
         cache_dir = get_model_cache_dir()
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            args.model_name,
-            cache_dir=cache_dir,
-        )
+        model_source = resolve_pretrained_model_source(args.model_name)
+        if os.path.isdir(model_source):
+            self.tokenizer = AutoTokenizer.from_pretrained(model_source)
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                model_source,
+                cache_dir=cache_dir,
+            )
         self.args = args
         self.device = torch.device("cuda")
         self.engine_dir = args.tensorrt_engine_dir
@@ -161,7 +165,7 @@ class TensorRTTokenPredictor:
             self.eos_token_id = self.pad_token_id
 
         self.runner, self.runner_name = self._build_runner()
-        self._estimate_params_from_config(args.model_name, cache_dir)
+        self._estimate_params_from_config(model_source, cache_dir)
 
         if bitmap_data is not None:
             bitmap = BitMap.deserialize(bitmap_data)
@@ -320,7 +324,10 @@ class TensorRTTokenPredictor:
         try:
             from transformers import AutoConfig
 
-            cfg = AutoConfig.from_pretrained(model_name, cache_dir=cache_dir)
+            if os.path.isdir(model_name):
+                cfg = AutoConfig.from_pretrained(model_name)
+            else:
+                cfg = AutoConfig.from_pretrained(model_name, cache_dir=cache_dir)
             hidden_size = getattr(cfg, "hidden_size", 0)
             num_layers = getattr(cfg, "num_hidden_layers", 0)
             vocab_size = getattr(cfg, "vocab_size", 0)
