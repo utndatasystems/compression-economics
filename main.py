@@ -69,39 +69,32 @@ def main():
             print(f"  Engine           : {args.engine}")
             print(f"  Encoding         : {args.encoding}")
         
-            # add parameters to comp_stats for saving in results JSON
-            token_predictor = get_token_predictor(args, bitmap_data=None)
-            try:
-                base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
-                base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
-            finally:
-                cleanup = getattr(token_predictor, "cleanup", None)
-                if callable(cleanup):
-                    cleanup()
-
-            total_params = base_params + adapter_params
-            total_size_mb = base_size_mb + adapter_size_mb
-
-            print(f'\nModel parameters:')
-            print(f"Adapter parameters   : {adapter_params:,}")
-            print(f"Base model parameters: {base_params:,}")
-            print(f"Adapter size (MB).   : {adapter_size_mb:.2f}")
-            print(f"Base model size (MB).: {base_size_mb:.2f}")
+            # We will retrieve model size stats *after* compression to avoid double-initializing the engine,
+            # especially important for vLLM which aggressively reserves GPU memory.
 
             # ========================
             # Run compression
             # ========================
-            first_token, bit_string, bitmask_data, comp_stats, args = run_global_mask_compression(args)
+            first_token, bit_string, bitmask_data, comp_stats, args, model_stats = run_global_mask_compression(args)
+
+            total_params = model_stats["base_params"] + model_stats["adapter_params"]
+            total_size_mb = model_stats["base_size_mb"] + model_stats["adapter_size_mb"]
+
+            print(f'\nModel parameters:')
+            print(f"Adapter parameters   : {model_stats['adapter_params']:,}")
+            print(f"Base model parameters: {model_stats['base_params']:,}")
+            print(f"Adapter size (MB).   : {model_stats['adapter_size_mb']:.2f}")
+            print(f"Base model size (MB).: {model_stats['base_size_mb']:.2f}")
 
             comp_stats = {
                 **comp_stats,
                 "engine": args.engine,
                 "total_params": total_params,
-                "adapter_params": adapter_params,
-                "base_model_params": base_params,
+                "adapter_params": model_stats["adapter_params"],
+                "base_model_params": model_stats["base_params"],
                 "total_size_mb": round(total_size_mb, 2),
-                "adapter_size_mb": round(adapter_size_mb, 2),
-                "base_model_size_mb": round(base_size_mb, 2),}
+                "adapter_size_mb": round(model_stats["adapter_size_mb"], 2),
+                "base_model_size_mb": round(model_stats["base_size_mb"], 2),}
             # TODO: add model dtype information
 
             # ========================

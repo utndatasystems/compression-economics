@@ -275,6 +275,14 @@ def run_global_mask_compression(args):
         final_size = total_arithmetic_code_size + total_bitmap_size
         original_size_bytes = len(token_predictor.detokenize(data_tokens))
 
+        # Collect model stats inside the predictor lifetime
+        model_stats = {
+            "base_params": getattr(token_predictor, "base_params", 0),
+            "adapter_params": getattr(token_predictor, "adapter_params", 0),
+            "base_size_mb": getattr(token_predictor, "base_size_mb", 0.0),
+            "adapter_size_mb": getattr(token_predictor, "adapter_size_mb", 0.0),
+        }
+
         return first_tokens, bit_string, bitmask_data, {
             "args": args.__dict__,
             "chunk_length": chunk_length,
@@ -300,7 +308,7 @@ def run_global_mask_compression(args):
             "throughput_kibibytes_per_sec": original_size_bytes / 1024 / total_compression_time,
             "inference_throughput_tokens_per_sec": input_token_cnt / inference_time,
             "inference_throughput_kibibytes_per_sec": original_size_bytes / 1024 / inference_time,
-        }, args
+        }, args, model_stats
     finally:
         _cleanup_predictor(token_predictor)
 

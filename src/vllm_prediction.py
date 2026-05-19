@@ -10,20 +10,23 @@ This module provides:
   via POSIX shared memory for retrieval by the host process.
 """
 
-import os
 import inspect
 import struct
 import time
 import importlib
-from pathlib import Path
 import torch
 import numpy as np
 from multiprocessing import shared_memory
 from pyroaring import BitMap
-from vllm.v1.sample.logits_processor import LogitsProcessor
 
-os.environ.setdefault("VLLM_BATCH_INVARIANT", "1")
-os.environ.setdefault("VLLM_WORKER_MULTIPROC_METHOD", "spawn")
+# from src.hf_cache import get_model_cache_dir
+
+try:
+    from vllm.v1.sample.logits_processor import LogitsProcessor
+    _VLLM_IMPORT_ERROR = None
+except Exception as exc:
+    LogitsProcessor = object
+    _VLLM_IMPORT_ERROR = exc
 
 # Well-known shared memory name used by the processor ↔ host handshake.
 _SHM_NAME = "vllm_ac_logits_capture"
@@ -33,6 +36,56 @@ _SHM_NAME = "vllm_ac_logits_capture"
 #   bytes [4:8]   — uint32 num_cols  (padded vocab width written by processor)
 #   bytes [8: ]   — float32 logits data  (num_rows * num_cols * 4 bytes)
 _HEADER_BYTES = 8
+
+
+def probe_vllm_ac_support(args):
+    """
+    Check whether the installed vLLM version supports the native AC path.
+
+    Returns:
+        tuple: (supported: bool, reason: str | None)
+    """
+    supported, reason = probe_vllm_backend_support(args)
+    if not supported:
+        return False, reason
+
+    if not torch.cuda.is_available():
+        return False, "CUDA is not available"
+
+    try:
+        import vllm
+        sig = inspect.signature(vllm.LLM.__init__)
+        if "logits_processors" not in sig.parameters:
+            return False, "vllm.LLM does not accept logits_processors"
+    except Exception as e:
+        return False, f"failed to inspect vllm.LLM.__init__: {e}"
+
+    return True, None
+
+
+def probe_vllm_backend_support(args):
+    """
+    Check whether the installed vLLM runtime can be imported and used.
+
+    Returns:
+        tuple: (supported: bool, reason: str | None)
+    """
+    del args
+
+    try:
+        importlib.import_module("vllm")
+    except ImportError:
+        return False, "vllm is not installed"
+    except Exception as exc:
+        return False, f"failed to import vllm: {exc}"
+
+    if _VLLM_IMPORT_ERROR is not None:
+        return False, f"failed to import vllm internals: {_VLLM_IMPORT_ERROR}"
+
+    if not torch.cuda.is_available():
+        return False, "CUDA is not available"
+
+    return True, None
 
 
 class CaptureLogitsProcessor(LogitsProcessor):
@@ -106,19 +159,18 @@ class VLLMTokenPredictor:
     """
 
     def __init__(self, args, bitmap_data):
-        # supported, reason = probe_vllm_backend_support(args)
-        # if not supported:
-        #     raise ValueError(f"vLLM backend is not available: {reason}")
+        supported, reason = probe_vllm_backend_support(args)
+        if not supported:
+            raise ValueError(f"vLLM backend is not available: {reason}")
 
         from vllm import LLM
-        from vllm.config.attention import AttentionConfig
         from transformers import AutoTokenizer
 
+        # cache_dir = get_model_cache_dir()
         self.tokenizer = AutoTokenizer.from_pretrained(
             args.model_name 
         )
         self.args = args
-        self.enable_prefix_caching = bool(args.use_kv_cache)
 
         tp = getattr(args, "tensor_parallel_size", 1)
         gpu_mem = getattr(args, "gpu_memory_utilization", 0.9)
@@ -142,17 +194,14 @@ class VLLMTokenPredictor:
 
         self.llm = LLM(
             model=args.model_name,
-            logits_processors=[CaptureLogitsProcessor(vllm_config=None, device=None, is_pin_memory=None)],
-            tensor_parallel_size=tp,
+            logits_processors=[CaptureLogitsProcessor],
+            # tensor_parallel_size=tp,
             gpu_memory_utilization=gpu_mem,
             enforce_eager=True,
-            enable_prefix_caching=self.enable_prefix_caching,
+            enable_prefix_caching=True,
             max_model_len=args.context_length,
-            attention_config=AttentionConfig(backend="FLASH_ATTN"),
+            max_num_seqs=args.batch_size,
         )
-        from vllm import SamplingParams
-
-        self._sampling_params = SamplingParams(max_tokens=1, temperature=0)
 
         # Expose parameter counts (approximate, from HF config).
         self._estimate_params_from_config(args.model_name)
@@ -170,66 +219,54 @@ class VLLMTokenPredictor:
         )
         self.reduce_tokens = args.reduce_tokens
 
-    def _read_captured_logits(self, expected_rows):
-        t0 = time.perf_counter()
-        rows, cols = struct.unpack_from("II", self._shm.buf, 0)
-        if rows == 0:
-            raise RuntimeError(
-                "CaptureLogitsProcessor did not fire. "
-                "Ensure is_argmax_invariant() returns False."
-            )
-        if rows != expected_rows:
-            raise RuntimeError(
-                f"Captured logits row count mismatch: expected {expected_rows}, got {rows}"
-            )
-
-        data_bytes = rows * cols * 4
-        raw = bytes(self._shm.buf[_HEADER_BYTES: _HEADER_BYTES + data_bytes])
-        logits_np = np.frombuffer(raw, dtype=np.float32).reshape(rows, cols)
-        logits = torch.from_numpy(logits_np.copy())
-        data_copy_time = time.perf_counter() - t0
-
-        t0 = time.perf_counter()
-        logits = logits.to(self.device)
-        data_copy_time += time.perf_counter() - t0
-
-        return logits, data_copy_time
-
-    def _run_generate(self, prompts):
-        struct.pack_into("II", self._shm.buf, 0, 0, 0)
-        self.llm.generate(
-            prompts=prompts,
-            sampling_params=self._sampling_params,
-            use_tqdm=False,
-        )
-        return self._read_captured_logits(expected_rows=len(prompts))
-
     def run_batched_inference(self, prompts, enable_kv_cache=True):
         """
         Run one-step inference for each prompt and return scores.
 
-        The hot path runs one batched vLLM generate call and captures the full
-        next-token logits for all prompts at once. A sequential fallback keeps
-        correctness if the installed runtime does not preserve the expected row
-        shape under batching.
+        V1: processes prompts sequentially (one ``llm.generate`` call each)
+        to guarantee captured-logit row order matches prompt order.
 
         Returns the same 4-tuple as TokenPredictor.run_batched_inference:
             (tokens_list, scores, data_copy_time, softmax_time)
         """
-        del enable_kv_cache
+        from vllm import SamplingParams
 
-        try:
-            logits, data_copy_time = self._run_generate(prompts)
-        except RuntimeError:
-            all_logits = []
-            data_copy_time = 0.0
+        sp = SamplingParams(max_tokens=1, temperature=0)
 
-            for prompt_tokens in prompts:
-                logits_row, row_copy_time = self._run_generate([prompt_tokens])
-                data_copy_time += row_copy_time
-                all_logits.append(logits_row)
+        all_logits = []
+        data_copy_time = 0.0
 
-            logits = torch.cat(all_logits, dim=0)
+        for prompt_tokens in prompts:
+            # Reset the shared-memory header (rows=0 → "not ready").
+            struct.pack_into("II", self._shm.buf, 0, 0, 0)
+
+            # Run one-prompt generate.  vLLM prefix caching handles KV reuse.
+            # PromptType accepts list[int] as token IDs directly.
+            self.llm.generate(
+                prompts=[prompt_tokens],
+                sampling_params=sp,
+                use_tqdm=False,
+            )
+
+            # Read captured logits from shared memory.
+            t0 = time.perf_counter()
+            rows, cols = struct.unpack_from("II", self._shm.buf, 0)
+            if rows == 0:
+                raise RuntimeError(
+                    "CaptureLogitsProcessor did not fire. "
+                    "Ensure is_argmax_invariant() returns False."
+                )
+
+            data_bytes = rows * cols * 4
+            raw = bytes(self._shm.buf[_HEADER_BYTES: _HEADER_BYTES + data_bytes])
+            logits_np = np.frombuffer(raw, dtype=np.float32).reshape(rows, cols)
+            logits_row = torch.from_numpy(logits_np.copy()).to(self.device)
+            data_copy_time += time.perf_counter() - t0
+
+            all_logits.append(logits_row)
+
+        # Stack: [batch_size, padded_vocab]
+        logits = torch.cat(all_logits, dim=0)
 
         # Slice off vLLM padding columns beyond the real vocabulary.
         vocab_size = self.tokenizer.vocab_size
@@ -241,7 +278,7 @@ class VLLMTokenPredictor:
             logits = logits.index_select(1, self.index_tensor)
 
         softmax_time = 0.0
-        if self.args.encoding in {"AC", "PMATIC"}:
+        if self.args.encoding == "AC":
             t0 = time.perf_counter()
             probs = torch.softmax(logits.float(), dim=-1)
             softmax_time = time.perf_counter() - t0
@@ -270,8 +307,6 @@ class VLLMTokenPredictor:
 
     def cleanup(self):
         """Release shared memory resources."""
-        if hasattr(self, "llm"):
-            self.llm = None
         if hasattr(self, "_shm") and self._shm is not None:
             self._shm.close()
             try:
