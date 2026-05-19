@@ -246,7 +246,6 @@ def run_global_mask_compression(args):
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")
         elif args.encoding == "PMATIC": 
-            pass
             bit_string = llm_compressor.compress(encoding="PMATIC")
         elif args.encoding == "bitpacked":
             print(f"len of rank list: {len(rank_list)}")

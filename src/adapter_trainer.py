@@ -1,6 +1,7 @@
 import os
 import torch
 import json
+import wandb
 
 from .utils import get_device, count_parameters, estimate_model_size_mb
 
@@ -13,7 +14,7 @@ from transformers import (
     BitsAndBytesConfig,
     TrainingArguments,
     Trainer)
-import wandb
+
 from peft import (
     LoraConfig,
     VeraConfig,
