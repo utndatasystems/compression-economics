@@ -24,15 +24,6 @@ ENGINES = {
         "env": "lamacpp-gpu-env",
         "extra_args": "--llamacpp_n_gpu_layers 99"
     },
-    "lamacpp-cpu": {
-        "engine_arg": "llamacpp_direct",
-        "env": "lamacpp-cpu-env",
-        "extra_args": "--llamacpp_n_gpu_layers 0"
-    },
-    "onnx": {
-        "engine_arg": "onnxruntime",
-        "env": "onnx-env"
-    }
 }
 
 MODELS = [

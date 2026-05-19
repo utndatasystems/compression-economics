@@ -9,8 +9,6 @@ MAPPINGS=(
   "sglang-env:sglang"
   "transformers-env:transformer"
   "tensorrt-llm-env:tensorrt"
-  "onnx-env:onnx"
-  "lamacpp-cpu-env:llamacpp"
   "lamacpp-gpu-env:llamacpp"
 )
 
