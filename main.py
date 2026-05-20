@@ -67,6 +67,9 @@ def main():
             print(f"  Use KV cache     : {args.use_kv_cache}")
             print(f"  Batch size       : {args.batch_size}")
             print(f"  vLLM window size : {getattr(args, 'vllm_window_size', 1)}")
+            print(f"  vLLM GPU memory  : {getattr(args, 'vllm_gpu_memory_utilization', None)}")
+            print(f"  vLLM max tokens  : {getattr(args, 'vllm_max_num_batched_tokens', None)}")
+            print(f"  vLLM max seqs    : {getattr(args, 'vllm_max_num_seqs', None)}")
             print(f"  Engine           : {args.engine}")
             print(f"  Encoding         : {args.encoding}")
         

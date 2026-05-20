@@ -48,6 +48,7 @@ def make_predictor(encoding="AC", reduce_tokens=False, tokens_list=None):
     predictor.args = SimpleNamespace(encoding=encoding)
     predictor.max_batch_size = 32
     predictor.sampling_params = FakeSamplingParams()
+    predictor.capture_probs = encoding in {"AC", "PMATIC"}
     return predictor
 
 
@@ -102,13 +103,13 @@ def test_ac_reduced_scores_are_softmaxed_over_reduced_vocab(monkeypatch):
 
     predictor.llm = FakeLLM()
     predictor._reset_capture_buffer = lambda expected_rows, expected_steps: None
-    predictor._read_captured_logits = lambda expected_rows, expected_steps, squeeze: torch.tensor(
+    predictor._read_captured_scores = lambda expected_rows, expected_steps, squeeze: torch.softmax(torch.tensor(
         [
             [1.0, 3.0],
             [3.0, 1.0],
         ],
         dtype=torch.float32,
-    )
+    ), dim=-1)
 
     tokens_list, probs, _, _ = predictor.run_batched_inference([[7], [8]])
 
@@ -133,7 +134,7 @@ def test_rank_encodings_return_raw_reduced_scores():
 
     predictor.llm = FakeLLM()
     predictor._reset_capture_buffer = lambda expected_rows, expected_steps: None
-    predictor._read_captured_logits = lambda expected_rows, expected_steps, squeeze: torch.tensor(
+    predictor._read_captured_scores = lambda expected_rows, expected_steps, squeeze: torch.tensor(
         [[0.0, 4.0]],
         dtype=torch.float32,
     )
@@ -163,3 +164,46 @@ def test_get_token_predictor_dispatches_to_production_vllm(monkeypatch):
 
     assert isinstance(predictor, FakeVLLMTokenPredictor)
     assert created == [(args, b"bitmap")]
+
+
+def test_build_llm_kwargs_uses_vllm_scheduler_overrides():
+    args = SimpleNamespace(
+        model_name="test/model",
+        context_length=256,
+        batch_size=128,
+        vllm_max_num_seqs=256,
+        vllm_max_num_batched_tokens=8192,
+    )
+
+    kwargs = VLLMTokenPredictor._build_llm_kwargs(
+        args=args,
+        gpu_mem=0.95,
+        tensor_parallel_size=2,
+        enable_prefix_caching=True,
+    )
+
+    assert kwargs["model"] == "test/model"
+    assert kwargs["gpu_memory_utilization"] == pytest.approx(0.95)
+    assert kwargs["tensor_parallel_size"] == 2
+    assert kwargs["enable_prefix_caching"] is True
+    assert kwargs["max_model_len"] == 256
+    assert kwargs["max_num_seqs"] == 256
+    assert kwargs["max_num_batched_tokens"] == 8192
+
+
+def test_build_llm_kwargs_rejects_too_small_vllm_sequence_budget():
+    args = SimpleNamespace(
+        model_name="test/model",
+        context_length=256,
+        batch_size=128,
+        vllm_max_num_seqs=64,
+        vllm_max_num_batched_tokens=None,
+    )
+
+    with pytest.raises(ValueError, match="vllm_max_num_seqs"):
+        VLLMTokenPredictor._build_llm_kwargs(
+            args=args,
+            gpu_mem=0.92,
+            tensor_parallel_size=1,
+            enable_prefix_caching=True,
+        )

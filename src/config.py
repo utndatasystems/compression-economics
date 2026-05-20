@@ -131,6 +131,24 @@ def get_main_args() -> argparse.Namespace:
 
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
     parser.add_argument("--vllm_window_size", type=int, default=1, help="Number of known next tokens to teacher-force per vLLM compression request")
+    parser.add_argument(
+        "--vllm_gpu_memory_utilization",
+        type=float,
+        default=0.92,
+        help="Fraction of GPU memory vLLM may reserve for weights, CUDA graphs, and KV cache",
+    )
+    parser.add_argument(
+        "--vllm_max_num_batched_tokens",
+        type=int,
+        default=None,
+        help="vLLM scheduler token budget per engine step; raise this when large batches/windows are being chunked",
+    )
+    parser.add_argument(
+        "--vllm_max_num_seqs",
+        type=int,
+        default=None,
+        help="vLLM scheduler sequence budget; defaults to batch_size",
+    )
     
     # compressiong related
     parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")

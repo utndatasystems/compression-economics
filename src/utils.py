@@ -100,6 +100,13 @@ def save_global_mask_file(
         "pmatic_delta": getattr(args, "pmatic_delta", None),
         "pmatic_r": getattr(args, "pmatic_r", None),
         "vllm_window_size": getattr(args, "vllm_window_size", 1),
+        "vllm_gpu_memory_utilization": getattr(
+            args, "vllm_gpu_memory_utilization", None
+        ),
+        "vllm_max_num_batched_tokens": getattr(
+            args, "vllm_max_num_batched_tokens", None
+        ),
+        "vllm_max_num_seqs": getattr(args, "vllm_max_num_seqs", None),
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -165,6 +172,17 @@ def load_global_mask_file(args):
     args.vllm_window_size = header.get(
         "vllm_window_size", getattr(args, "vllm_window_size", 1)
     )
+    args.vllm_gpu_memory_utilization = header.get(
+        "vllm_gpu_memory_utilization",
+        getattr(args, "vllm_gpu_memory_utilization", None),
+    )
+    args.vllm_max_num_batched_tokens = header.get(
+        "vllm_max_num_batched_tokens",
+        getattr(args, "vllm_max_num_batched_tokens", None),
+    )
+    args.vllm_max_num_seqs = header.get(
+        "vllm_max_num_seqs", getattr(args, "vllm_max_num_seqs", None)
+    )
     args.input_path = header["input_path"]
 
     return args, first_token, bit_string, bitmask_data
@@ -200,7 +218,17 @@ def make_key(args):
     """
     filename = os.path.basename(args.input_path)
     vllm_window = getattr(args, "vllm_window_size", 1)
-    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}|vllm_window={vllm_window}"
+    vllm_gpu_mem = getattr(args, "vllm_gpu_memory_utilization", None)
+    vllm_max_tokens = getattr(args, "vllm_max_num_batched_tokens", None)
+    vllm_max_seqs = getattr(args, "vllm_max_num_seqs", None)
+    key = f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}|vllm_window={vllm_window}"
+    if getattr(args, "engine", None) == "vllm":
+        key += (
+            f"|vllm_gpu_mem={vllm_gpu_mem}"
+            f"|vllm_max_tokens={vllm_max_tokens}"
+            f"|vllm_max_seqs={vllm_max_seqs}"
+        )
+    return key
 
 def create_run_dir(base_dir="results"):
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")

@@ -26,6 +26,7 @@ except Exception:
 _SHM_ENV_VAR = "COMPRESSION_ECONOMICS_VLLM_LOGITS_SHM"
 _VOCAB_SHM_ENV_VAR = "COMPRESSION_ECONOMICS_VLLM_VOCAB_SHM"
 _VOCAB_LEN_ENV_VAR = "COMPRESSION_ECONOMICS_VLLM_VOCAB_LEN"
+_CAPTURE_PROBS_ENV_VAR = "COMPRESSION_ECONOMICS_VLLM_CAPTURE_PROBS"
 _SHM_HEADER_BYTES = 24
 
 
@@ -94,6 +95,7 @@ class BatchedLogitsCaptureProcessor(_VLLMLogitsProcessor):
         self._capture_token_ids = None
         self._vocab_shm_name = os.environ.get(_VOCAB_SHM_ENV_VAR)
         self._vocab_len = int(os.environ.get(_VOCAB_LEN_ENV_VAR, "0"))
+        self._capture_probs = os.environ.get(_CAPTURE_PROBS_ENV_VAR) == "1"
 
     def is_argmax_invariant(self) -> bool:
         # Return False so vLLM calls apply() even for greedy sampling.
@@ -133,8 +135,8 @@ class BatchedLogitsCaptureProcessor(_VLLMLogitsProcessor):
             _reserved,
         ) = struct.unpack_from("IIIIII", header, 0)
 
-        capture_logits = self._select_capture_logits(logits)
-        cols = capture_logits.shape[1]
+        capture_scores = self._select_capture_scores(logits)
+        cols = capture_scores.shape[1]
         if cols > max_cols:
             raise RuntimeError(
                 f"Captured logits have {cols} columns, but shared memory only "
@@ -144,7 +146,7 @@ class BatchedLogitsCaptureProcessor(_VLLMLogitsProcessor):
         flags_offset = _SHM_HEADER_BYTES
         flag_count = expected_rows * expected_steps
         data_offset = flags_offset + flag_count * 4
-        cpu_logits = capture_logits.detach().to(dtype=torch.float32, device="cpu")
+        cpu_scores = capture_scores.detach().to(dtype=torch.float32, device="cpu")
 
         ready = ready_count
         for batch_idx, info in self.req_info.items():
@@ -162,7 +164,7 @@ class BatchedLogitsCaptureProcessor(_VLLMLogitsProcessor):
             flat_index = row_id * expected_steps + step_id
             row_start = data_offset + (flat_index * max_cols * 4)
             row_end = row_start + (cols * 4)
-            self._shm.buf[row_start:row_end] = cpu_logits[batch_idx].numpy().tobytes()
+            self._shm.buf[row_start:row_end] = cpu_scores[batch_idx].numpy().tobytes()
 
             flag_offset = flags_offset + flat_index * 4
             was_ready = struct.unpack_from("I", self._shm.buf, flag_offset)[0]
@@ -179,22 +181,26 @@ class BatchedLogitsCaptureProcessor(_VLLMLogitsProcessor):
         struct.pack_into("II", header, 12, cols, ready)
         return logits
 
-    def _select_capture_logits(self, logits):
+    def _select_capture_scores(self, logits):
         if not self._vocab_shm_name or self._vocab_len <= 0:
-            return logits
+            selected = logits
+        else:
+            if self._capture_token_ids is None:
+                self._vocab_shm = shared_memory.SharedMemory(
+                    name=self._vocab_shm_name, create=False
+                )
+                token_ids = torch.frombuffer(
+                    self._vocab_shm.buf,
+                    dtype=torch.int64,
+                    count=self._vocab_len,
+                ).clone()
+                self._capture_token_ids = token_ids.to(logits.device)
 
-        if self._capture_token_ids is None:
-            self._vocab_shm = shared_memory.SharedMemory(
-                name=self._vocab_shm_name, create=False
-            )
-            token_ids = torch.frombuffer(
-                self._vocab_shm.buf,
-                dtype=torch.int64,
-                count=self._vocab_len,
-            ).clone()
-            self._capture_token_ids = token_ids.to(logits.device)
+            selected = logits.index_select(1, self._capture_token_ids)
 
-        return logits.index_select(1, self._capture_token_ids)
+        if self._capture_probs:
+            return torch.softmax(selected.float(), dim=-1)
+        return selected
 
 
 class VLLMTokenPredictor:
@@ -225,7 +231,7 @@ class VLLMTokenPredictor:
         )
         self.device = torch.device("cuda")
 
-        gpu_mem = getattr(args, "gpu_memory_utilization", 0.9)
+        gpu_mem = float(getattr(args, "vllm_gpu_memory_utilization", 0.92))
         tensor_parallel_size = getattr(args, "tensor_parallel_size", 1)
         enable_prefix_caching = bool(getattr(args, "use_kv_cache", True))
         self.vocab_size = self._get_config_vocab_size(
@@ -270,17 +276,16 @@ class VLLMTokenPredictor:
         else:
             os.environ.pop(_VOCAB_SHM_ENV_VAR, None)
             os.environ.pop(_VOCAB_LEN_ENV_VAR, None)
+        self.capture_probs = args.encoding in {"AC", "PMATIC"}
+        os.environ[_CAPTURE_PROBS_ENV_VAR] = "1" if self.capture_probs else "0"
 
-        self.llm = LLM(
-            model=args.model_name,
-            tokenizer=args.model_name,
-            gpu_memory_utilization=gpu_mem,
+        llm_kwargs = self._build_llm_kwargs(
+            args=args,
+            gpu_mem=gpu_mem,
             tensor_parallel_size=tensor_parallel_size,
             enable_prefix_caching=enable_prefix_caching,
-            max_model_len=args.context_length,
-            max_num_seqs=args.batch_size,
-            logits_processors=[BatchedLogitsCaptureProcessor],
         )
+        self.llm = LLM(**llm_kwargs)
 
         self.sampling_params = SamplingParams(
             max_tokens=1,
@@ -339,22 +344,15 @@ class VLLMTokenPredictor:
         )
 
         t0 = time.perf_counter()
-        logits = self._read_captured_logits(len(prompts), 1, squeeze=True)
+        scores = self._read_captured_scores(len(prompts), 1, squeeze=True)
         data_copy_time = time.perf_counter() - t0
 
         softmax_time = 0.0
         if self.args.encoding in {"AC", "PMATIC"}:
-            t0 = time.perf_counter()
-            probs = torch.softmax(logits.float(), dim=-1)
-            softmax_time = time.perf_counter() - t0
-
-            t0 = time.perf_counter()
-            probs_cpu = probs.cpu()
-            data_copy_time += time.perf_counter() - t0
-            return self.tokens_list, probs_cpu, data_copy_time, softmax_time
+            return self.tokens_list, scores, data_copy_time, softmax_time
 
         if self.args.encoding in {"bitpacked", "huffman"}:
-            return self.tokens_list, logits, data_copy_time, softmax_time
+            return self.tokens_list, scores, data_copy_time, softmax_time
 
         raise NotImplementedError(
             f"Encoding method '{self.args.encoding}' is not implemented."
@@ -407,24 +405,17 @@ class VLLMTokenPredictor:
         )
 
         t0 = time.perf_counter()
-        logits = self._read_captured_logits(
+        scores = self._read_captured_scores(
             len(prompts), expected_steps, squeeze=False
         )
         data_copy_time = time.perf_counter() - t0
 
         softmax_time = 0.0
         if self.args.encoding in {"AC", "PMATIC"}:
-            t0 = time.perf_counter()
-            probs = torch.softmax(logits.float(), dim=-1)
-            softmax_time = time.perf_counter() - t0
-
-            t0 = time.perf_counter()
-            probs_cpu = probs.cpu()
-            data_copy_time += time.perf_counter() - t0
-            return self.tokens_list, probs_cpu, data_copy_time, softmax_time
+            return self.tokens_list, scores, data_copy_time, softmax_time
 
         if self.args.encoding in {"bitpacked", "huffman"}:
-            return self.tokens_list, logits, data_copy_time, softmax_time
+            return self.tokens_list, scores, data_copy_time, softmax_time
 
         raise NotImplementedError(
             f"Encoding method '{self.args.encoding}' is not implemented."
@@ -458,7 +449,7 @@ class VLLMTokenPredictor:
             b"\x00" * flag_bytes
         )
 
-    def _read_captured_logits(self, expected_rows, expected_steps, squeeze):
+    def _read_captured_scores(self, expected_rows, expected_steps, squeeze):
         (
             rows,
             steps,
@@ -501,7 +492,9 @@ class VLLMTokenPredictor:
                 step_rows.append(row[: self.capture_vocab_size])
             tensors.append(torch.stack(step_rows, dim=0))
 
-        result = torch.stack(tensors, dim=0).to(self.device)
+        result = torch.stack(tensors, dim=0)
+        if not self.capture_probs:
+            result = result.to(self.device)
         if squeeze:
             return result[0]
         return result
@@ -580,6 +573,47 @@ class VLLMTokenPredictor:
         except Exception:
             return int(fallback)
 
+    @staticmethod
+    def _build_llm_kwargs(
+        args,
+        gpu_mem,
+        tensor_parallel_size,
+        enable_prefix_caching,
+    ):
+        max_num_seqs = getattr(args, "vllm_max_num_seqs", None)
+        if max_num_seqs is None:
+            max_num_seqs = args.batch_size
+        max_num_seqs = int(max_num_seqs)
+
+        if max_num_seqs < args.batch_size:
+            raise ValueError(
+                "--vllm_max_num_seqs must be at least --batch_size for the "
+                "current compression dispatcher"
+            )
+
+        llm_kwargs = {
+            "model": args.model_name,
+            "tokenizer": args.model_name,
+            "gpu_memory_utilization": gpu_mem,
+            "tensor_parallel_size": tensor_parallel_size,
+            "enable_prefix_caching": enable_prefix_caching,
+            "max_model_len": args.context_length,
+            "max_num_seqs": max_num_seqs,
+            "logits_processors": [BatchedLogitsCaptureProcessor],
+        }
+
+        max_num_batched_tokens = getattr(args, "vllm_max_num_batched_tokens", None)
+        if max_num_batched_tokens is not None:
+            max_num_batched_tokens = int(max_num_batched_tokens)
+            if max_num_batched_tokens < max_num_seqs:
+                raise ValueError(
+                    "--vllm_max_num_batched_tokens must be at least "
+                    "--vllm_max_num_seqs"
+                )
+            llm_kwargs["max_num_batched_tokens"] = max_num_batched_tokens
+
+        return llm_kwargs
+
     def detokenize(self, token_ids):
         return self.tokenizer.decode(token_ids)
 
@@ -612,6 +646,7 @@ class VLLMTokenPredictor:
         if os.environ.get(_VOCAB_SHM_ENV_VAR) == getattr(self, "_vocab_shm_name", None):
             os.environ.pop(_VOCAB_SHM_ENV_VAR, None)
             os.environ.pop(_VOCAB_LEN_ENV_VAR, None)
+        os.environ.pop(_CAPTURE_PROBS_ENV_VAR, None)
 
     def __del__(self):
         try:
