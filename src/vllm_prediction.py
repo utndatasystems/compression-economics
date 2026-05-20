@@ -272,15 +272,16 @@ class VLLMTokenPredictor:
             os.environ.pop(_VOCAB_LEN_ENV_VAR, None)
 
         self.llm = LLM(
-            model=args.model_name,
-            tokenizer=args.model_name,
-            gpu_memory_utilization=gpu_mem,
-            tensor_parallel_size=tensor_parallel_size,
-            enable_prefix_caching=enable_prefix_caching,
-            max_model_len=args.context_length,
-            max_num_seqs=args.batch_size,
-            logits_processors=[BatchedLogitsCaptureProcessor],
-        )
+                    model=args.model_name,
+                    tokenizer=args.model_name,
+                    gpu_memory_utilization=gpu_mem,
+                    tensor_parallel_size=tensor_parallel_size,
+                    enable_prefix_caching=enable_prefix_caching,
+                    max_model_len=args.context_length,
+                    max_num_seqs=args.batch_size,
+                    attention_config={"backend": "FLASHINFER"},           # <-- new
+                    logits_processors=[BatchedLogitsCaptureProcessor],
+                )
 
         self.sampling_params = SamplingParams(
             max_tokens=1,
