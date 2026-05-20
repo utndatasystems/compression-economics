@@ -66,6 +66,7 @@ def main():
             print(f"  First n tokens   : {args.first_n_tokens}")
             print(f"  Use KV cache     : {args.use_kv_cache}")
             print(f"  Batch size       : {args.batch_size}")
+            print(f"  vLLM window size : {getattr(args, 'vllm_window_size', 1)}")
             print(f"  Engine           : {args.engine}")
             print(f"  Encoding         : {args.encoding}")
         

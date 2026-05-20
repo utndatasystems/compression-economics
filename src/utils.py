@@ -99,6 +99,7 @@ def save_global_mask_file(
         "lora_path": getattr(args, "lora_path", None),
         "pmatic_delta": getattr(args, "pmatic_delta", None),
         "pmatic_r": getattr(args, "pmatic_r", None),
+        "vllm_window_size": getattr(args, "vllm_window_size", 1),
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -161,6 +162,9 @@ def load_global_mask_file(args):
     args.lora_path = header.get("lora_path", args.lora_path)
     args.pmatic_delta = header.get("pmatic_delta", getattr(args, "pmatic_delta", None))
     args.pmatic_r = header.get("pmatic_r", getattr(args, "pmatic_r", None))
+    args.vllm_window_size = header.get(
+        "vllm_window_size", getattr(args, "vllm_window_size", 1)
+    )
     args.input_path = header["input_path"]
 
     return args, first_token, bit_string, bitmask_data
@@ -195,7 +199,8 @@ def make_key(args):
     The key captures dataset name and core settings so runs can be indexed in a dict.
     """
     filename = os.path.basename(args.input_path)
-    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
+    vllm_window = getattr(args, "vllm_window_size", 1)
+    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}|vllm_window={vllm_window}"
 
 def create_run_dir(base_dir="results"):
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")

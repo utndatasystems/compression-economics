@@ -157,92 +157,188 @@ def run_global_mask_compression(args):
         entropy = 0.0
         rank_list = []
         probs_list = []
+        token_to_column = {token: idx for idx, token in enumerate(token_predictor.tokens_list)}
+        forced_window_inference = getattr(
+            token_predictor, "run_batched_forced_inference", None
+        )
+        vllm_window_size = max(1, int(getattr(args, "vllm_window_size", 1)))
+        if vllm_window_size > 1:
+            vllm_window_size = min(
+                vllm_window_size,
+                max(1, args.context_length - args.retain_tokens - 1),
+            )
     
         # Process each token in the dataset to compress it.
-        for token_idx in tqdm(range(chunk_length), disable=not use_tqdm):
-            # Append the current token from each batch to its prompt context.
-            for i in range(args.batch_size):
-                prompts[i].append(batches[i][token_idx])
+        if callable(forced_window_inference) and vllm_window_size > 1:
+            prompts = [[batch[0]] for batch in batches]
 
-            # Trim context to keep inference cost bounded.
-            if len(prompts[0]) >= args.context_length:
-                prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
-        
-            input_token_cnt += args.batch_size * len(prompts[0])
-
-            # Run LLM inference
-            t0_inference = time.perf_counter()
-            token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
-            data_copy_time += _data_copy_time
-            softmax_time += _softmax_time
-            inference_time += time.perf_counter() - t0_inference
-
-            actual_next_tokens = []
-            valid_mask = [] 
-
-            # Build a mask for batches that still have a "next token" at this step.
-            for idx in range(args.batch_size):
-                if token_idx + 1 < batches_length[idx]:
-                    token = batches[idx][token_idx + 1]
-                    actual_next_tokens.append(token_ids.index(token))
-                    valid_mask.append(True)
-                else:
-                    actual_next_tokens.append(0)
-                    valid_mask.append(False)
-
-            if args.encoding == "AC":
-                t0_ac = time.perf_counter()
-                probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
-
-                # Encode each valid batch's next token using arithmetic coding.
-                for idx, probs in enumerate(probs_cpu):
-                    if not valid_mask[idx]:
-                        continue
-                    target_idx = actual_next_tokens[idx]
-                    llm_compressor.next_token(target_idx, probs)
-                    entropy += -np.log2(probs[target_idx])
-                    probs_list.append(probs[target_idx])
-
-                ac_time += time.perf_counter() - t0_ac
-
-            elif args.encoding == "PMATIC":
-                t0_ac = time.perf_counter()
-                probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
-
-                for idx, probs in enumerate(probs_cpu):
-                    if not valid_mask[idx]:
-                        continue
-                    target_idx = actual_next_tokens[idx]
-        
-                    llm_compressor.next_token(target_idx, probs)
-                    entropy += -np.log2(probs[target_idx])
-                    probs_list.append(probs[target_idx])
-
-                ac_time += time.perf_counter() - t0_ac
-
-            elif args.encoding in ("bitpacked", "huffman"):
-                logits = probs_values.to(torch.float32)
-                device = logits.device
-                B, V = logits.shape
-
-                # Compute rank of the true token within the model's logits.
-                target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
-                batch_idx = torch.arange(B, device=device)  # [B]
-
-                target_logits = logits[batch_idx, target_idx].unsqueeze(1)
-
-                ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
-                ranks = ranks_0.cpu().tolist()
+            for token_idx in tqdm(
+                range(0, chunk_length, vllm_window_size),
+                disable=not use_tqdm,
+            ):
+                active_rows = []
+                target_windows = []
+                max_window_steps = 0
 
                 for idx in range(args.batch_size):
-                    if not valid_mask[idx]:
-                        continue
-                    rank = ranks[idx]
-                    rank_list.append(rank)
+                    target_end = min(
+                        token_idx + 1 + vllm_window_size,
+                        batches_length[idx],
+                    )
+                    targets = batches[idx][token_idx + 1:target_end]
+                    if targets:
+                        active_rows.append(idx)
+                        target_windows.append(targets)
+                        max_window_steps = max(max_window_steps, len(targets))
+
+                if not active_rows:
+                    break
+
+                for idx in active_rows:
+                    if len(prompts[idx]) + max_window_steps >= args.context_length:
+                        prompts[idx] = prompts[idx][-args.retain_tokens:]
+
+                active_prompts = [prompts[idx] for idx in active_rows]
+                input_token_cnt += sum(len(prompt) for prompt in active_prompts)
+
+                t0_inference = time.perf_counter()
+                token_ids, score_values, _data_copy_time, _softmax_time = (
+                    forced_window_inference(active_prompts, target_windows)
+                )
+                data_copy_time += _data_copy_time
+                softmax_time += _softmax_time
+                inference_time += time.perf_counter() - t0_inference
+
+                if args.encoding in {"AC", "PMATIC"}:
+                    t0_ac = time.perf_counter()
+                    probs_cpu = score_values.to(torch.float32).numpy()
+
+                    for step_idx in range(max_window_steps):
+                        for local_idx, global_idx in enumerate(active_rows):
+                            targets = target_windows[local_idx]
+                            if step_idx >= len(targets):
+                                continue
+                            target_token = targets[step_idx]
+                            target_idx = token_to_column[target_token]
+                            probs = probs_cpu[step_idx, local_idx]
+                            llm_compressor.next_token(target_idx, probs)
+                            entropy += -np.log2(probs[target_idx])
+                            probs_list.append(probs[target_idx])
+
+                    ac_time += time.perf_counter() - t0_ac
+
+                elif args.encoding in ("bitpacked", "huffman"):
+                    logits = score_values.to(torch.float32)
+                    device = logits.device
+                    t0_ac = time.perf_counter()
+
+                    for step_idx in range(max_window_steps):
+                        for local_idx, global_idx in enumerate(active_rows):
+                            targets = target_windows[local_idx]
+                            if step_idx >= len(targets):
+                                continue
+                            target_token = targets[step_idx]
+                            target_idx = token_to_column[target_token]
+                            row_logits = logits[step_idx, local_idx]
+                            target_logit = row_logits[target_idx]
+                            rank = int((row_logits > target_logit).sum().item())
+                            rank_list.append(rank)
+
+                    ac_time += time.perf_counter() - t0_ac
+
+                else:
+                    raise NotImplementedError(
+                        f"Encoding method '{args.encoding}' is not implemented."
+                    )
+
+                for local_idx, global_idx in enumerate(active_rows):
+                    prompts[global_idx].extend(target_windows[local_idx])
+
+        else:
+            for token_idx in tqdm(range(chunk_length), disable=not use_tqdm):
+            # Append the current token from each batch to its prompt context.
+                for i in range(args.batch_size):
+                    prompts[i].append(batches[i][token_idx])
+
+            # Trim context to keep inference cost bounded.
+                if len(prompts[0]) >= args.context_length:
+                    prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
+        
+                input_token_cnt += args.batch_size * len(prompts[0])
+
+            # Run LLM inference
+                t0_inference = time.perf_counter()
+                token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
+                data_copy_time += _data_copy_time
+                softmax_time += _softmax_time
+                inference_time += time.perf_counter() - t0_inference
+
+                actual_next_tokens = []
+                valid_mask = [] 
+
+            # Build a mask for batches that still have a "next token" at this step.
+                for idx in range(args.batch_size):
+                    if token_idx + 1 < batches_length[idx]:
+                        token = batches[idx][token_idx + 1]
+                        actual_next_tokens.append(token_to_column[token])
+                        valid_mask.append(True)
+                    else:
+                        actual_next_tokens.append(0)
+                        valid_mask.append(False)
+
+                if args.encoding == "AC":
+                    t0_ac = time.perf_counter()
+                    probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
+
+                # Encode each valid batch's next token using arithmetic coding.
+                    for idx, probs in enumerate(probs_cpu):
+                        if not valid_mask[idx]:
+                            continue
+                        target_idx = actual_next_tokens[idx]
+                        llm_compressor.next_token(target_idx, probs)
+                        entropy += -np.log2(probs[target_idx])
+                        probs_list.append(probs[target_idx])
+
+                    ac_time += time.perf_counter() - t0_ac
+
+                elif args.encoding == "PMATIC":
+                    t0_ac = time.perf_counter()
+                    probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
+
+                    for idx, probs in enumerate(probs_cpu):
+                        if not valid_mask[idx]:
+                            continue
+                        target_idx = actual_next_tokens[idx]
+        
+                        llm_compressor.next_token(target_idx, probs)
+                        entropy += -np.log2(probs[target_idx])
+                        probs_list.append(probs[target_idx])
+
+                    ac_time += time.perf_counter() - t0_ac
+
+                elif args.encoding in ("bitpacked", "huffman"):
+                    logits = probs_values.to(torch.float32)
+                    device = logits.device
+                    B, V = logits.shape
+
+                # Compute rank of the true token within the model's logits.
+                    target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
+                    batch_idx = torch.arange(B, device=device)  # [B]
+
+                    target_logits = logits[batch_idx, target_idx].unsqueeze(1)
+
+                    ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
+                    ranks = ranks_0.cpu().tolist()
+
+                    for idx in range(args.batch_size):
+                        if not valid_mask[idx]:
+                            continue
+                        rank = ranks[idx]
+                        rank_list.append(rank)
                     # llm_compressor.next_token(rank)
 
-            else:
-                raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
+                else:
+                    raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
 
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")

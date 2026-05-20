@@ -182,6 +182,97 @@ def test_global_mask_compression_uses_selected_engine(monkeypatch, engine):
     assert returned_args.engine == engine
 
 
+def test_global_mask_vllm_windowed_compression_preserves_token_order(monkeypatch):
+    encoded_tokens = []
+    forced_calls = []
+
+    class FakeTokenDataPreparer:
+        def __init__(self, args):
+            self.args = args
+
+        def get_data_tokens(self):
+            return [0, 1, 2, 3, 0, 1]
+
+        def get_args(self):
+            return self.args
+
+        def get_bitmap(self):
+            return b"bitmap"
+
+    class FakeTokenPredictor:
+        tokens_list = [0, 1, 2, 3]
+
+        def __init__(self, args, bitmap_data=None):
+            self.args = args
+            self.bitmap_data = bitmap_data
+
+        def run_batched_forced_inference(self, prompts, target_token_windows):
+            forced_calls.append((
+                [prompt[:] for prompt in prompts],
+                [targets[:] for targets in target_token_windows],
+            ))
+            steps = max(len(row) for row in target_token_windows)
+            rows = len(prompts)
+            probs = torch.full((steps, rows, 4), 0.25, dtype=torch.float32)
+            return self.tokens_list, probs, 0.0, 0.0
+
+        def detokenize(self, tokens):
+            return "".join(str(token) for token in tokens)
+
+        def cleanup(self):
+            return None
+
+    class FakeLLMCompressor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def next_token(self, token_idx, probs):
+            del probs
+            encoded_tokens.append(token_idx)
+
+        def compress(self, encoding="AC", rank_list=None):
+            del encoding, rank_list
+            return "101"
+
+    monkeypatch.setattr(
+        "src.global_mask_compressor.TokenDataPreparer",
+        FakeTokenDataPreparer,
+    )
+    monkeypatch.setattr(
+        "src.global_mask_compressor.get_token_predictor",
+        lambda args, bitmap_data=None: FakeTokenPredictor(args, bitmap_data),
+    )
+    monkeypatch.setattr(
+        "src.global_mask_compressor.LLMCompressor",
+        FakeLLMCompressor,
+    )
+
+    args = SimpleNamespace(
+        input_path="data/text8",
+        model_name="fake",
+        context_length=128,
+        first_n_tokens=6,
+        batch_size=2,
+        use_kv_cache=True,
+        retain_tokens=64,
+        engine="vllm",
+        encoding="AC",
+        reduce_tokens=True,
+        is_seq2seq=False,
+        is_mamba=False,
+        lora_path=None,
+        vllm_window_size=2,
+    )
+
+    run_global_mask_compression(args)
+
+    assert forced_calls[0] == (
+        [[0], [3]],
+        [[1, 2], [0, 1]],
+    )
+    assert encoded_tokens == [1, 0, 2, 1]
+
+
 def test_run_global_mask_speculative_decompression_rejects_vllm():
     with pytest.raises(NotImplementedError, match="Speculative decompression"):
         run_global_mask_speculative_decompression(
