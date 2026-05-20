@@ -9,16 +9,68 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 import torch
 
 from src.encoding import ArithmeticDecoder, BitInputStream, BitOutputStream
 
+try:
+    from numba import njit
+except Exception:  # pragma: no cover - exercised when numba is absent
+    njit = None
+
 
 AC_FAST_FORMAT = "AC_FAST_V1"
 DEFAULT_TOTAL = 1 << 18
+
+
+if njit is not None:
+    @njit(cache=True)
+    def _numba_encode_intervals(
+        lows: np.ndarray,
+        highs: np.ndarray,
+        totals: np.ndarray,
+        statesize: int,
+    ) -> np.ndarray:
+        max_range = 1 << statesize
+        mask = max_range - 1
+        top_mask = max_range >> 1
+        second_mask = top_mask >> 1
+        low = 0
+        high = mask
+        num_underflow = 0
+        bits = []
+
+        for i in range(lows.size):
+            current_range = high - low + 1
+            base_low = low
+            total = int(totals[i])
+            symlow = int(lows[i])
+            symhigh = int(highs[i])
+
+            low = base_low + symlow * current_range // total
+            high = base_low + symhigh * current_range // total - 1
+
+            while ((low ^ high) & top_mask) == 0:
+                bit = low >> (statesize - 1)
+                bits.append(bit)
+                for _ in range(num_underflow):
+                    bits.append(bit ^ 1)
+                num_underflow = 0
+                low = (low << 1) & mask
+                high = ((high << 1) & mask) | 1
+
+            while (low & ~high & second_mask) != 0:
+                num_underflow += 1
+                low = (low << 1) & (mask >> 1)
+                high = ((high << 1) & (mask >> 1)) | top_mask | 1
+
+        bits.append(1)
+        return np.asarray(bits, dtype=np.uint8)
+else:
+    _numba_encode_intervals = None
 
 
 class _IntervalArithmeticEncoder:
@@ -141,13 +193,42 @@ def _intervals_from_probs_tensor(
 
 
 class FastACCompressor:
-    def __init__(self, stream_count: int, *, statesize: int = 32, total: int = DEFAULT_TOTAL) -> None:
+    def __init__(
+        self,
+        stream_count: int,
+        *,
+        statesize: int = 32,
+        total: int = DEFAULT_TOTAL,
+        backend: str = "auto",
+    ) -> None:
         if stream_count <= 0:
             raise ValueError("stream_count must be positive")
+        if backend not in {"auto", "python", "numba"}:
+            raise ValueError("backend must be one of: auto, python, numba")
+        if backend == "auto":
+            backend = "numba" if _numba_encode_intervals is not None else "python"
+        if backend == "numba" and _numba_encode_intervals is None:
+            raise RuntimeError("AC_FAST numba backend requested, but numba is not installed")
+        if backend == "numba":
+            _numba_encode_intervals(
+                np.empty(0, dtype=np.int64),
+                np.empty(0, dtype=np.int64),
+                np.empty(0, dtype=np.int64),
+                statesize,
+            )
+
         self.stream_count = stream_count
         self.total = total
         self.statesize = statesize
-        self.encoders = [_IntervalArithmeticEncoder(statesize) for _ in range(stream_count)]
+        self.backend = backend
+        self.encoders = (
+            [_IntervalArithmeticEncoder(statesize) for _ in range(stream_count)]
+            if backend == "python"
+            else None
+        )
+        self._interval_lows = [[] for _ in range(stream_count)]
+        self._interval_highs = [[] for _ in range(stream_count)]
+        self._interval_totals = [[] for _ in range(stream_count)]
         self.timings = FastACTimings()
         self.cross_entropy_sum = 0.0
         self.token_count = 0
@@ -172,7 +253,16 @@ class FastACCompressor:
 
         t0 = time.perf_counter()
         for row_id, low, high, total, prob in zip(row_ids, lows, highs, totals, target_probs):
-            self.encoders[int(row_id)].write_interval(int(low), int(high), int(total))
+            row_id = int(row_id)
+            low = int(low)
+            high = int(high)
+            total = int(total)
+            if self.backend == "python":
+                self.encoders[row_id].write_interval(low, high, total)
+            else:
+                self._interval_lows[row_id].append(low)
+                self._interval_highs[row_id].append(high)
+                self._interval_totals[row_id].append(total)
             self.cross_entropy_sum += -float(np.log2(max(float(prob), 1e-300)))
             self.token_count += 1
         self.timings.range_coder_time += time.perf_counter() - t0
@@ -185,12 +275,33 @@ class FastACCompressor:
         self.encode_batch([row_id], [target_token_id], probs_2d)
 
     def finish(self) -> Dict[str, Any]:
-        streams = [encoder.finish() for encoder in self.encoders]
+        t0 = time.perf_counter()
+        if self.backend == "python":
+            streams = [encoder.finish() for encoder in self.encoders]
+        else:
+            streams = []
+            for lows, highs, totals in zip(
+                self._interval_lows,
+                self._interval_highs,
+                self._interval_totals,
+            ):
+                low_arr = np.asarray(lows, dtype=np.int64)
+                high_arr = np.asarray(highs, dtype=np.int64)
+                total_arr = np.asarray(totals, dtype=np.int64)
+                bits = _numba_encode_intervals(
+                    low_arr,
+                    high_arr,
+                    total_arr,
+                    self.statesize,
+                )
+                streams.append(bits.tolist())
+        self.timings.range_coder_time += time.perf_counter() - t0
         return {
             "format": AC_FAST_FORMAT,
             "stream_count": self.stream_count,
             "statesize": self.statesize,
             "total": self.total,
+            "backend": self.backend,
             "streams": streams,
         }
 

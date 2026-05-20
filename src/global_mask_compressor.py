@@ -142,7 +142,10 @@ def run_global_mask_compression(args):
             llm_compressor = LLMCompressor()
         elif args.encoding == "AC_FAST":
             llm_compressor = None
-            fast_ac_compressor = FastACCompressor(stream_count=args.batch_size)
+            fast_ac_compressor = FastACCompressor(
+                stream_count=args.batch_size,
+                backend=getattr(args, "ac_fast_backend", "auto"),
+            )
         elif args.encoding == "PMATIC":
             delta, r = _get_pmatic_params(args)
             print(f"Using PMATIC compressor with delta={delta}, r={r}")
@@ -401,8 +404,13 @@ def run_global_mask_compression(args):
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")
         elif args.encoding == "AC_FAST":
+            range_coder_time_before_finish = fast_ac_compressor.timings.range_coder_time
             bit_string = fast_ac_compressor.finish()
             entropy = fast_ac_compressor.cross_entropy_sum
+            ac_time += (
+                fast_ac_compressor.timings.range_coder_time
+                - range_coder_time_before_finish
+            )
         elif args.encoding == "PMATIC": 
             pass
             bit_string = llm_compressor.compress(encoding="PMATIC")
@@ -461,6 +469,7 @@ def run_global_mask_compression(args):
             "quantize_time": getattr(getattr(fast_ac_compressor, "timings", None), "quantize_time", 0.0),
             "range_coder_time": getattr(getattr(fast_ac_compressor, "timings", None), "range_coder_time", 0.0),
             "fast_ac_transfer_time": getattr(getattr(fast_ac_compressor, "timings", None), "transfer_time", 0.0),
+            "ac_fast_backend": getattr(fast_ac_compressor, "backend", None),
             "data_copy_time": data_copy_time,
             "softmax_time": softmax_time,
             # Throughput

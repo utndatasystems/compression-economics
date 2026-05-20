@@ -142,7 +142,8 @@ def test_AC_roundtrip():
     assert np.array_equal(tokens, decoded), "AC roundtrip failed"
 
 
-def test_ac_fast_multistream_roundtrip():
+@pytest.mark.parametrize("backend", ["python", "numba"])
+def test_ac_fast_multistream_roundtrip(backend):
     vocab_size = 25
     stream_count = 4
     sequence_length = 80
@@ -153,7 +154,7 @@ def test_ac_fast_multistream_roundtrip():
         for _ in range(sequence_length)
     ]
 
-    comp = FastACCompressor(stream_count=stream_count)
+    comp = FastACCompressor(stream_count=stream_count, backend=backend)
     for step in range(sequence_length):
         probs = torch.tensor(np.stack(encoder_probs[step]), dtype=torch.float32)
         comp.encode_batch(
@@ -175,3 +176,34 @@ def test_ac_fast_multistream_roundtrip():
             )
 
     assert np.array_equal(tokens, decoded), "AC_FAST multistream roundtrip failed"
+
+
+def test_ac_fast_numba_matches_python_streams():
+    vocab_size = 25
+    stream_count = 3
+    sequence_length = 40
+
+    tokens = np.random.randint(0, vocab_size, size=(sequence_length, stream_count))
+    encoder_probs = [
+        [random_probs(vocab_size) for _ in range(stream_count)]
+        for _ in range(sequence_length)
+    ]
+
+    compressors = {
+        backend: FastACCompressor(stream_count=stream_count, backend=backend)
+        for backend in ("python", "numba")
+    }
+    for step in range(sequence_length):
+        probs = torch.tensor(np.stack(encoder_probs[step]), dtype=torch.float32)
+        for compressor in compressors.values():
+            compressor.encode_batch(
+                row_ids=list(range(stream_count)),
+                target_token_ids=tokens[step].tolist(),
+                probs=probs,
+            )
+
+    python_payload = compressors["python"].finish()
+    numba_payload = compressors["numba"].finish()
+
+    assert numba_payload["backend"] == "numba"
+    assert python_payload["streams"] == numba_payload["streams"]

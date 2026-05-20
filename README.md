@@ -49,6 +49,10 @@ python main.py \
   --encoding AC_FAST
 ```
 
+`AC_FAST` defaults to `--ac_fast_backend auto`, which uses the Numba range-coder
+backend when available and falls back to the Python backend otherwise. Use
+`--ac_fast_backend python` for debugging or bitstream comparisons.
+
 Compression using an existing adaptor:
 ```
 python main.py \

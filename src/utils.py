@@ -102,6 +102,7 @@ def save_global_mask_file(
         "pmatic_delta": getattr(args, "pmatic_delta", None),
         "pmatic_r": getattr(args, "pmatic_r", None),
         "vllm_window_size": getattr(args, "vllm_window_size", 1),
+        "ac_fast_backend": getattr(args, "ac_fast_backend", "auto"),
         "payload_format": AC_FAST_FORMAT if is_fast_ac_payload(bit_string) else "BITS_V1",
     }
     with open(file_path, "wb") as f:
@@ -202,6 +203,9 @@ def load_global_mask_file(args):
     args.vllm_window_size = header.get(
         "vllm_window_size", getattr(args, "vllm_window_size", 1)
     )
+    args.ac_fast_backend = header.get(
+        "ac_fast_backend", getattr(args, "ac_fast_backend", "auto")
+    )
     args.input_path = header["input_path"]
 
     return args, first_token, bit_string, bitmask_data
@@ -237,7 +241,11 @@ def make_key(args):
     """
     filename = os.path.basename(args.input_path)
     vllm_window = getattr(args, "vllm_window_size", 1)
-    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}|vllm_window={vllm_window}"
+    ac_fast_backend = getattr(args, "ac_fast_backend", "auto")
+    key = f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}|vllm_window={vllm_window}"
+    if getattr(args, "encoding", None) == "AC_FAST":
+        key += f"|ac_fast_backend={ac_fast_backend}"
+    return key
 
 def create_run_dir(base_dir="results"):
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")

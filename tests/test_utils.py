@@ -43,6 +43,7 @@ def test_save_load_ac_fast_payload(tmp_path):
         pmatic_delta=None,
         pmatic_r=None,
         vllm_window_size=1,
+        ac_fast_backend="numba",
     )
 
     save_global_mask_file(args, first_token=[3, 4], bit_string=payload, bitmask_data=b"mask")
@@ -51,6 +52,7 @@ def test_save_load_ac_fast_payload(tmp_path):
     loaded_args, first_token, loaded_payload, bitmask_data = load_global_mask_file(load_args)
 
     assert loaded_args.encoding == "AC_FAST"
+    assert loaded_args.ac_fast_backend == "numba"
     assert first_token == [3, 4]
     assert loaded_payload["format"] == payload["format"]
     assert loaded_payload["streams"] == payload["streams"]
