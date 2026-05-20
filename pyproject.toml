@@ -21,7 +21,6 @@ dependencies = [
     "ipykernel>=7.2.0",
     "ipywidgets>=8.1.8",
     "wandb>=0.25.1",
-    "vllm>=0.21.0",
 ]
 
 [dependency-groups]
