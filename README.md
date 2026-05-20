@@ -10,8 +10,9 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - Optionally reduce the vocabulary to only tokens seen in the input (global mask).
 - Run batched, one-step LLM inference to predict next-token distributions.
 - Encode each next token via:
-  - `AC` (arithmetic coding), or
-  - `AC_FAST` (versioned multi-stream arithmetic coding for higher throughput), or
+  - `AC` (arithmetic coding),
+  - `AC_MULTISTREAM` (versioned multi-stream arithmetic coding for higher throughput),
+  - `AC_TARGET_INTERVAL` (target-interval arithmetic coding to reduce dense score movement),
   - `bitpacked` / `huffman` (rank-based coding).
 
 ## Project layout
@@ -21,7 +22,7 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - `src/encoding.py`: various encoding schemes (AC, bitpacked, Huffman).
 - `src/utils.py`: binary IO helpers and experiment result storage.
 - `data/text8`: sample dataset used in experiments.
-- `adaptors`: location of trained LoRa / VeRa adaptors 
+- `adaptors`: location of trained LoRa / VeRa adaptors
 
 ## Setup
 1. Clone the repo:
@@ -42,26 +43,19 @@ python main.py \
   --mode compress
 ```
 
-Fast arithmetic coding:
+Fast arithmetic coding (target-interval example):
 ```
 python main.py \
   --mode compress \
-  --encoding AC_FAST
+  --encoding AC_TARGET_INTERVAL
 ```
 
-`AC_FAST` defaults to `--ac_fast_backend auto`, which uses the Numba range-coder
-backend when available and falls back to the Python backend otherwise. Use
-`--ac_fast_backend python` for debugging or bitstream comparisons.
-
-Compression using an existing adaptor:
-```
-python main.py \
-    --mode compress \
-    --input_path ./data/text8 \
-    --first_n_tokens 100000 \
-    --batch_size 16 \
-    --lora_path ./adapters/vera/text8/r4_lr0.0005_lsconstant_bs64_ep4_gas2/
-```
+`AC_MULTISTREAM` and `AC_TARGET_INTERVAL` default to `--encode_backend auto`, which uses Numba
+when available and falls back to the Python backend otherwise. Use
+`--encode_backend python` for debugging or bitstream comparisons, or try
+`--encode_backend numba_threaded --encode_threads N` for large row-stream
+counts. For the transformer engine, `--encode_backend numba_packed --encode_threads N --pipeline_encoding`
+writes packed byte streams and pipelines multistream interval staging behind the next inference batch.
 
 ### Decompression
 ```
@@ -73,16 +67,6 @@ python main.py \
 Decompression reads all required settings from the binary header, so only the
 compressed file path is required.
 
-### Adaptor Training
-```
-python adapter_training.py \
-    --adapter_type lora \
-    --lr 0.0005 \
-    --batch_size 64 \
-    --r 4 \
-    --epoch 4
-```
-
 ## Key options
 - `--input_path`: Text file to compress (compress mode) or `.bin` to decompress.
 - `--output_path`: Override default output file path.
@@ -93,10 +77,9 @@ python adapter_training.py \
 - `--batch_size`: Number of parallel sequences per step. Default: 1.
 - `--use_kv_cache`: Enable KV cache for faster incremental inference. Default: enabled.
 - `--reduce_tokens/--no_reduce_tokens`: Toggle global vocabulary reduction. Default: enabled.
-- `--encoding`: `AC`, `bitpacked`, or `huffman`. Default: `AC`.
+- `--encoding`: `AC`, `AC_MULTISTREAM`, `AC_TARGET_INTERVAL`, `bitpacked`, or `huffman`. Default: `AC`.
 - `--print_results`: Print detailed stats to stdout. Default: disabled.
 
-[ToDo: update key options with new training arguments]
 ## Outputs
 - `compression_results.json`: Aggregated metrics keyed by experiment settings.
 - `compression_data.bin`: Binary artifact (header + bitstream + bitmap).

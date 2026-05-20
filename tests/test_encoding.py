@@ -8,7 +8,13 @@ import pytest
 import torch
 
 from src.encoding import *
-from src.fast_ac import FastACCompressor, FastACDecompressor, payload_size_bits
+from src.fast_ac import (
+    AC_FAST2_FORMAT,
+    FastACCompressor,
+    FastACDecompressor,
+    payload_size_bits,
+    target_intervals_from_probs_tensor,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -142,7 +148,7 @@ def test_AC_roundtrip():
     assert np.array_equal(tokens, decoded), "AC roundtrip failed"
 
 
-@pytest.mark.parametrize("backend", ["python", "numba"])
+@pytest.mark.parametrize("backend", ["python", "numba", "numba_threaded", "numba_packed"])
 def test_ac_fast_multistream_roundtrip(backend):
     vocab_size = 25
     stream_count = 4
@@ -165,6 +171,9 @@ def test_ac_fast_multistream_roundtrip(backend):
 
     payload = comp.finish()
     assert payload_size_bits(payload) > 0
+    if backend == "numba_packed":
+        assert payload["stream_mode"] == "packed_bytes"
+        assert payload_size_bits(payload) == sum(payload["bit_counts"])
 
     dec = FastACDecompressor(payload, stream_count=stream_count)
     decoded = np.empty_like(tokens)
@@ -175,7 +184,7 @@ def test_ac_fast_multistream_roundtrip(backend):
                 torch.tensor(encoder_probs[step][row_id], dtype=torch.float32),
             )
 
-    assert np.array_equal(tokens, decoded), "AC_FAST multistream roundtrip failed"
+    assert np.array_equal(tokens, decoded), "AC_MULTISTREAM multistream roundtrip failed"
 
 
 def test_ac_fast_numba_matches_python_streams():
@@ -190,8 +199,8 @@ def test_ac_fast_numba_matches_python_streams():
     ]
 
     compressors = {
-        backend: FastACCompressor(stream_count=stream_count, backend=backend)
-        for backend in ("python", "numba")
+        backend: FastACCompressor(stream_count=stream_count, backend=backend, threads=2)
+        for backend in ("python", "numba", "numba_threaded", "numba_packed")
     }
     for step in range(sequence_length):
         probs = torch.tensor(np.stack(encoder_probs[step]), dtype=torch.float32)
@@ -204,6 +213,50 @@ def test_ac_fast_numba_matches_python_streams():
 
     python_payload = compressors["python"].finish()
     numba_payload = compressors["numba"].finish()
+    threaded_payload = compressors["numba_threaded"].finish()
+    packed_payload = compressors["numba_packed"].finish()
 
     assert numba_payload["backend"] == "numba"
+    assert threaded_payload["backend"] == "numba_threaded"
+    assert packed_payload["backend"] == "numba_packed"
     assert python_payload["streams"] == numba_payload["streams"]
+    assert python_payload["streams"] == threaded_payload["streams"]
+    assert python_payload["streams"] == [
+        [
+            ((stream[bit_idx >> 3] >> (7 - (bit_idx & 7))) & 1)
+            for bit_idx in range(bit_count)
+        ]
+        for stream, bit_count in zip(
+            packed_payload["streams"],
+            packed_payload["bit_counts"],
+        )
+    ]
+
+
+def test_target_intervals_match_full_cumulative_path():
+    probs = torch.tensor(
+        [
+            [0.1, 0.7, 0.2],
+            [0.3, 0.2, 0.5],
+        ],
+        dtype=torch.float32,
+    )
+    targets = torch.tensor([1, 2], dtype=torch.long)
+
+    lows, highs, totals, target_probs = target_intervals_from_probs_tensor(probs, targets)
+
+    comp = FastACCompressor(stream_count=2, payload_format=AC_FAST2_FORMAT)
+    comp.encode_intervals_batch(
+        row_ids=[0, 1],
+        lows=lows,
+        highs=highs,
+        totals=totals,
+        target_probs=target_probs,
+    )
+    payload = comp.finish()
+
+    assert payload["format"] == AC_FAST2_FORMAT
+
+    ref = FastACCompressor(stream_count=2, payload_format=AC_FAST2_FORMAT)
+    ref.encode_batch([0, 1], targets.tolist(), probs)
+    assert payload["streams"] == ref.finish()["streams"]

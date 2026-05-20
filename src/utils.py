@@ -16,7 +16,7 @@ import torch
 from pathlib import Path
 from typing import List
 
-from src.fast_ac import AC_FAST_FORMAT, is_fast_ac_payload
+from src.fast_ac import AC_FAST_FORMAT, AC_FAST2_FORMAT, is_fast_ac_payload
 
 def count_parameters(model):
     total, trainable = 0, 0
@@ -102,8 +102,11 @@ def save_global_mask_file(
         "pmatic_delta": getattr(args, "pmatic_delta", None),
         "pmatic_r": getattr(args, "pmatic_r", None),
         "vllm_window_size": getattr(args, "vllm_window_size", 1),
-        "ac_fast_backend": getattr(args, "ac_fast_backend", "auto"),
-        "payload_format": AC_FAST_FORMAT if is_fast_ac_payload(bit_string) else "BITS_V1",
+        "encode_backend": getattr(args, "encode_backend", "auto"),
+        "encode_threads": getattr(args, "encode_threads", 0),
+        "pipeline_encoding": getattr(args, "pipeline_encoding", True),
+        "payload_format": bit_string.get("format") if is_fast_ac_payload(bit_string) else "BITS_V1",
+        "stream_mode": bit_string.get("stream_mode", "bits") if is_fast_ac_payload(bit_string) else "bits",
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -117,12 +120,21 @@ def save_global_mask_file(
         # Convert the coding payload to bytes with padding metadata.
         if is_fast_ac_payload(bit_string):
             streams = bit_string["streams"]
+            stream_mode = bit_string.get("stream_mode", "bits")
+            bit_counts = bit_string.get("bit_counts", [len(stream) for stream in streams])
             f.write(struct.pack("I", len(streams)))
             f.write(struct.pack("I", int(bit_string.get("statesize", 32))))
             f.write(struct.pack("Q", int(bit_string.get("total", 1 << 18))))
-            for stream in streams:
-                stream_bytes, padding = bits_to_bytes(stream)
-                f.write(struct.pack("I", len(stream)))
+            f.write(struct.pack("B", 1 if stream_mode == "packed_bytes" else 0))
+            for idx, stream in enumerate(streams):
+                if stream_mode == "packed_bytes":
+                    stream_bytes = bytes(stream)
+                    padding = 0
+                    bit_count = int(bit_counts[idx])
+                else:
+                    stream_bytes, padding = bits_to_bytes(stream)
+                    bit_count = len(stream)
+                f.write(struct.pack("I", bit_count))
                 f.write(struct.pack("I", len(stream_bytes)))
                 f.write(struct.pack("B", padding))
                 f.write(stream_bytes)
@@ -156,26 +168,38 @@ def load_global_mask_file(args):
         first_token = [struct.unpack("I", f.read(4))[0] for _ in range(header["batch_size"])]
 
         # Read coding payload.
-        if header.get("payload_format") == AC_FAST_FORMAT:
+        if header.get("payload_format") in {AC_FAST_FORMAT, AC_FAST2_FORMAT}:
             stream_count = struct.unpack("I", f.read(4))[0]
             statesize = struct.unpack("I", f.read(4))[0]
             total = struct.unpack("Q", f.read(8))[0]
+            if "stream_mode" in header:
+                mode_byte = f.read(1)
+                stream_mode = "packed_bytes" if mode_byte and struct.unpack("B", mode_byte)[0] == 1 else "bits"
+            else:
+                stream_mode = "bits"
             streams = []
+            bit_counts = []
             for _ in range(stream_count):
                 bit_count = struct.unpack("I", f.read(4))[0]
                 byte_count = struct.unpack("I", f.read(4))[0]
                 padding = struct.unpack("B", f.read(1))[0]
                 stream_bytes = f.read(byte_count)
-                stream = bytes_to_bits(stream_bytes, padding)
-                if len(stream) != bit_count:
-                    raise ValueError("Corrupt AC_FAST stream length")
+                if stream_mode == "packed_bytes":
+                    stream = stream_bytes
+                else:
+                    stream = bytes_to_bits(stream_bytes, padding)
+                    if len(stream) != bit_count:
+                        raise ValueError("Corrupt AC_MULTISTREAM stream length")
                 streams.append(stream)
+                bit_counts.append(bit_count)
             bit_string = {
-                "format": AC_FAST_FORMAT,
+                "format": header.get("payload_format", AC_FAST_FORMAT),
                 "stream_count": stream_count,
                 "statesize": statesize,
                 "total": total,
                 "streams": streams,
+                "stream_mode": stream_mode,
+                "bit_counts": bit_counts,
             }
         else:
             bit_len = struct.unpack("I", f.read(4))[0]
@@ -203,8 +227,14 @@ def load_global_mask_file(args):
     args.vllm_window_size = header.get(
         "vllm_window_size", getattr(args, "vllm_window_size", 1)
     )
-    args.ac_fast_backend = header.get(
-        "ac_fast_backend", getattr(args, "ac_fast_backend", "auto")
+    args.encode_backend = header.get(
+        "encode_backend", getattr(args, "encode_backend", "auto")
+    )
+    args.encode_threads = header.get(
+        "encode_threads", getattr(args, "encode_threads", 0)
+    )
+    args.pipeline_encoding = header.get(
+        "pipeline_encoding", getattr(args, "pipeline_encoding", True)
     )
     args.input_path = header["input_path"]
 
@@ -241,10 +271,13 @@ def make_key(args):
     """
     filename = os.path.basename(args.input_path)
     vllm_window = getattr(args, "vllm_window_size", 1)
-    ac_fast_backend = getattr(args, "ac_fast_backend", "auto")
+    encode_backend = getattr(args, "encode_backend", "auto")
+    encode_threads = getattr(args, "encode_threads", 0)
     key = f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}|vllm_window={vllm_window}"
-    if getattr(args, "encoding", None) == "AC_FAST":
-        key += f"|ac_fast_backend={ac_fast_backend}"
+    if getattr(args, "encoding", None) in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+        key += f"|encode_backend={encode_backend}|encode_threads={encode_threads}"
+        if getattr(args, "pipeline_encoding", True):
+            key += "|pipeline_encoding=True"
     return key
 
 def create_run_dir(base_dir="results"):

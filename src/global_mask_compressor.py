@@ -12,9 +12,10 @@ bitmap to reconstruct tokens from the bitstream.
 """
 
 import sys
+from concurrent.futures import ThreadPoolExecutor
 
 from src.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
-from src.fast_ac import FastACCompressor, FastACDecompressor, payload_size_bits
+from src.fast_ac import AC_FAST_FORMAT, AC_FAST2_FORMAT, FastACCompressor, FastACDecompressor, is_fast_ac_payload, payload_size_bits
 from src.prediction import TokenDataPreparer, TokenPredictor, get_token_predictor
 from itertools import chain
 from collections import defaultdict
@@ -42,7 +43,7 @@ def _get_pmatic_params(args):
 
 
 def _make_arithmetic_decompressor(args, bit_string, alphabet_size):
-    if args.encoding == "AC_FAST":
+    if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
         return FastACDecompressor(bit_string, stream_count=getattr(args, "batch_size", None))
 
     if args.encoding == "AC":
@@ -140,12 +141,16 @@ def run_global_mask_compression(args):
         fast_ac_compressor = None
         if args.encoding in {"AC"}:
             llm_compressor = LLMCompressor()
-        elif args.encoding == "AC_FAST":
+        elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
             llm_compressor = None
             fast_ac_compressor = FastACCompressor(
                 stream_count=args.batch_size,
-                backend=getattr(args, "ac_fast_backend", "auto"),
+                backend=getattr(args, "encode_backend", "auto"),
+                payload_format=AC_FAST2_FORMAT if args.encoding == "AC_TARGET_INTERVAL" else AC_FAST_FORMAT,
+                threads=getattr(args, "encode_threads", 0),
             )
+            ac_fast_async = getattr(args, "pipeline_encoding", True)
+            ac_fast_executor = ThreadPoolExecutor(max_workers=1) if ac_fast_async else None
         elif args.encoding == "PMATIC":
             delta, r = _get_pmatic_params(args)
             print(f"Using PMATIC compressor with delta={delta}, r={r}")
@@ -172,9 +177,23 @@ def run_global_mask_compression(args):
         entropy = 0.0
         rank_list = []
         probs_list = []
+        ac_async_enabled = (
+            args.engine == "transformer"
+            and args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+            and bool(getattr(args, "pipeline_encoding", True))
+        )
+        ac_executor = ThreadPoolExecutor(max_workers=1) if ac_async_enabled else None
+        pending_ac_future = None
+        ac_async_wait_time = 0.0
         token_to_column = {token: idx for idx, token in enumerate(token_predictor.tokens_list)}
         forced_window_inference = getattr(
             token_predictor, "run_batched_forced_inference", None
+        )
+        forced_window_interval_inference = getattr(
+            token_predictor, "run_batched_forced_interval_inference", None
+        )
+        interval_inference = getattr(
+            token_predictor, "run_batched_interval_inference", None
         )
         vllm_window_size = max(1, int(getattr(args, "vllm_window_size", 1)))
         if vllm_window_size > 1:
@@ -184,7 +203,13 @@ def run_global_mask_compression(args):
             )
     
         # Process each token in the dataset to compress it.
-        if callable(forced_window_inference) and vllm_window_size > 1:
+        if (
+            (
+                callable(forced_window_inference)
+                or (args.encoding == "AC_TARGET_INTERVAL" and callable(forced_window_interval_inference))
+            )
+            and vllm_window_size > 1
+        ):
             prompts = [[batch[0]] for batch in batches]
 
             for token_idx in tqdm(
@@ -217,14 +242,48 @@ def run_global_mask_compression(args):
                 input_token_cnt += sum(len(prompt) for prompt in active_prompts)
 
                 t0_inference = time.perf_counter()
-                token_ids, score_values, _data_copy_time, _softmax_time = (
-                    forced_window_inference(active_prompts, target_windows)
-                )
+                if args.encoding == "AC_TARGET_INTERVAL" and callable(forced_window_interval_inference):
+                    token_ids, score_values, _data_copy_time, _softmax_time = (
+                        forced_window_interval_inference(active_prompts, target_windows)
+                    )
+                else:
+                    token_ids, score_values, _data_copy_time, _softmax_time = (
+                        forced_window_inference(active_prompts, target_windows)
+                    )
                 data_copy_time += _data_copy_time
                 softmax_time += _softmax_time
                 inference_time += time.perf_counter() - t0_inference
 
-                if args.encoding == "AC_FAST":
+                if args.encoding == "AC_TARGET_INTERVAL" and isinstance(score_values, dict):
+                    t0_ac = time.perf_counter()
+                    for step_idx in range(max_window_steps):
+                        row_ids = []
+                        lows = []
+                        highs = []
+                        totals = []
+                        target_probs = []
+                        for local_idx, global_idx in enumerate(active_rows):
+                            targets = target_windows[local_idx]
+                            if step_idx >= len(targets):
+                                continue
+                            row_ids.append(global_idx)
+                            lows.append(score_values["lows"][step_idx, local_idx])
+                            highs.append(score_values["highs"][step_idx, local_idx])
+                            totals.append(score_values["totals"][step_idx, local_idx])
+                            target_probs.append(score_values["target_probs"][step_idx, local_idx])
+
+                        if row_ids:
+                            fast_ac_compressor.encode_intervals_batch(
+                                row_ids,
+                                torch.stack(lows),
+                                torch.stack(highs),
+                                torch.stack(totals),
+                                torch.stack(target_probs),
+                            )
+
+                    ac_time += time.perf_counter() - t0_ac
+
+                elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
                     t0_ac = time.perf_counter()
                     probs_tensor = score_values.to(torch.float32)
 
@@ -306,13 +365,6 @@ def run_global_mask_compression(args):
         
                 input_token_cnt += args.batch_size * len(prompts[0])
 
-            # Run LLM inference
-                t0_inference = time.perf_counter()
-                token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
-                data_copy_time += _data_copy_time
-                softmax_time += _softmax_time
-                inference_time += time.perf_counter() - t0_inference
-
                 actual_next_tokens = []
                 valid_mask = [] 
 
@@ -326,25 +378,83 @@ def run_global_mask_compression(args):
                         actual_next_tokens.append(0)
                         valid_mask.append(False)
 
-                if args.encoding == "AC_FAST":
+            # Run LLM inference
+                t0_inference = time.perf_counter()
+                if args.encoding == "AC_TARGET_INTERVAL" and callable(interval_inference):
+                    target_tokens = [
+                        batches[idx][token_idx + 1] if valid_mask[idx] else token_predictor.tokens_list[0]
+                        for idx in range(args.batch_size)
+                    ]
+                    token_ids, probs_values, _data_copy_time, _softmax_time = interval_inference(
+                        prompts,
+                        target_tokens,
+                    )
+                else:
+                    token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
+                data_copy_time += _data_copy_time
+                softmax_time += _softmax_time
+                inference_time += time.perf_counter() - t0_inference
+
+                if args.encoding == "AC_TARGET_INTERVAL" and isinstance(probs_values, dict):
+                    t0_ac = time.perf_counter()
+                    row_ids = []
+                    lows = []
+                    highs = []
+                    totals = []
+                    target_probs = []
+                    for idx in range(args.batch_size):
+                        if not valid_mask[idx]:
+                            continue
+                        row_ids.append(idx)
+                        lows.append(probs_values["lows"][idx])
+                        highs.append(probs_values["highs"][idx])
+                        totals.append(probs_values["totals"][idx])
+                        target_probs.append(probs_values["target_probs"][idx])
+
+                    if row_ids:
+                        fast_ac_compressor.encode_intervals_batch(
+                            row_ids,
+                            torch.stack(lows),
+                            torch.stack(highs),
+                            torch.stack(totals),
+                            torch.stack(target_probs),
+                        )
+                    ac_time += time.perf_counter() - t0_ac
+
+                elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
                     t0_ac = time.perf_counter()
                     probs_tensor = probs_values.to(torch.float32)
                     row_ids = []
                     target_indices = []
-                    prob_rows = []
+                    valid_indices = []
                     for idx in range(args.batch_size):
                         if not valid_mask[idx]:
                             continue
                         row_ids.append(idx)
                         target_indices.append(actual_next_tokens[idx])
-                        prob_rows.append(probs_tensor[idx])
+                        valid_indices.append(idx)
 
-                    if row_ids:
-                        fast_ac_compressor.encode_batch(
-                            row_ids,
-                            target_indices,
-                            torch.stack(prob_rows, dim=0),
-                        )
+                    def encode_current_fast_ac(
+                        rows=row_ids,
+                        targets=target_indices,
+                        indices=valid_indices,
+                        probs_for_ac=probs_tensor,
+                    ):
+                        if rows:
+                            fast_ac_compressor.encode_batch(
+                                rows,
+                                targets,
+                                probs_for_ac[indices],
+                            )
+
+                    if ac_executor is not None:
+                        if pending_ac_future is not None:
+                            wait_start = time.perf_counter()
+                            pending_ac_future.result()
+                            ac_async_wait_time += time.perf_counter() - wait_start
+                        pending_ac_future = ac_executor.submit(encode_current_fast_ac)
+                    else:
+                        encode_current_fast_ac()
                     ac_time += time.perf_counter() - t0_ac
 
                 elif args.encoding == "AC":
@@ -401,9 +511,17 @@ def run_global_mask_compression(args):
                 else:
                     raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
 
+        if pending_ac_future is not None:
+            wait_start = time.perf_counter()
+            pending_ac_future.result()
+            ac_async_wait_time += time.perf_counter() - wait_start
+            pending_ac_future = None
+        if ac_executor is not None:
+            ac_executor.shutdown(wait=True)
+
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")
-        elif args.encoding == "AC_FAST":
+        elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
             range_coder_time_before_finish = fast_ac_compressor.timings.range_coder_time
             bit_string = fast_ac_compressor.finish()
             entropy = fast_ac_compressor.cross_entropy_sum
@@ -469,7 +587,11 @@ def run_global_mask_compression(args):
             "quantize_time": getattr(getattr(fast_ac_compressor, "timings", None), "quantize_time", 0.0),
             "range_coder_time": getattr(getattr(fast_ac_compressor, "timings", None), "range_coder_time", 0.0),
             "fast_ac_transfer_time": getattr(getattr(fast_ac_compressor, "timings", None), "transfer_time", 0.0),
-            "ac_fast_backend": getattr(fast_ac_compressor, "backend", None),
+            "encode_backend": getattr(fast_ac_compressor, "backend", None),
+            "encode_threads": getattr(fast_ac_compressor, "threads", None),
+            "pipeline_encoding": ac_async_enabled,
+            "pipeline_wait_time": ac_async_wait_time,
+            "encode_stream_mode": bit_string.get("stream_mode") if is_fast_ac_payload(bit_string) else None,
             "data_copy_time": data_copy_time,
             "softmax_time": softmax_time,
             # Throughput
@@ -570,14 +692,14 @@ def run_global_mask_decompression(
             t0_ac = time.perf_counter()
             # Provide the actual token's indexes and the probability distributions to the compressor.
             probs_for_decode = probs_values.to(torch.float32)
-            if args.encoding != "AC_FAST":
+            if args.encoding not in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
                 probs_for_decode = probs_for_decode.cpu().numpy()
 
             for idx, probs in enumerate(probs_for_decode):
                 if token_idx + 1 < batches_length[idx]:
                     # Decompress the next token's index from the bit string.
                     #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
-                    if args.encoding == "AC_FAST":
+                    if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
                         next_token_idx = decompressor.decompress(idx, probs)
                     else:
                         next_token_idx = decompressor.decompress(probs)
@@ -649,9 +771,9 @@ def run_global_mask_speculative_decompression(
         raise NotImplementedError(
             "Speculative decompression is currently supported only with --engine transformer."
         )
-    if args.encoding == "AC_FAST":
+    if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
         raise NotImplementedError(
-            "Speculative decompression is not yet wired for AC_FAST multi-stream payloads."
+            "Speculative decompression is not yet wired for multistream/target-interval payloads."
         )
 
     print(

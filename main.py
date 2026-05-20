@@ -69,8 +69,10 @@ def main():
             print(f"  vLLM window size : {getattr(args, 'vllm_window_size', 1)}")
             print(f"  Engine           : {args.engine}")
             print(f"  Encoding         : {args.encoding}")
-            if args.encoding == "AC_FAST":
-                print(f"  AC_FAST backend  : {getattr(args, 'ac_fast_backend', 'auto')}")
+            if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+                print(f"  Encoding backend : {getattr(args, 'encode_backend', 'auto')}")
+                print(f"  Encoding threads : {getattr(args, 'encode_threads', 0)}")
+                print(f"  Pipeline encoding: {getattr(args, 'pipeline_encoding', True)}")
         
             # We will retrieve model size stats *after* compression to avoid double-initializing the engine,
             # especially important for vLLM which aggressively reserves GPU memory.

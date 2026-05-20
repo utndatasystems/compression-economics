@@ -140,8 +140,8 @@ def test_generate_draft_correctness(test_setup, k, print_on = True):
         manual_draft_tokens.append(most_likely_tokens) # store tokens for each step separately for easier debugging
         print(f"Manual draft tokens for step {i}:", most_likely_tokens)
 
-        # Update prompts for next step 
-        dummy_prompts = [dummy_prompts[j] + manual_draft_tokens[j] for j in range(B)]
+        # Update prompts for next step using the tokens produced in this step
+        dummy_prompts = [dummy_prompts[j] + [most_likely_tokens[j]] for j in range(B)]
         print(f"Updated prompts after step {i}:", dummy_prompts)
 
     # Transpose manual_draft_tokens to match the shape of draft_tokens

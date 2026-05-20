@@ -51,6 +51,100 @@ def make_predictor(encoding="AC", reduce_tokens=False, tokens_list=None):
     return predictor
 
 
+def test_read_captured_intervals_returns_step_major_tensors(monkeypatch):
+    import struct
+    from multiprocessing import shared_memory
+
+    predictor = make_predictor(encoding="AC_TARGET_INTERVAL")
+    predictor.capture_vocab_size = 5
+    predictor.max_vocab_cols = 8
+    predictor._capture_record_stride = 32
+    rows = 2
+    steps = 2
+    header_bytes = 24
+    flags_offset = header_bytes
+    data_offset = flags_offset + rows * steps * 4
+    shm = shared_memory.SharedMemory(create=True, size=data_offset + rows * steps * 32)
+    predictor._shm = shm
+    try:
+        struct.pack_into("IIIIII", shm.buf, 0, rows, steps, 8, 4, rows * steps, 1)
+        records = {
+            (0, 0): (1, 3, 10, 0.2),
+            (0, 1): (2, 5, 10, 0.3),
+            (1, 0): (3, 7, 10, 0.4),
+            (1, 1): (4, 9, 10, 0.5),
+        }
+        for row in range(rows):
+            for step in range(steps):
+                flat = row * steps + step
+                struct.pack_into("I", shm.buf, flags_offset + flat * 4, 1)
+                struct.pack_into(
+                    "qqqd",
+                    shm.buf,
+                    data_offset + flat * 32,
+                    *records[(row, step)],
+                )
+
+        intervals = predictor._read_captured_intervals(rows, steps, squeeze=False)
+
+        assert intervals["lows"].tolist() == [[1, 3], [2, 4]]
+        assert intervals["highs"].tolist() == [[3, 7], [5, 9]]
+        assert intervals["totals"].tolist() == [[10, 10], [10, 10]]
+        assert torch.allclose(
+            intervals["target_probs"],
+            torch.tensor([[0.2, 0.4], [0.3, 0.5]], dtype=torch.float64),
+        )
+    finally:
+        shm.close()
+        shm.unlink()
+
+
+def test_read_captured_logits_uses_strided_shared_memory():
+    import struct
+    from multiprocessing import shared_memory
+
+    predictor = make_predictor(encoding="AC_MULTISTREAM")
+    predictor.capture_vocab_size = 3
+    predictor.max_vocab_cols = 4
+    predictor._capture_record_stride = 32
+    predictor.device = torch.device("cpu")
+    rows = 2
+    steps = 2
+    cols = 4
+    header_bytes = 24
+    flags_offset = header_bytes
+    data_offset = flags_offset + rows * steps * 4
+    shm = shared_memory.SharedMemory(create=True, size=data_offset + rows * steps * 32)
+    predictor._shm = shm
+    try:
+        struct.pack_into("IIIIII", shm.buf, 0, rows, steps, 4, cols, rows * steps, 0)
+        records = {
+            (0, 0): [0.0, 1.0, 2.0, 3.0],
+            (0, 1): [4.0, 5.0, 6.0, 7.0],
+            (1, 0): [8.0, 9.0, 10.0, 11.0],
+            (1, 1): [12.0, 13.0, 14.0, 15.0],
+        }
+        for row in range(rows):
+            for step in range(steps):
+                flat = row * steps + step
+                struct.pack_into("I", shm.buf, flags_offset + flat * 4, 1)
+                row_array = torch.tensor(records[(row, step)], dtype=torch.float32)
+                shm.buf[data_offset + flat * 32: data_offset + flat * 32 + cols * 4] = (
+                    row_array.numpy().tobytes()
+                )
+
+        logits = predictor._read_captured_logits(rows, steps, squeeze=False)
+
+        assert logits.shape == (steps, rows, 3)
+        assert logits.tolist() == [
+            [[0.0, 1.0, 2.0], [8.0, 9.0, 10.0]],
+            [[4.0, 5.0, 6.0], [12.0, 13.0, 14.0]],
+        ]
+    finally:
+        shm.close()
+        shm.unlink()
+
+
 def test_flat_logprobs_with_token_ids_to_dense_scores():
     predictor = make_predictor()
     logprobs = FakeFlatLogprobs(
