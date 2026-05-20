@@ -76,7 +76,23 @@ def main():
             # ========================
             # Run compression
             # ========================
-            first_token, bit_string, bitmask_data, comp_stats, args, model_stats = run_global_mask_compression(args)
+            compression_result = run_global_mask_compression(args)
+            if len(compression_result) == 6:
+                first_token, bit_string, bitmask_data, comp_stats, args, model_stats = compression_result
+            else:
+                first_token, bit_string, bitmask_data, comp_stats, args = compression_result
+                token_predictor = get_token_predictor(args, bitmap_data=bitmask_data)
+                try:
+                    model_stats = {
+                        "base_params": getattr(token_predictor, "base_params", 0),
+                        "adapter_params": getattr(token_predictor, "adapter_params", 0),
+                        "base_size_mb": getattr(token_predictor, "base_size_mb", 0.0),
+                        "adapter_size_mb": getattr(token_predictor, "adapter_size_mb", 0.0),
+                    }
+                finally:
+                    cleanup = getattr(token_predictor, "cleanup", None)
+                    if callable(cleanup):
+                        cleanup()
 
             total_params = model_stats["base_params"] + model_stats["adapter_params"]
             total_size_mb = model_stats["base_size_mb"] + model_stats["adapter_size_mb"]

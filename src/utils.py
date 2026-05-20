@@ -16,6 +16,8 @@ import torch
 from pathlib import Path
 from typing import List
 
+from src.fast_ac import AC_FAST_FORMAT, is_fast_ac_payload
+
 def count_parameters(model):
     total, trainable = 0, 0
     for p in model.parameters():
@@ -100,6 +102,7 @@ def save_global_mask_file(
         "pmatic_delta": getattr(args, "pmatic_delta", None),
         "pmatic_r": getattr(args, "pmatic_r", None),
         "vllm_window_size": getattr(args, "vllm_window_size", 1),
+        "payload_format": AC_FAST_FORMAT if is_fast_ac_payload(bit_string) else "BITS_V1",
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -110,11 +113,23 @@ def save_global_mask_file(
         for tok in first_token:
             f.write(struct.pack("I", tok))
 
-        # Convert bit_string list to bytes with padding metadata.
-        bit_bytes, padding = bits_to_bytes(bit_string)
-        f.write(struct.pack("I", len(bit_bytes)))
-        f.write(struct.pack("B", padding))  # store padding
-        f.write(bit_bytes)
+        # Convert the coding payload to bytes with padding metadata.
+        if is_fast_ac_payload(bit_string):
+            streams = bit_string["streams"]
+            f.write(struct.pack("I", len(streams)))
+            f.write(struct.pack("I", int(bit_string.get("statesize", 32))))
+            f.write(struct.pack("Q", int(bit_string.get("total", 1 << 18))))
+            for stream in streams:
+                stream_bytes, padding = bits_to_bytes(stream)
+                f.write(struct.pack("I", len(stream)))
+                f.write(struct.pack("I", len(stream_bytes)))
+                f.write(struct.pack("B", padding))
+                f.write(stream_bytes)
+        else:
+            bit_bytes, padding = bits_to_bytes(bit_string)
+            f.write(struct.pack("I", len(bit_bytes)))
+            f.write(struct.pack("B", padding))  # store padding
+            f.write(bit_bytes)
 
         # Write the serialized bitmap blob.
         f.write(struct.pack("I", len(bitmask_data)))
@@ -139,11 +154,33 @@ def load_global_mask_file(args):
         # Read batch start tokens (uint32).
         first_token = [struct.unpack("I", f.read(4))[0] for _ in range(header["batch_size"])]
 
-        # Read bit_string
-        bit_len = struct.unpack("I", f.read(4))[0]
-        padding = struct.unpack("B", f.read(1))[0]
-        bit_bytes = f.read(bit_len)
-        bit_string = bytes_to_bits(bit_bytes, padding)
+        # Read coding payload.
+        if header.get("payload_format") == AC_FAST_FORMAT:
+            stream_count = struct.unpack("I", f.read(4))[0]
+            statesize = struct.unpack("I", f.read(4))[0]
+            total = struct.unpack("Q", f.read(8))[0]
+            streams = []
+            for _ in range(stream_count):
+                bit_count = struct.unpack("I", f.read(4))[0]
+                byte_count = struct.unpack("I", f.read(4))[0]
+                padding = struct.unpack("B", f.read(1))[0]
+                stream_bytes = f.read(byte_count)
+                stream = bytes_to_bits(stream_bytes, padding)
+                if len(stream) != bit_count:
+                    raise ValueError("Corrupt AC_FAST stream length")
+                streams.append(stream)
+            bit_string = {
+                "format": AC_FAST_FORMAT,
+                "stream_count": stream_count,
+                "statesize": statesize,
+                "total": total,
+                "streams": streams,
+            }
+        else:
+            bit_len = struct.unpack("I", f.read(4))[0]
+            padding = struct.unpack("B", f.read(1))[0]
+            bit_bytes = f.read(bit_len)
+            bit_string = bytes_to_bits(bit_bytes, padding)
 
         # Read bitmask_data
         bitmask_len = struct.unpack("I", f.read(4))[0]
@@ -156,10 +193,10 @@ def load_global_mask_file(args):
     args.retain_tokens = header["retain_tokens"]
     args.use_kv_cache = header["use_kv_cache"]
     args.batch_size = header["batch_size"]
-    args.encoding = header.get("encoding", args.encoding)
-    args.reduce_tokens = header.get("reduce_tokens", args.reduce_tokens)
-    args.engine = header.get("engine", args.engine)
-    args.lora_path = header.get("lora_path", args.lora_path)
+    args.encoding = header.get("encoding", getattr(args, "encoding", None))
+    args.reduce_tokens = header.get("reduce_tokens", getattr(args, "reduce_tokens", None))
+    args.engine = header.get("engine", getattr(args, "engine", None))
+    args.lora_path = header.get("lora_path", getattr(args, "lora_path", None))
     args.pmatic_delta = header.get("pmatic_delta", getattr(args, "pmatic_delta", None))
     args.pmatic_r = header.get("pmatic_r", getattr(args, "pmatic_r", None))
     args.vllm_window_size = header.get(
@@ -275,7 +312,7 @@ def check_mismatch(input_path = None, output_path = None, first_n_tokens = None,
     with open(output_path, "r", encoding="utf-8") as f:
         reconstructed = f.read()
 
-    with open(input_path, "r", encoding="utf-8") as f:        
+    with open(f"data/{input_path}", "r", encoding="utf-8") as f:        
         original = f.read()
 
     if first_n_tokens is not None:

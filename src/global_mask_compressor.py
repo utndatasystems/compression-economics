@@ -14,6 +14,7 @@ bitmap to reconstruct tokens from the bitstream.
 import sys
 
 from src.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
+from src.fast_ac import FastACCompressor, FastACDecompressor, payload_size_bits
 from src.prediction import TokenDataPreparer, TokenPredictor, get_token_predictor
 from itertools import chain
 from collections import defaultdict
@@ -41,6 +42,9 @@ def _get_pmatic_params(args):
 
 
 def _make_arithmetic_decompressor(args, bit_string, alphabet_size):
+    if args.encoding == "AC_FAST":
+        return FastACDecompressor(bit_string, stream_count=getattr(args, "batch_size", None))
+
     if args.encoding == "AC":
         return LLMDecompressor(bit_string, algorithm="AC")
 
@@ -133,8 +137,12 @@ def run_global_mask_compression(args):
         
     token_predictor = get_token_predictor(args, bitmap_data=bitmask_data)
     try:
+        fast_ac_compressor = None
         if args.encoding in {"AC"}:
             llm_compressor = LLMCompressor()
+        elif args.encoding == "AC_FAST":
+            llm_compressor = None
+            fast_ac_compressor = FastACCompressor(stream_count=args.batch_size)
         elif args.encoding == "PMATIC":
             delta, r = _get_pmatic_params(args)
             print(f"Using PMATIC compressor with delta={delta}, r={r}")
@@ -146,6 +154,10 @@ def run_global_mask_compression(args):
                 r=r,
                 algorithm="PMATIC",
             )
+        elif args.encoding in {"bitpacked", "huffman"}:
+            llm_compressor = LLMCompressor()
+        else:
+            raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
 
         # Per-batch prompt buffers that grow token-by-token.
         prompts = [[] for _ in range(args.batch_size)]
@@ -209,7 +221,32 @@ def run_global_mask_compression(args):
                 softmax_time += _softmax_time
                 inference_time += time.perf_counter() - t0_inference
 
-                if args.encoding in {"AC", "PMATIC"}:
+                if args.encoding == "AC_FAST":
+                    t0_ac = time.perf_counter()
+                    probs_tensor = score_values.to(torch.float32)
+
+                    for step_idx in range(max_window_steps):
+                        row_ids = []
+                        target_indices = []
+                        prob_rows = []
+                        for local_idx, global_idx in enumerate(active_rows):
+                            targets = target_windows[local_idx]
+                            if step_idx >= len(targets):
+                                continue
+                            row_ids.append(global_idx)
+                            target_indices.append(token_to_column[targets[step_idx]])
+                            prob_rows.append(probs_tensor[step_idx, local_idx])
+
+                        if row_ids:
+                            fast_ac_compressor.encode_batch(
+                                row_ids,
+                                target_indices,
+                                torch.stack(prob_rows, dim=0),
+                            )
+
+                    ac_time += time.perf_counter() - t0_ac
+
+                elif args.encoding in {"AC", "PMATIC"}:
                     t0_ac = time.perf_counter()
                     probs_cpu = score_values.to(torch.float32).numpy()
 
@@ -286,7 +323,28 @@ def run_global_mask_compression(args):
                         actual_next_tokens.append(0)
                         valid_mask.append(False)
 
-                if args.encoding == "AC":
+                if args.encoding == "AC_FAST":
+                    t0_ac = time.perf_counter()
+                    probs_tensor = probs_values.to(torch.float32)
+                    row_ids = []
+                    target_indices = []
+                    prob_rows = []
+                    for idx in range(args.batch_size):
+                        if not valid_mask[idx]:
+                            continue
+                        row_ids.append(idx)
+                        target_indices.append(actual_next_tokens[idx])
+                        prob_rows.append(probs_tensor[idx])
+
+                    if row_ids:
+                        fast_ac_compressor.encode_batch(
+                            row_ids,
+                            target_indices,
+                            torch.stack(prob_rows, dim=0),
+                        )
+                    ac_time += time.perf_counter() - t0_ac
+
+                elif args.encoding == "AC":
                     t0_ac = time.perf_counter()
                     probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
 
@@ -342,6 +400,9 @@ def run_global_mask_compression(args):
 
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")
+        elif args.encoding == "AC_FAST":
+            bit_string = fast_ac_compressor.finish()
+            entropy = fast_ac_compressor.cross_entropy_sum
         elif args.encoding == "PMATIC": 
             pass
             bit_string = llm_compressor.compress(encoding="PMATIC")
@@ -360,7 +421,7 @@ def run_global_mask_compression(args):
         
         total_compression_time = time.perf_counter() - t0_tokenize
         # Bitstream length (in bits) plus bitmap size yields the final compressed size.
-        total_arithmetic_code_size = len(bit_string)
+        total_arithmetic_code_size = payload_size_bits(bit_string)
         if args.encoding == "huffman":
             # Estimate the size of the codebook in bits
             codebook_size = sum(len(code) for code in codebook.values())
@@ -397,6 +458,9 @@ def run_global_mask_compression(args):
             "compression_time": compression_time,
             "inference_time": inference_time,
             "ac_time": ac_time,
+            "quantize_time": getattr(getattr(fast_ac_compressor, "timings", None), "quantize_time", 0.0),
+            "range_coder_time": getattr(getattr(fast_ac_compressor, "timings", None), "range_coder_time", 0.0),
+            "fast_ac_transfer_time": getattr(getattr(fast_ac_compressor, "timings", None), "transfer_time", 0.0),
             "data_copy_time": data_copy_time,
             "softmax_time": softmax_time,
             # Throughput
@@ -496,11 +560,18 @@ def run_global_mask_decompression(
 
             t0_ac = time.perf_counter()
             # Provide the actual token's indexes and the probability distributions to the compressor.
-            for idx, probs in enumerate(probs_values.to(torch.float32).numpy()):
+            probs_for_decode = probs_values.to(torch.float32)
+            if args.encoding != "AC_FAST":
+                probs_for_decode = probs_for_decode.cpu().numpy()
+
+            for idx, probs in enumerate(probs_for_decode):
                 if token_idx + 1 < batches_length[idx]:
                     # Decompress the next token's index from the bit string.
                     #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
-                    next_token_idx = decompressor.decompress(probs)
+                    if args.encoding == "AC_FAST":
+                        next_token_idx = decompressor.decompress(idx, probs)
+                    else:
+                        next_token_idx = decompressor.decompress(probs)
                     next_token = token_predictor.get_token_by_id(next_token_idx)
                     
                     # Append the decompressed token to the context for the next step.
@@ -568,6 +639,10 @@ def run_global_mask_speculative_decompression(
     if args.engine != "transformer":
         raise NotImplementedError(
             "Speculative decompression is currently supported only with --engine transformer."
+        )
+    if args.encoding == "AC_FAST":
+        raise NotImplementedError(
+            "Speculative decompression is not yet wired for AC_FAST multi-stream payloads."
         )
 
     print(

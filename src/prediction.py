@@ -333,10 +333,13 @@ class TokenPredictor:
             logits = logits.index_select(1, self.index_tensor.to(logits.device))
 
         softmax_time = 0.0
-        if self.args.encoding in {"AC", "PMATIC"}:
+        if self.args.encoding in {"AC", "AC_FAST", "PMATIC"}:
             t0_softmax = time.perf_counter()
             probs = torch.softmax(logits, dim=-1)
             softmax_time = time.perf_counter() - t0_softmax
+
+            if self.args.encoding == "AC_FAST":
+                return self.tokens_list, probs, data_copy_time, softmax_time
 
             t0_data_copy = time.perf_counter()
             probs_cpu = probs.cpu()

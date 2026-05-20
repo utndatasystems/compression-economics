@@ -225,7 +225,7 @@ class VLLMTokenPredictor:
         )
         self.device = torch.device("cuda")
 
-        gpu_mem = getattr(args, "gpu_memory_utilization", 0.9)
+        gpu_mem = getattr(args, "gpu_memory_utilization", 0.80)
         tensor_parallel_size = getattr(args, "tensor_parallel_size", 1)
         enable_prefix_caching = bool(getattr(args, "use_kv_cache", True))
         self.vocab_size = self._get_config_vocab_size(
@@ -344,10 +344,13 @@ class VLLMTokenPredictor:
         data_copy_time = time.perf_counter() - t0
 
         softmax_time = 0.0
-        if self.args.encoding in {"AC", "PMATIC"}:
+        if self.args.encoding in {"AC", "AC_FAST", "PMATIC"}:
             t0 = time.perf_counter()
             probs = torch.softmax(logits.float(), dim=-1)
             softmax_time = time.perf_counter() - t0
+
+            if self.args.encoding == "AC_FAST":
+                return self.tokens_list, probs, data_copy_time, softmax_time
 
             t0 = time.perf_counter()
             probs_cpu = probs.cpu()
@@ -414,10 +417,13 @@ class VLLMTokenPredictor:
         data_copy_time = time.perf_counter() - t0
 
         softmax_time = 0.0
-        if self.args.encoding in {"AC", "PMATIC"}:
+        if self.args.encoding in {"AC", "AC_FAST", "PMATIC"}:
             t0 = time.perf_counter()
             probs = torch.softmax(logits.float(), dim=-1)
             softmax_time = time.perf_counter() - t0
+
+            if self.args.encoding == "AC_FAST":
+                return self.tokens_list, probs, data_copy_time, softmax_time
 
             t0 = time.perf_counter()
             probs_cpu = probs.cpu()

@@ -5,8 +5,10 @@ import random
 
 import numpy as np
 import pytest
+import torch
 
 from src.encoding import *
+from src.fast_ac import FastACCompressor, FastACDecompressor, payload_size_bits
 
 
 @pytest.fixture(autouse=True)
@@ -138,3 +140,38 @@ def test_AC_roundtrip():
     decoded = np.array([dec.decompress(probs) for probs in encoder_probs])
 
     assert np.array_equal(tokens, decoded), "AC roundtrip failed"
+
+
+def test_ac_fast_multistream_roundtrip():
+    vocab_size = 25
+    stream_count = 4
+    sequence_length = 80
+
+    tokens = np.random.randint(0, vocab_size, size=(sequence_length, stream_count))
+    encoder_probs = [
+        [random_probs(vocab_size) for _ in range(stream_count)]
+        for _ in range(sequence_length)
+    ]
+
+    comp = FastACCompressor(stream_count=stream_count)
+    for step in range(sequence_length):
+        probs = torch.tensor(np.stack(encoder_probs[step]), dtype=torch.float32)
+        comp.encode_batch(
+            row_ids=list(range(stream_count)),
+            target_token_ids=tokens[step].tolist(),
+            probs=probs,
+        )
+
+    payload = comp.finish()
+    assert payload_size_bits(payload) > 0
+
+    dec = FastACDecompressor(payload, stream_count=stream_count)
+    decoded = np.empty_like(tokens)
+    for step in range(sequence_length):
+        for row_id in range(stream_count):
+            decoded[step, row_id] = dec.decompress(
+                row_id,
+                torch.tensor(encoder_probs[step][row_id], dtype=torch.float32),
+            )
+
+    assert np.array_equal(tokens, decoded), "AC_FAST multistream roundtrip failed"

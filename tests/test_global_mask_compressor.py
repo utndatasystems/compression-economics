@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from src.encoding import LLMCompressor, choose_pmatic_r
+from src.fast_ac import FastACCompressor
 from src.global_mask_compressor import (
     run_global_mask_compression,
     run_global_mask_decompression,
@@ -97,6 +98,80 @@ def test_global_mask_pmatic_decompression_uses_pmatic_decoder(monkeypatch, engin
     assert detoken_string == "0 1 2 2 3 1"
 
 
+def test_global_mask_ac_fast_decompression_uses_row_streams(monkeypatch):
+    probs_by_prompt = {
+        (0,): np.array([0.1, 0.7, 0.1, 0.1], dtype=np.float64),
+        (2,): np.array([0.1, 0.1, 0.1, 0.7], dtype=np.float64),
+        (0, 1): np.array([0.1, 0.1, 0.7, 0.1], dtype=np.float64),
+        (2, 3): np.array([0.1, 0.7, 0.1, 0.1], dtype=np.float64),
+    }
+
+    class FakeTokenPredictor:
+        tokens_list = [0, 1, 2, 3]
+
+        def __init__(self, args, bitmap_data=None):
+            self.args = args
+            self.bitmap_data = bitmap_data
+
+        def run_batched_inference(self, prompts, enable_kv_cache=True):
+            probs = [probs_by_prompt[tuple(prompt)] for prompt in prompts]
+            return (
+                self.tokens_list,
+                torch.tensor(np.stack(probs), dtype=torch.float32),
+                0.0,
+                0.0,
+            )
+
+        def get_token_by_id(self, token_idx):
+            return self.tokens_list[token_idx]
+
+        def detokenize(self, tokens):
+            return " ".join(str(token) for token in tokens)
+
+    monkeypatch.setattr(
+        "src.global_mask_compressor.get_token_predictor",
+        lambda args, bitmap_data=None: FakeTokenPredictor(args, bitmap_data),
+    )
+
+    compressor = FastACCompressor(stream_count=2)
+    compressor.encode_batch(
+        [0, 1],
+        [1, 3],
+        torch.tensor(np.stack([probs_by_prompt[(0,)], probs_by_prompt[(2,)]]), dtype=torch.float32),
+    )
+    compressor.encode_batch(
+        [0, 1],
+        [2, 1],
+        torch.tensor(np.stack([probs_by_prompt[(0, 1)], probs_by_prompt[(2, 3)]]), dtype=torch.float32),
+    )
+
+    args = SimpleNamespace(
+        model_name="fake",
+        engine="transformer",
+        reduce_tokens=True,
+        encoding="AC_FAST",
+        is_seq2seq=False,
+        is_mamba=False,
+        lora_path=None,
+        spec_k=None,
+        first_n_tokens=6,
+        batch_size=2,
+        context_length=128,
+        retain_tokens=64,
+        use_kv_cache=False,
+    )
+
+    reconstructed_tokens, detoken_string, _ = run_global_mask_decompression(
+        args=args,
+        first_tokens=[0, 2],
+        bit_string=compressor.finish(),
+        bitmap=None,
+    )
+
+    assert reconstructed_tokens == [0, 1, 2, 2, 3, 1]
+    assert detoken_string == "0 1 2 2 3 1"
+
+
 @pytest.mark.parametrize("engine", ["transformer", "vllm"])
 def test_global_mask_compression_uses_selected_engine(monkeypatch, engine):
     created_engines = []
@@ -172,7 +247,7 @@ def test_global_mask_compression_uses_selected_engine(monkeypatch, engine):
         lora_path=None,
     )
 
-    first_tokens, bit_string, bitmask_data, stats, returned_args = run_global_mask_compression(args)
+    first_tokens, bit_string, bitmask_data, stats, returned_args, _ = run_global_mask_compression(args)
 
     assert created_engines == [engine]
     assert first_tokens == [0]

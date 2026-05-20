@@ -11,6 +11,7 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - Run batched, one-step LLM inference to predict next-token distributions.
 - Encode each next token via:
   - `AC` (arithmetic coding), or
+  - `AC_FAST` (versioned multi-stream arithmetic coding for higher throughput), or
   - `bitpacked` / `huffman` (rank-based coding).
 
 ## Project layout
@@ -39,6 +40,13 @@ source .venv/bin/activate
 ```
 python main.py \
   --mode compress
+```
+
+Fast arithmetic coding:
+```
+python main.py \
+  --mode compress \
+  --encoding AC_FAST
 ```
 
 Compression using an existing adaptor:
