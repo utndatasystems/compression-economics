@@ -68,37 +68,40 @@ def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
     Turn a probability vector into a cumulative-frequency array for arithmetic coding.
     Ensures every symbol ≥1 and freq.sum() == total.
     """
+    prob_vec = np.asarray(prob_vec, dtype=np.float64)
     alphabet_size = prob_vec.size
+    if alphabet_size == 0:
+        raise ValueError("probability vector must not be empty")
+    if total < alphabet_size:
+        raise ValueError("total must be at least the alphabet size")
 
-    # Step 1: allocate counts proportional to prob_vec
-    freq = (prob_vec * (total - alphabet_size)).astype(np.int64)
+    prob_sum = prob_vec.sum()
+    if prob_sum <= 0:
+        raise ValueError("at least one probability must be positive")
+    prob_vec = prob_vec / prob_sum
 
-    # Step 2: ensure every symbol ≥1
-    freq += 1
+    scaled = prob_vec * (total - alphabet_size)
+    floor_scaled = np.floor(scaled)
+    freq = floor_scaled.astype(np.int64) + 1
+    diff = int(total - freq.sum())
 
-    # Step 3: compute diff and adjust
-    diff = total - freq.sum()
-    if diff != 0:
-        # adjust the symbol with largest probability first
-        # np.argsort(-prob_vec) gives descending probabilities
-        indices = np.argsort(-prob_vec)
-        idx = 0
-        while diff != 0:
-            i = indices[idx % alphabet_size]  # wrap around if needed
-            if diff > 0:
-                freq[i] += 1
-                diff -= 1
-            else:  # diff < 0
-                if freq[i] > 1:
-                    freq[i] -= 1
-                    diff += 1
-            idx += 1
+    if diff > 0:
+        order = np.argsort(-(scaled - floor_scaled))
+        freq[order[:diff]] += 1
+    elif diff < 0:
+        removable = np.where(freq > 1)[0]
+        order = removable[np.argsort(prob_vec[removable])]
+        remaining = -diff
+        for idx in order:
+            take = min(int(freq[idx] - 1), remaining)
+            freq[idx] -= take
+            remaining -= take
+            if remaining == 0:
+                break
 
-    # Safety check
     assert freq.sum() == total, f"freq.sum={freq.sum()} != total={total}"
     assert np.all(freq >= 1)
 
-    # Build cumulative array
     cumul = np.empty(alphabet_size + 1, dtype=np.int64)
     cumul[0] = 0
     cumul[1:] = np.cumsum(freq)

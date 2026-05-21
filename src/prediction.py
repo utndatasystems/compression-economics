@@ -894,6 +894,19 @@ class TokenPredictor:
             if p.requires_grad:
                 trainable_bytes += bytes_
         return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
+
+
+def get_token_predictor(args, bitmap_data):
+    if args.engine == "transformer":
+        return TokenPredictor(args, bitmap_data)
+    if args.engine == "tensorrt":
+        from src.tensorrt_prediction import TensorRTTokenPredictor
+
+        return TensorRTTokenPredictor(args, bitmap_data)
+    raise ValueError(f"Unsupported engine: {args.engine}")
+
+
+create_predictor = get_token_predictor
     
 
 

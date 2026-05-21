@@ -96,6 +96,7 @@ def save_global_mask_file(
         "encoding": getattr(args, "encoding", None),
         "reduce_tokens": getattr(args, "reduce_tokens", None),
         "engine": getattr(args, "engine", None),
+        "tensorrt_engine_dir": getattr(args, "tensorrt_engine_dir", None),
         "lora_path": getattr(args, "lora_path", None),
         "pmatic_delta": getattr(args, "pmatic_delta", None),
         "pmatic_r": getattr(args, "pmatic_r", None),
@@ -158,6 +159,9 @@ def load_global_mask_file(args):
     args.encoding = header.get("encoding", args.encoding)
     args.reduce_tokens = header.get("reduce_tokens", args.reduce_tokens)
     args.engine = header.get("engine", args.engine)
+    args.tensorrt_engine_dir = header.get(
+        "tensorrt_engine_dir", getattr(args, "tensorrt_engine_dir", None)
+    )
     args.lora_path = header.get("lora_path", args.lora_path)
     args.pmatic_delta = header.get("pmatic_delta", getattr(args, "pmatic_delta", None))
     args.pmatic_r = header.get("pmatic_r", getattr(args, "pmatic_r", None))
@@ -195,7 +199,10 @@ def make_key(args):
     The key captures dataset name and core settings so runs can be indexed in a dict.
     """
     filename = os.path.basename(args.input_path)
-    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
+    key = f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
+    if getattr(args, "engine", None) == "tensorrt":
+        key += f"|trt_engine={getattr(args, 'tensorrt_engine_dir', None)}"
+    return key
 
 def create_run_dir(base_dir="results"):
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")

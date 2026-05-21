@@ -66,12 +66,19 @@ def main():
             print(f"  First n tokens   : {args.first_n_tokens}")
             print(f"  Use KV cache     : {args.use_kv_cache}")
             print(f"  Batch size       : {args.batch_size}")
+            print(f"  Engine           : {args.engine}")
+            if args.engine == "tensorrt":
+                print(f"  TensorRT engine  : {args.tensorrt_engine_dir}")
             print(f"  Encoding         : {args.encoding}")
         
             # add parameters to comp_stats for saving in results JSON
-            token_predictor = TokenPredictor(args, bitmap_data=None)
-            base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
-            base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
+            if args.engine == "transformer":
+                token_predictor = TokenPredictor(args, bitmap_data=None)
+                base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
+                base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
+            else:
+                base_params, adapter_params = 0, 0
+                base_size_mb, adapter_size_mb = 0.0, 0.0
             total_params = base_params + adapter_params
             total_size_mb = base_size_mb + adapter_size_mb
 
@@ -156,6 +163,9 @@ def main():
         print(f"  First n tokens   : {args.first_n_tokens}")
         print(f"  Use KV cache     : {args.use_kv_cache}")
         print(f"  Batch size       : {args.batch_size}")
+        print(f"  Engine           : {args.engine}")
+        if args.engine == "tensorrt":
+            print(f"  TensorRT engine  : {args.tensorrt_engine_dir}")
         print(f"  Spec_k           : {args.spec_k}")
 
         print("\n===== Decompress Data =====")
