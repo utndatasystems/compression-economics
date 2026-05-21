@@ -4,6 +4,7 @@ tmp/*
 temp/*
 adapters/*
 quantized_models/*
+trt_engines/*
 experiments/*
 
 logs/*

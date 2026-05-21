@@ -68,6 +68,8 @@ def main():
             print(f"  Batch size       : {args.batch_size}")
             print(f"  vLLM window size : {getattr(args, 'vllm_window_size', 1)}")
             print(f"  Engine           : {args.engine}")
+            if args.engine == "tensorrt":
+                print(f"  TensorRT engine  : {getattr(args, 'tensorrt_engine_dir', None)}")
             print(f"  Encoding         : {args.encoding}")
             if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
                 print(f"  Encoding backend : {getattr(args, 'encode_backend', 'auto')}")
@@ -179,6 +181,8 @@ def main():
         print(f"  Use KV cache     : {args.use_kv_cache}")
         print(f"  Batch size       : {args.batch_size}")
         print(f"  Engine           : {args.engine}")
+        if args.engine == "tensorrt":
+            print(f"  TensorRT engine  : {getattr(args, 'tensorrt_engine_dir', None)}")
         print(f"  Spec_k           : {args.spec_k}")
 
         print("\n===== Decompress Data =====")

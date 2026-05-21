@@ -23,6 +23,9 @@ def get_token_predictor(args, bitmap_data):
     if args.engine == "vllm":
         from src.vllm_prediction import VLLMTokenPredictor
         return VLLMTokenPredictor(args, bitmap_data)
+    if args.engine == "tensorrt":
+        from src.tensorrt_prediction import TensorRTTokenPredictor
+        return TensorRTTokenPredictor(args, bitmap_data)
     raise ValueError(f"Unsupported engine: {args.engine}")
 
 class TokenDataPreparer:

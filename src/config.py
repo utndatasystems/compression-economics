@@ -136,7 +136,8 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
-    parser.add_argument("--engine", type=str, choices=["transformer", "vllm"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--engine", type=str, choices=["transformer", "vllm", "tensorrt"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--tensorrt_engine_dir", type=str, default=None, help="Directory for cached TensorRT-LLM engine artifacts")
     parser.add_argument("--encoding", type=str, choices=["AC", "AC_MULTISTREAM", "AC_TARGET_INTERVAL", "bitpacked", "huffman", "PMATIC"], default="AC", help="Encoding method for compression")
     parser.add_argument("--encode_backend", type=str, choices=["auto", "python", "numba", "numba_threaded", "numba_packed"], default="auto", help="Backend compute engine for arithmetic coding")
     parser.add_argument("--encode_threads", type=int, default=0, help="Worker threads for parallel encoding backends; 0 selects automatically")
@@ -163,6 +164,12 @@ def get_main_args() -> argparse.Namespace:
         if args.use_kv_cache:
             print("⚠️ KV cache disabled for T5 and Mamba models.")
         args.use_kv_cache = False
+
+    if args.engine == "tensorrt" and args.tensorrt_engine_dir is None:
+        safe_model = args.model_name.strip("/").replace("/", "_")
+        args.tensorrt_engine_dir = (
+            f"trt_engines/{safe_model}/ctx{args.context_length}_batch{args.batch_size}"
+        )
     
     return args
 

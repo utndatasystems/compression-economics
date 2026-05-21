@@ -98,6 +98,7 @@ def save_global_mask_file(
         "encoding": getattr(args, "encoding", None),
         "reduce_tokens": getattr(args, "reduce_tokens", None),
         "engine": getattr(args, "engine", None),
+        "tensorrt_engine_dir": getattr(args, "tensorrt_engine_dir", None),
         "lora_path": getattr(args, "lora_path", None),
         "pmatic_delta": getattr(args, "pmatic_delta", None),
         "pmatic_r": getattr(args, "pmatic_r", None),
@@ -221,6 +222,9 @@ def load_global_mask_file(args):
     args.encoding = header.get("encoding", getattr(args, "encoding", None))
     args.reduce_tokens = header.get("reduce_tokens", getattr(args, "reduce_tokens", None))
     args.engine = header.get("engine", getattr(args, "engine", None))
+    args.tensorrt_engine_dir = header.get(
+        "tensorrt_engine_dir", getattr(args, "tensorrt_engine_dir", None)
+    )
     args.lora_path = header.get("lora_path", getattr(args, "lora_path", None))
     args.pmatic_delta = header.get("pmatic_delta", getattr(args, "pmatic_delta", None))
     args.pmatic_r = header.get("pmatic_r", getattr(args, "pmatic_r", None))
@@ -274,6 +278,8 @@ def make_key(args):
     encode_backend = getattr(args, "encode_backend", "auto")
     encode_threads = getattr(args, "encode_threads", 0)
     key = f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}|vllm_window={vllm_window}"
+    if getattr(args, "engine", None) == "tensorrt":
+        key += f"|trt_engine_dir={getattr(args, 'tensorrt_engine_dir', None)}"
     if getattr(args, "encoding", None) in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
         key += f"|encode_backend={encode_backend}|encode_threads={encode_threads}"
         if getattr(args, "pipeline_encoding", True):

@@ -19,6 +19,55 @@ def test_get_main_args_accepts_vllm_engine(monkeypatch):
     assert args.engine == "vllm"
 
 
+def test_get_main_args_accepts_tensorrt_engine(monkeypatch, tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--mode",
+            "compress",
+            "--engine",
+            "tensorrt",
+            "--model_name",
+            "gpt2",
+            "--tensorrt_engine_dir",
+            str(tmp_path / "engine"),
+        ],
+    )
+
+    args = get_main_args()
+
+    assert args.engine == "tensorrt"
+    assert args.tensorrt_engine_dir == str(tmp_path / "engine")
+
+
+def test_get_main_args_sets_default_tensorrt_engine_dir(monkeypatch):
+    repo_root = Path(__file__).resolve().parents[1]
+    monkeypatch.chdir(repo_root)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "prog",
+            "--mode",
+            "compress",
+            "--engine",
+            "tensorrt",
+            "--model_name",
+            "gpt2",
+            "--context_length",
+            "256",
+            "--batch_size",
+            "512",
+        ],
+    )
+
+    args = get_main_args()
+
+    assert args.tensorrt_engine_dir == "trt_engines/gpt2/ctx256_batch512"
+
+
 def test_main_saves_engine_in_compression_results(monkeypatch):
     saved_results = {}
     args = SimpleNamespace(
@@ -36,6 +85,7 @@ def test_main_saves_engine_in_compression_results(monkeypatch):
         batch_size=1,
         reduce_tokens=True,
         engine="vllm",
+        tensorrt_engine_dir=None,
         encoding="AC",
         spec_k=None,
         draft_model_name=None,
