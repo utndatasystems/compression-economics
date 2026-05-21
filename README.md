@@ -34,6 +34,92 @@ cd summer-offsite
 source .venv/bin/activate
 ```
 
+## tensorrt_llm backend
+
+Unfortunately this requires working with prebuilt wheels hence setuptools. You should do the following after setting up your uv envrionment as it probably won't sync correctly for your platform. It is reccomended to use the most recent version of CUDA possible for your system (13+ is best). Please note that GPU's prior to ampere are not supported.
+
+Versions from 1.0.0 to 1.2.0 should work, but you may need to try a few versions to find one that works for your platform and CUDA/TensorRT stack. If you have a compatible version, the following command should install the package without errors:
+
+```
+source .venv/bin/activate
+uv pip install --upgrade pip setuptools
+uv pip install tensorrt_llm
+```
+
+to check if things will work.
+
+```
+from tensorrt_llm.runtime import ModelRunner
+print("TensorRT-LLM runtime import OK")
+```
+
+### Engine requirements
+
+If you want to build your own engine for the same model/tokenizer passed via `--model_name`. The
+engine limits must cover the compression run:
+
+- engine `max_batch_size` >= `--batch_size`
+- engine `max_input_len` >= `--context_length`
+- engine `max_output_len` >= 1
+- generation logits must be enabled when building the engine
+
+For example, if the compression run uses `--batch_size 1024` and
+`--context_length 128`, build the TensorRT-LLM engine with at least those
+capacity limits. Engine plans are generally tied to the GPU architecture,
+TensorRT-LLM version, and CUDA/TensorRT stack used to build them, so rebuild the
+engine if you move to a materially different runtime.
+
+See NVIDIA's current TensorRT-LLM documentation for installation and engine
+build commands:
+
+- https://nvidia.github.io/TensorRT-LLM/latest/installation/index.html
+- https://nvidia.github.io/TensorRT-LLM/latest/commands/trtllm-build.html
+
+### Run compression with tensorrt_llm
+Example using a prebuilt engine:
+
+```
+python main.py \
+  --mode compress \
+  --input_path ./data/text8 \
+  --model_name qwen/qwen2.5-0.5b \
+  --engine tensorrt \
+  --tensorrt_engine_dir trt_engines/qwen_qwen2.5-0.5b/ctx256_batch1024 \
+  --encoding ac \
+  --first_n_tokens 100000 \
+  --batch_size 1024 \
+  --context_length 128 \
+  --force
+```
+
+or with automatic building
+```
+python main.py \
+  --mode compress \
+  --input_path ./data/text8 \
+  --model_name qwen/qwen2.5-0.5b \
+  --engine tensorrt \
+  --encoding ac \
+  --first_n_tokens 100000 \
+  --batch_size 1024 \
+  --context_length 128 \
+  --force \
+```
+
+The tensorrt path ignores `--use_kv_cache`; tensorrt_llm manages runtime caching
+internally. For decompression, the engine path is stored in the compressed file
+header, so the same engine directory must still exist at that path:
+
+```
+python main.py \
+  --mode decompress \
+  --input_path compression_data.bin
+```
+
+If tensorrt_llm is unavailable, the engine directory is missing, or the engine
+was built with insufficient batch/context capacity, startup will fail before the
+compression loop begins.
+
 ## Basic usage
 ### Compression
 ```
@@ -81,7 +167,9 @@ python adapter_training.py \
 - `--batch_size`: Number of parallel sequences per step. Default: 1.
 - `--use_kv_cache`: Enable KV cache for faster incremental inference. Default: enabled.
 - `--reduce_tokens/--no_reduce_tokens`: Toggle global vocabulary reduction. Default: enabled.
-- `--encoding`: `AC`, `bitpacked`, or `huffman`. Default: `AC`.
+- `--engine`: Inference backend, either `transformer` or `tensorrt`. Default: `transformer`.
+- `--tensorrt_engine_dir`: Prebuilt TensorRT-LLM engine directory when using `--engine tensorrt`.
+- `--encoding`: `AC`, `PMATIC`, `bitpacked`, or `huffman`. Default: `AC`.
 - `--print_results`: Print detailed stats to stdout. Default: disabled.
 
 [ToDo: update key options with new training arguments]
