@@ -85,7 +85,7 @@ python main.py \
   --model_name qwen/qwen2.5-0.5b \
   --engine tensorrt \
   --tensorrt_engine_dir trt_engines/qwen_qwen2.5-0.5b/ctx256_batch1024 \
-  --encoding ac \
+  --encoding AC \
   --first_n_tokens 100000 \
   --batch_size 1024 \
   --context_length 128 \
@@ -99,7 +99,7 @@ python main.py \
   --input_path ./data/text8 \
   --model_name qwen/qwen2.5-0.5b \
   --engine tensorrt \
-  --encoding ac \
+  --encoding AC \
   --first_n_tokens 100000 \
   --batch_size 1024 \
   --context_length 128 \
