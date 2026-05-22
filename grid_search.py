@@ -7,8 +7,9 @@ import matplotlib
 
 
 BATCH_SIZES = [4, 16, 64, 128, 256, 512, 1024, 2048]
-CONTEXT_LENGTHS = [128, 256, 512, 1024]
-NUM_TOKENS = 1_000_000
+CONTEXT_LENGTHS = [32, 64, 128, 256, 512, 1024, 2048]
+NUM_TOKENS = 100_000
+GPU = "H200"  # Change to "H200" if you want to plot H200 results
 
 matplotlib.rcParams.update({
     "font.size": 11,
@@ -24,8 +25,10 @@ matplotlib.rcParams.update({
 })
 
 
+file = "compression_results_ADMS_{}.json"
+
 def plot(metric, title, label, figname):
-    with open("compression_results_H100.json") as f:
+    with open(file.format(GPU)) as f:
         results = json.load(f)
 
     rows = []
@@ -57,7 +60,7 @@ def plot(metric, title, label, figname):
     plt.ylabel("Context Window Size")
     plt.title(title)
 
-    os.makedirs("figures", exist_ok=True)
+    os.makedirs("other_files/figures", exist_ok=True)
     plt.tight_layout()
     plt.savefig(
         f"other_files/figures/{figname}.png",
@@ -69,24 +72,25 @@ def plot(metric, title, label, figname):
 
 
 if __name__ == "__main__":
+
     plot(
         lambda stats: float(stats["compression"]["inference_throughput_kibibytes_per_sec"]),
-        "Throughput [KiB/s]",
+        "Throughput [KiB/s] ({})".format(GPU),
         "KiB/s",
-        "inference_throughput_heatmap_H100",
+        "inference_throughput_heatmap_{}".format(GPU),
     )
 
     plot(
         lambda stats: float(stats["compression"]["compression_factor"]),
-        "Compression Factor",
+        "Compression Factor ({})".format(GPU),
         "Factor",
-        "compression_factor_heatmap_H100",
+        "compression_factor_heatmap_{}".format(GPU),
     )
 
     plot(
         lambda stats: float(stats["compression"]["pure_compression_factor"]),
-        "Pure Compression Factor",
+        "Pure Compression Factor ({})".format(GPU),
         "Factor",
-        "pure_compression_factor_heatmap_H100",
+        "pure_compression_factor_heatmap_{}".format(GPU),
     )
     print('Done plotting!')
