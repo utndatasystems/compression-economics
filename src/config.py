@@ -130,7 +130,7 @@ def get_main_args() -> argparse.Namespace:
     parser.set_defaults(use_kv_cache=True)
 
     parser.add_argument("--batch_size", type=int, default=32, help="Batch size for LLM inference")
-    parser.add_argument("--vllm_window_size", type=int, default=1, help="Number of known next tokens to teacher-force per vLLM compression request")
+    parser.add_argument("--vllm_window_size", type=int, default=32, help="Number of known next tokens to teacher-force per vLLM compression request")
     
     # compressiong related
     parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")
