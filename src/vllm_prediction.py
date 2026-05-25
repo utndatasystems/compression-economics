@@ -461,7 +461,11 @@ class VLLMTokenPredictor:
         self._reset_capture_buffer(len(prompts), expected_steps)
 
         sampling_params = []
+        dummy_token = self.tokens_list[0]
         for row_id, target_token_ids in enumerate(target_token_windows):
+            padded_target_ids = list(target_token_ids)
+            if len(padded_target_ids) < expected_steps:
+                padded_target_ids.extend([dummy_token] * (expected_steps - len(padded_target_ids)))
             params = SamplingParams(
                 max_tokens=expected_steps,
                 min_tokens=expected_steps,
@@ -472,7 +476,7 @@ class VLLMTokenPredictor:
                 ignore_eos=True,
                 extra_args={
                     BatchedLogitsCaptureProcessor._ROW_ID_ARG: row_id,
-                    BatchedLogitsCaptureProcessor._TARGET_IDS_ARG: list(target_token_ids),
+                    BatchedLogitsCaptureProcessor._TARGET_IDS_ARG: padded_target_ids,
                 },
             )
             sampling_params.append(params)
@@ -573,7 +577,11 @@ class VLLMTokenPredictor:
         )
 
         sampling_params = []
+        dummy_token = self.tokens_list[0]
         for row_id, target_token_ids in enumerate(target_token_windows):
+            padded_target_ids = list(target_token_ids)
+            if len(padded_target_ids) < expected_steps:
+                padded_target_ids.extend([dummy_token] * (expected_steps - len(padded_target_ids)))
             params = SamplingParams(
                 max_tokens=expected_steps,
                 min_tokens=expected_steps,
@@ -584,7 +592,7 @@ class VLLMTokenPredictor:
                 ignore_eos=True,
                 extra_args={
                     BatchedLogitsCaptureProcessor._ROW_ID_ARG: row_id,
-                    BatchedLogitsCaptureProcessor._TARGET_IDS_ARG: list(target_token_ids),
+                    BatchedLogitsCaptureProcessor._TARGET_IDS_ARG: padded_target_ids,
                 },
             )
             sampling_params.append(params)
