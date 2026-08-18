@@ -95,9 +95,9 @@ def get_adapter_training_args() -> argparse.Namespace:
 
     if args.save_dir is None:
         if args.adapter_type is not None:
-            args.save_dir = f"./adapters/{args.adapter_type}"
+            args.save_dir = f"./artifacts/models/adapters/{args.adapter_type}"
         elif args.mode == "quantize":
-            args.save_dir = "./quantized_models"
+            args.save_dir = "./artifacts/models/quantized"
             args.use_bnb = True
         else:
             raise ValueError("save_dir must be specified if adapter_type is None and mode is not quantize")
@@ -167,7 +167,7 @@ def get_quantize_model_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Quantize a model with optional adapter")
     # path related
     parser.add_argument("--adapter_path", type=str, default=None, help="Path to pre-trained adapter")
-    parser.add_argument("--save_dir", type=str, default="./output", help="Directory to save quantized models")
+    parser.add_argument("--save_dir", type=str, default="./artifacts/models/quantized", help="Directory to save quantized models")
 
     # model related
     parser.add_argument("--model_id", type=str, choices=model_list, required=True, help="Base model ID or path")

@@ -1,0 +1,31 @@
+"""
+CLI entry point for finetuning and quantization of adapter models.
+"""
+
+import os
+import sys
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from src.config import get_adapter_training_args
+from src.adapter_trainer import AdapterTrainer
+
+
+def main():
+    args = get_adapter_training_args()
+    trainer = AdapterTrainer(args)
+    # if exist skip
+    if os.path.exists(os.path.join(trainer.output_path, "adapter_model.safetensors")):
+        print(f"Skipping training for existing path: {trainer.output_path}")
+        return
+    
+    if args.mode == "quantize":
+        trainer.quantize()
+    if args.mode == "finetune":
+        trainer.finetune()
+    
+if __name__ == "__main__":
+    main()

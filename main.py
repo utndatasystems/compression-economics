@@ -4,15 +4,17 @@ CLI entry point for running global-mask compression and decompression experiment
 
 import json
 import os
+from pathlib import Path
 
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression, run_global_mask_speculative_decompression
 from src.config import get_main_args
 from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params, check_mismatch
 from src.prediction import TokenPredictor
 
-RESULTS_FILE = "compression_results.json"
-COMPRESSION_FILE = "compression_data.bin"
-DECOMPRESSION_FILE = "text_results.txt"
+RUN_DIR = Path("artifacts/runs/current")
+RESULTS_FILE = str(RUN_DIR / "compression_results.json")
+COMPRESSION_FILE = str(RUN_DIR / "compression_data.bin")
+DECOMPRESSION_FILE = str(RUN_DIR / "text_results.txt")
 
 def main():
     """
@@ -23,6 +25,7 @@ def main():
     # ========================
 
     args = get_main_args()
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
 
     # Set Hugging Face token as environment variable if provided
     if args.HF_token is not None:

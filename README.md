@@ -14,13 +14,19 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
   - `bitpacked` / `huffman` (rank-based coding).
 
 ## Project layout
-- `main.py`: CLI entry point for compression and decompression.
-- `src/prediction.py`: tokenization, masking, and batched inference.
-- `src/global_mask_compressor.py`: core compression/decompression loops.
-- `src/encoding.py`: various encoding schemes (AC, bitpacked, Huffman).
-- `src/utils.py`: binary IO helpers and experiment result storage.
-- `data/text8`: sample dataset used in experiments.
-- `adaptors`: location of trained LoRa / VeRa adaptors 
+
+- `main.py`: compression and decompression CLI.
+- `src/`: maintained compression, prediction, encoding, and training code.
+- `scripts/`: standalone training, quantization, and data-generation CLIs.
+- `experiments/`: version-controlled sweep definitions and run configurations.
+- `evaluation/`: result loaders, baselines, plots, notebooks, and reference data.
+- `tests/`: automated tests for maintained code.
+- `data/`: local datasets (ignored).
+- `artifacts/`: generated runs, figures, model weights, and logs (ignored).
+- `archive/`: historical prototypes that are not part of the supported workflow.
+
+See `experiments/README.md` and `evaluation/README.md` for the boundary between
+running experiments and analyzing their output.
 
 ## Setup
 1. Clone the repo:
@@ -48,14 +54,14 @@ python main.py \
     --input_path ./data/text8 \
     --first_n_tokens 100000 \
     --batch_size 16 \
-    --lora_path ./adapters/vera/text8/r4_lr0.0005_lsconstant_bs64_ep4_gas2/
+    --lora_path ./artifacts/models/adapters/vera/text8/r4_lr0.0005_lsconstant_bs64_ep4_gas2/
 ```
 
 ### Decompression
 ```
 python main.py \
   --mode decompress \
-  --input_path compression_data.bin
+  --input_path artifacts/runs/current/compression_data.bin
 ```
 
 Decompression reads all required settings from the binary header, so only the
@@ -63,7 +69,7 @@ compressed file path is required.
 
 ### Adaptor Training
 ```
-python adapter_training.py \
+python scripts/train_adapter.py \
     --adapter_type lora \
     --lr 0.0005 \
     --batch_size 64 \
@@ -85,7 +91,50 @@ python adapter_training.py \
 - `--print_results`: Print detailed stats to stdout. Default: disabled.
 
 [ToDo: update key options with new training arguments]
+
 ## Outputs
-- `compression_results.json`: Aggregated metrics keyed by experiment settings.
-- `compression_data.bin`: Binary artifact (header + bitstream + bitmap).
-- `text_results.txt`: Reconstructed text from decompression (default output).
+- `artifacts/runs/current/compression_results.json`: aggregated experiment metrics.
+- `artifacts/runs/current/compression_data.bin`: binary bitstream artifact.
+- `artifacts/runs/current/text_results.txt`: reconstructed text.
+
+## Adversarial worst-case inputs
+
+`scripts/generate_adversarial.py` creates several equal-token-length runs by repeatedly
+selecting the allowed token with the lowest finite next-token logit. Since softmax
+preserves ordering, this is exactly the lowest-probability token without numerical
+underflow from materializing tiny probabilities.
+
+The default variants are the full non-special vocabulary and an occurring-token
+fixed point. The latter repeatedly generates, masks to the tokens that actually
+occurred, and regenerates until the candidate set is stable. Top-k means the k most
+frequent tokens in a supplied reference corpus. Reference processing is capped at
+100,000 tokens by default; change it with --reference-max-tokens.
+
+```bash
+python scripts/generate_adversarial.py \
+  --model-name Qwen/Qwen2.5-0.5B \
+  --start-text "The" \
+  --start-text "A" \
+  --start-text "In" \
+  --total-length 1000 \
+  --candidate-mode full \
+  --candidate-mode occurring
+```
+
+For a frequency-restricted dictionary:
+
+```bash
+python scripts/generate_adversarial.py \
+  --start-text "The" \
+  --start-text "A" \
+  --total-length 1000 \
+  --candidate-mode top-k \
+  --top-k 1000 \
+  --reference-path data/text8
+```
+
+Results are stored below `artifacts/runs/adversarial/<variant>/`. Each run has decoded
+text and an authoritative `.tokens.json` file. The combined `results.json`
+records fixed-point convergence, token IDs, text round-trip status, per-step log
+probabilities, and full-vocabulary versus mask-renormalized surprisal. The fixed
+total length includes the starting token or starting text.
