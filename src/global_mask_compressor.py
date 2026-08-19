@@ -273,7 +273,8 @@ def run_global_mask_compression(args):
 
     # Calculate final size and compression ratio.
     final_size = total_arithmetic_code_size + total_bitmap_size
-    original_size_bytes = len(token_predictor.detokenize(data_tokens))
+    original_text = token_predictor.detokenize(data_tokens)
+    original_size_bytes = len(original_text.encode("utf-8"))
 
     return first_tokens, bit_string, bitmask_data, {
         "args": args.__dict__,

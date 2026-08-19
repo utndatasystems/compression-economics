@@ -197,7 +197,10 @@ def main():
                 print(f"{k}: {v}")
 
         # Save the reconstructed text to a file
-        with open(args.output_path, "w") as f:
+        # Write the tokenizer's decoded text verbatim, including line endings.
+        with open(
+            args.output_path, "w", encoding="utf-8", newline=""
+        ) as f:
             f.write(results)
 
         # Check if decompressed text matches original input (if available)

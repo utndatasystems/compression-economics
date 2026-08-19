@@ -99,16 +99,19 @@ python scripts/train_adapter.py \
 
 ## Adversarial worst-case inputs
 
-`scripts/generate_adversarial.py` creates several equal-token-length runs by repeatedly
-selecting the allowed token with the lowest finite next-token logit. Since softmax
-preserves ordering, this is exactly the lowest-probability token without numerical
-underflow from materializing tiny probabilities.
+`scripts/generate_adversarial.py` creates several equal-token-length worst-case runs
+by repeatedly selecting the full-vocabulary token with the lowest finite next-token
+logit. Since softmax preserves ordering, this is exactly the lowest-probability token
+without numerical underflow from materializing tiny probabilities.
 
-The default variants are the full non-special vocabulary and an occurring-token
-fixed point. The latter repeatedly generates, masks to the tokens that actually
-occurred, and regenerates until the candidate set is stable. Top-k means the k most
-frequent tokens in a supplied reference corpus. Reference processing is capped at
-100,000 tokens by default; change it with --reference-max-tokens.
+The full-vocabulary sequence is generated exactly once. Candidate tokens are checked
+from lowest model probability upward, accepting the first extension for which
+`encode(decode(token_ids)) == token_ids`. This prefix invariant guarantees that the
+completed adversarial token sequence is a lossless, canonical representation of its
+decoded UTF-8 text. For the occurring-token variant, those token IDs are replayed
+unchanged while the logits are masked and renormalized over the tokens occurring in
+the completed sequence. This is a post-hoc rescore: the mask never changes how the
+worst-case sequence is constructed.
 
 ```bash
 python scripts/generate_adversarial.py \
@@ -121,20 +124,83 @@ python scripts/generate_adversarial.py \
   --candidate-mode occurring
 ```
 
-For a frequency-restricted dictionary:
+To construct the lossless expansion stress test, use the canonical one-byte ASCII
+alphabet:
 
 ```bash
 python scripts/generate_adversarial.py \
-  --start-text "The" \
+  --model-name Qwen/Qwen2.5-0.5B \
   --start-text "A" \
   --total-length 1000 \
-  --candidate-mode top-k \
-  --top-k 1000 \
-  --reference-path data/text8
+  --generation-alphabet ascii-bytes \
+  --candidate-mode full \
+  --output-dir artifacts/runs/adversarial/qwen_05b_ascii_bytes_n1000
 ```
+
+For the checked Qwen run, 1,000 raw bytes produce a 1,204.125-byte arithmetic
+payload (120.4%) and a 1,239.125-byte payload-plus-bitmap total (123.9%). The full
+serialized file is 1,552 bytes (155.2%). Arithmetic decoding reproduces all 1,000
+token IDs and source bytes exactly. The 105.3% model-entropy floor already exceeds
+100%, so expansion is not caused solely by fixed file overhead. The gap from 105.3%
+to 120.4% comes mainly from the current integer frequency table: it reserves one
+count for every vocabulary symbol before distributing the remaining precision.
 
 Results are stored below `artifacts/runs/adversarial/<variant>/`. Each run has decoded
 text and an authoritative `.tokens.json` file. The combined `results.json`
-records fixed-point convergence, token IDs, text round-trip status, per-step log
-probabilities, and full-vocabulary versus mask-renormalized surprisal. The fixed
+records the token IDs, text round-trip status, per-step log probabilities, post-hoc
+mask metadata, and full-vocabulary versus mask-renormalized surprisal. The occurring
+result also records that its token IDs came from the full-vocabulary run. The fixed
 total length includes the starting token or starting text.
+
+### Compression-oriented attacks
+
+The minimum-probability attack maximizes one token's surprisal, not the compression
+ratio of the decoded source. `src/compression_attacks.py` implements the corresponding
+byte-level objective,
+
+```text
+surprisal_per_byte(v | prefix)
+    = -log2 p(v | prefix) / added_utf8_bytes(prefix, v).
+```
+
+The byte count is measured by decoding the complete prefix before and after an
+extension. This matters for tokenizers whose standalone token decoding is
+context-dependent. Candidates that add no source bytes are not valid for a
+byte-normalized objective.
+
+`scripts/run_compression_attacks.py` runs a matched experiment containing:
+
+- a seeded uniform random-token control;
+- the original minimum-probability attack;
+- greedy maximum surprisal per decoded byte;
+- beam search over the sequence-level entropy ratio;
+- beam search over the realized arithmetic-code ratio;
+- ordinary text and random printable UTF-8 controls when requested;
+- gzip level 9, Zstandard level 22, and Brotli quality 11 on every exact decoded
+  byte sequence.
+
+```bash
+python scripts/run_compression_attacks.py \
+  --model-name Qwen/Qwen2.5-0.5B \
+  --start-text "A" \
+  --total-length 1000 \
+  --generation-alphabet ascii-bytes \
+  --beam-width 8 \
+  --branch-factor 16 \
+  --ordinary-text data/text8 \
+  --random-utf8-bytes 1000 \
+  --output-dir artifacts/runs/compression-attacks/qwen_05b_n1000
+```
+
+The actual-ratio beam owns an independent clone of the arithmetic coder for each
+branch. A branch is ranked by its finalized payload size divided by decoded UTF-8
+bits. Pass a measured, branch-invariant header plus bitmap cost through
+`--fixed-overhead-bits` to optimize the complete serialized ratio. Keeping this
+overhead explicit avoids pretending that a format-dependent header is intrinsic to
+the model entropy.
+
+Beam search is approximate unless `--branch-factor` covers the entire candidate
+alphabet. It disables the KV cache because pruning changes beam ancestry. The output
+records beam parameters, all token IDs, entropy-floor ratios, realized payload and
+serialized ratios, raw byte sizes, and matched classical-compressor results in one
+`results.json`.

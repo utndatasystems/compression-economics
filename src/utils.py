@@ -85,6 +85,9 @@ def save_global_mask_file(
         bitmask_data (bytes): Serialized bitmap describing allowed vocabulary.
     """
     file_path = args.output_path
+    parent_dir = os.path.dirname(file_path)
+    if parent_dir:
+        os.makedirs(parent_dir, exist_ok=True)
     header = {
         "input_path": os.path.basename(args.input_path),
         "model_name": args.model_name,
@@ -267,10 +270,10 @@ def check_mismatch(input_path = None, output_path = None, first_n_tokens = None,
     if output_path is None:
         output_path = "text_results.txt"
 
-    with open(output_path, "r", encoding="utf-8") as f:
+    with open(output_path, "r", encoding="utf-8", newline="") as f:
         reconstructed = f.read()
 
-    with open(input_path, "r", encoding="utf-8") as f:        
+    with open(input_path, "r", encoding="utf-8", newline="") as f:
         original = f.read()
 
     if first_n_tokens is not None:

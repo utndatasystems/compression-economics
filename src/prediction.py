@@ -51,19 +51,18 @@ class TokenDataPreparer:
         print("Starting tokenization...")
         start_time = time.time()
 
+        self.data_tokens = self.tokenizer.encode(
+            self.data, add_special_tokens=False, truncation=False
+        )
         if args.first_n_tokens is not None:
-            # Reduce the input text to approximately first_n_tokens by splitting on spaces
-            truncated_data = " ".join(self.data.split(" ", self.args.first_n_tokens)[:self.args.first_n_tokens])
-
-            # Tokenize the truncated data with truncation to ensure we don't exceed the token limit.
-            self.data_tokens = self.tokenizer.encode(truncated_data, truncation=True, max_length=self.args.first_n_tokens)
-
-            if len(self.data_tokens) < self.args.first_n_tokens:
+            self.data_tokens = self.data_tokens[:args.first_n_tokens]
+            if len(self.data_tokens) < args.first_n_tokens:
                 self.args.first_n_tokens = len(self.data_tokens)
-                print(f"Reducing first_n_tokens to {self.args.first_n_tokens}, since the input data has fewer tokens.")
-            assert len(self.data_tokens) == self.args.first_n_tokens, f"Tokenization produced {len(self.data_tokens)} tokens, expected {self.args.first_n_tokens}."
-        else:
-            self.data_tokens = self.tokenizer.encode(self.data, truncation=False)
+                print(
+                    "Reducing first_n_tokens to "
+                    f"{self.args.first_n_tokens}, since the input data "
+                    "has fewer tokens."
+                )
         print(f"Tokenization complete in {(time.time() - start_time):.2f}s. Total number of tokens: {len(self.data_tokens)}")
 
         self.reduce_tokens = self.args.reduce_tokens
@@ -120,7 +119,9 @@ class TokenDataPreparer:
                         raise ValueError("Failed to extract file from tar archive")
                     return file_obj.read().decode("utf-8")
         else:
-            with open(input_path, 'r') as f:
+            # Preserve CR, LF, and CRLF exactly. Universal-newline
+            # translation can otherwise change a lossless token sequence.
+            with open(input_path, "r", encoding="utf-8", newline="") as f:
                 return f.read()
         
         

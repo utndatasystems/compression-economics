@@ -4,10 +4,10 @@ import pytest
 import torch
 
 from src.adversarial import (
-    generate_occurring_token_fixed_point,
     generate_worst_case_sequences,
+    rescore_sequences,
+    score_target_tokens,
     select_worst_tokens,
-    top_k_frequent_tokens,
 )
 
 
@@ -20,14 +20,18 @@ class FakePredictor:
     def reset_kv_cache(self):
         self.reset_count += 1
 
-    def run_batched_inference(self, prompts, enable_kv_cache=True):
+    def run_batched_inference(
+        self, prompts, enable_kv_cache=True
+    ):
         self.prompt_lengths.append(len(prompts[0]))
         rows = self.logits.repeat(len(prompts), 1)
         return list(range(len(self.logits))), rows, 0.0, 0.0
 
 
 def test_select_worst_tokens_respects_each_mask():
-    logits = torch.tensor([[3.0, -2.0, 0.0], [-5.0, 4.0, 2.0]])
+    logits = torch.tensor(
+        [[3.0, -2.0, 0.0], [-5.0, 4.0, 2.0]]
+    )
     tokens, model_logs, masked_logs = select_worst_tokens(
         logits, [[0, 1, 2], [1, 2]]
     )
@@ -40,9 +44,56 @@ def test_select_worst_tokens_respects_each_mask():
     )
 
 
-def test_top_k_frequent_tokens_has_deterministic_ties():
-    assert top_k_frequent_tokens([4, 2, 4, 3, 2, 1], 2) == [2, 4]
-    assert top_k_frequent_tokens([3, 2, 1], 2) == [1, 2]
+
+def test_select_worst_tokens_skips_candidates_rejected_by_validator():
+    logits = torch.tensor([[2.0, -4.0, -2.0, 1.0]])
+    checked = []
+
+    def validator(row_index, prefix, candidate):
+        checked.append((row_index, list(prefix), candidate))
+        return candidate != 1
+
+    tokens, model_logs, masked_logs = select_worst_tokens(
+        logits,
+        [[0, 1, 2, 3]],
+        prefixes=[[0]],
+        candidate_validator=validator,
+    )
+
+    assert tokens == [2]
+    assert [item[2] for item in checked] == [1, 2]
+    assert model_logs[0] == pytest.approx(
+        torch.log_softmax(logits[0], dim=0)[2].item()
+    )
+    assert masked_logs[0] == pytest.approx(model_logs[0])
+
+
+def test_validated_selection_requires_prefixes():
+    with pytest.raises(ValueError, match="One prefix"):
+        select_worst_tokens(
+            torch.tensor([[0.0, 1.0]]),
+            [[0, 1]],
+            candidate_validator=lambda *_: True,
+        )
+
+def test_score_target_tokens_uses_fixed_targets():
+    logits = torch.tensor(
+        [[3.0, -2.0, 0.0], [-5.0, 4.0, 2.0]]
+    )
+    model_logs, masked_logs = score_target_tokens(
+        logits,
+        target_token_ids=[0, 1],
+        candidate_sets=[[0, 2], [1, 2]],
+    )
+    assert model_logs[0] == pytest.approx(
+        torch.log_softmax(logits[0], dim=0)[0].item()
+    )
+    assert masked_logs[0] == pytest.approx(
+        torch.log_softmax(logits[0, [0, 2]], dim=0)[0].item()
+    )
+    assert masked_logs[1] == pytest.approx(
+        torch.log_softmax(logits[1, [1, 2]], dim=0)[0].item()
+    )
 
 
 def test_generation_has_equal_lengths_and_uses_worst_token():
@@ -55,7 +106,10 @@ def test_generation_has_equal_lengths_and_uses_worst_token():
         context_length=4,
         retain_tokens=2,
     )
-    assert result.token_ids == [[0, 1, 1, 1, 1], [2, 2, 2, 2, 2]]
+    assert result.token_ids == [
+        [0, 1, 1, 1, 1],
+        [2, 2, 2, 2, 2],
+    ]
     assert all(len(tokens) == 5 for tokens in result.token_ids)
     assert predictor.reset_count == 1
     assert predictor.prompt_lengths == [1, 2, 3, 2]
@@ -66,22 +120,55 @@ def test_generation_has_equal_lengths_and_uses_worst_token():
     )
 
 
-def test_occurring_mask_converges_to_generated_token_set():
+def test_occurring_rescore_keeps_full_generation_fixed():
     predictor = FakePredictor([2.0, -3.0, 0.0])
-    fixed_point = generate_occurring_token_fixed_point(
+    full = generate_worst_case_sequences(
         predictor,
         [[0], [2]],
-        total_length=4,
-        initial_candidates=[0, 1, 2],
-        context_length=10,
-        retain_tokens=5,
-        max_passes=5,
+        total_length=5,
+        candidate_sets=[[0, 1, 2], [0, 1, 2]],
+        context_length=4,
+        retain_tokens=2,
     )
-    assert fixed_point.converged is True
-    assert fixed_point.passes == 2
-    assert fixed_point.candidate_size_history == [[3, 3], [2, 2], [2, 2]]
-    for tokens, final_size in zip(
-        fixed_point.generation.token_ids,
-        fixed_point.candidate_size_history[-1],
+    candidates = [
+        sorted(set(tokens)) for tokens in full.token_ids
+    ]
+    occurring = rescore_sequences(
+        predictor,
+        full.token_ids,
+        start_length=1,
+        candidate_sets=candidates,
+        context_length=4,
+        retain_tokens=2,
+    )
+
+    assert occurring.token_ids == full.token_ids
+    assert occurring.candidate_sizes == [2, 2]
+    for rescored, original in zip(
+        occurring.model_log_probabilities,
+        full.model_log_probabilities,
     ):
-        assert len(set(tokens)) == final_size
+        assert rescored == pytest.approx(original)
+    assert any(
+        masked != pytest.approx(model)
+        for masked_row, model_row in zip(
+            occurring.masked_log_probabilities,
+            occurring.model_log_probabilities,
+        )
+        for masked, model in zip(masked_row, model_row)
+    )
+
+
+def test_rescore_rejects_target_outside_post_hoc_mask():
+    predictor = FakePredictor([2.0, -3.0, 0.0])
+    with pytest.raises(
+        ValueError, match="outside its candidate set"
+    ):
+        rescore_sequences(
+            predictor,
+            sequences=[[0, 2]],
+            start_length=1,
+            candidate_sets=[[0, 1]],
+            context_length=4,
+            retain_tokens=2,
+        )
