@@ -1,0 +1,530 @@
+\documentclass{article}
+
+% Four-page, double-blind ML-for-Systems workshop extended abstract.
+
+\usepackage[dblblindworkshop]{neurips_2026}
+
+\workshoptitle{ML for Systems Workshop}
+
+\usepackage[utf8]{inputenc}
+
+\usepackage[T1]{fontenc}
+
+\usepackage{hyperref}
+
+\usepackage{url}
+
+\usepackage{booktabs}
+
+\usepackage{graphicx}
+
+\usepackage{amsmath}
+
+\usepackage{amsfonts}
+
+\usepackage{microtype}
+
+\usepackage{xcolor}
+
+% This is a planning document that compiles in the conference template. Replace
+
+% blue text as evidence becomes available; do not submit with blueprint notes.
+
+\definecolor{blueprint}{RGB}{25,82,145}
+
+\newcommand{\todo}[1]{\textcolor{blueprint}{[TODO: #1]}}
+
+\newcommand{\pilot}[1]{\textcolor{blueprint}{[PILOT: #1]}}
+
+\newcommand{\bytes}[1]{\lvert #1\rvert\_{\mathrm{UTF8}}}
+
+\title{When Worst-Case Prediction Still Compresses: Tokenization and Adversarial Robustness in LLM-Based Lossless Compression}
+
+% Keep the submission anonymous. Add authors only in the camera-ready version.
+
+\author{Anonymous Authors}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+
+LLM token tables can act as global string compressors: variable-length byte
+
+sequences become fixed-width token IDs that support fast decoding and execution
+
+on encoded data. Predictive LLM compression adds a second layer, entropy-coding
+
+those IDs with next-token probabilities. We show that robustness depends on the
+
+product of both layers---tokens per source byte and coded bits per token---and
+
+cannot be inferred from either token-table compression ratio or perplexity alone.
+
+We construct canonical adversarial sequences and separately attribute
+
+tokenization gain, model surprise, arithmetic-coder loss, dictionary transfer,
+
+and framing. For Qwen2.5-0.5B, full-vocabulary adversarial sequences cost 5.73
+
+times more bits/token than matched text8, but tokenization absorbs enough of that
+
+cost to retain a 51.3\\% ideal byte rate. When restricted to one-byte tokens,
+
+however, the same predictive layer expands data to a 143.4\\% arithmetic payload.
+
+Post-hoc vocabulary masking reduces adversarial model cost by 35.2\\%. These
+
+results identify tokenizer fertility as a robustness boundary and motivate
+
+co-designing token tables, predictive coders, and guarded fallback paths.
+
+\end{abstract}
+
+% -----------------------------------------------------------------------------
+
+% BLUEPRINT AT A GLANCE (delete before submission)
+
+% Target: at most four content pages, including figures and tables. Suggested
+
+% budget: motivation 0.75; formulation and attacks 1.0; evaluation 0.75; results
+
+% 0.9; systems implications, limitations, and conclusion 0.6. Do not assume
+
+% references or supplementary material are excluded from the organizers four-page
+
+% limit; confirm their counting rule before submission.
+
+%
+
+% One-sentence thesis:
+
+% Tokenization is a variable-rate front end to predictive coding, so robust
+
+% evaluation must optimize and report code length per decoded source byte, not
+
+% merely next-token surprisal.
+
+%
+
+% Claim discipline:
+
+% (C1) Formal: token surprisal and source-normalized compression ratio are
+
+%      different objectives whenever decoded token lengths vary.
+
+% (C2) Method: canonical, byte-aware greedy and beam attacks directly optimize
+
+%      entropy-floor or realized arithmetic-code expansion.
+
+% (C3) Empirical: use only after the full multi-model/seed matrix supports it.
+
+%      The current repository establishes a Qwen2.5-0.5B case study, not broad
+
+%      tokenizer or model universality.
+
+% -----------------------------------------------------------------------------
+
+\section{What is doing the compression?}
+
+\`\`Language Modeling Is Compression'' formalizes how next-symbol probabilities
+
+can drive a lossless arithmetic coder and describes tokenization itself as
+
+lossless pre-compression\~\citep{deletang2024language}. This observation implies
+
+that so-called LLM compression combines two distinct mechanisms: a tokenizer
+
+replaces variable-length source strings with token IDs, and a language model
+
+predicts those IDs so that an entropy coder can shorten likely ones. LLMZip is
+
+another instance of this composed design\~\citep{valmeekam2023llmzip}.
+
+Schmidt et al.\~\citep{schmidt2026token} isolate the first mechanism. They use an
+
+LLM vocabulary as a global symbol table in which common byte strings map to
+
+fixed-width IDs and one-byte entries guarantee coverage. Unlike a block-local
+
+code, this stable representation supports equality checks, hashing, joins, and
+
+aggregations before decoding. These properties make token tables particularly
+
+attractive for databases, where strings can remain encoded during common
+
+relational operations and be decoded only when needed. Thus tokenization can be
+
+a useful compression primitive without language-model inference.
+
+What remains unclear is how much of an LLM codec's behavior comes from this
+
+token representation and how much comes from prediction. Delétang et al. compare
+
+ASCII and BPE on natural enwik9, but the two effects have not been isolated under
+
+inputs chosen against realized end-to-end size. This matters because prediction
+
+loss is measured per token while compression is measured per source byte: a poor
+
+probability model may still sit inside a pipeline that compresses when its tokens
+
+represent many bytes, whereas low-fertility tokenization can expose expansion.
+
+We therefore study the tokenizer--predictor--coder pipeline as a two-layer system.
+
+\paragraph{Contributions.}
+
+We (i) factor end-to-end rate into tokenizer fertility and predictive coding
+
+cost; (ii) construct lossless attacks against token-, byte-, and realized-code
+
+objectives; and (iii) use matched natural and adversarial inputs to show when the
+
+token layer absorbs predictive surprise and when it exposes expansion.
+
+\paragraph{Scope.}
+
+We hold one pretrained tokenizer/model fixed and vary canonical inputs
+
+adversarially. Our evidence is a Qwen2.5-0.5B case study and does not contradict
+
+the token-table paper's corpus-level results.
+
+\section{Compression objectives and attacks}
+\label{sec:attacks}
+
+Our central distinction is between prediction difficulty and end-to-end compression
+failure. A token can be extremely unlikely under the language model while decoding
+to many source bytes, so maximizing token surprisal need not maximize compressed
+size per input byte. We therefore evaluate three increasingly end-to-end attack
+objectives side by side.
+
+Let $h$ denote the current token history and let $v$ be a candidate next token. The
+first objective ignores token length and selects the least probable valid extension:
+\begin{equation}
+  \operatorname{MinProb}(v;h)=-\log_2 p_\theta(v\mid h).
+  \label{eq:minprob}
+\end{equation}
+This is the conventional token-level worst case. It maximizes ideal coded bits per
+token, but not necessarily bits per source byte.
+
+To account for variable-length tokenization, define the incremental decoded byte
+length
+\begin{equation}
+  \Delta b(v;h)=
+  \bytes{\operatorname{decode}(h\mathbin\Vert v)}-
+  \bytes{\operatorname{decode}(h)}.
+\end{equation}
+The byte-aware greedy objective is
+\begin{equation}
+  \operatorname{SurprisalPerByte}(v;h)=
+  \frac{-\log_2 p_\theta(v\mid h)}{\Delta b(v;h)}.
+  \label{eq:spb}
+\end{equation}
+It directly targets the ideal entropy-coding cost per newly decoded source byte.
+
+Finally, for a complete canonical token sequence $x$, let
+$\operatorname{SerializeCodec}(x)$ denote the actual serialized codec output. The
+end-to-end objective is
+\begin{equation}
+  \operatorname{ActualRate}(x)=
+  \frac{\left|\operatorname{SerializeCodec}(x)\right|}
+       {8\bytes{\operatorname{decode}(x)}}.
+  \label{eq:actualrate}
+\end{equation}
+A realized-size beam search approximately maximizes Eq.~\ref{eq:actualrate} by
+cloning coder state for candidate continuations. This objective captures arithmetic
+coding and serialization effects that ideal NLL does not.
+
+\subsection{Why the objectives differ}
+For a sequence of $N$ tokens decoding to $U$ source bytes, define fertility
+$f(x)=U/N$. If
+\begin{equation}
+  L(x)=-\sum_{t=2}^{N}\log_2 p_\theta(x_t\mid x_{<t})
+\end{equation}
+is the sequence NLL, then the ideal predictive rate is
+\begin{equation}
+  R_{\rm ideal}(x)=\frac{L(x)}{8U}
+  \approx
+  \underbrace{\frac{L(x)}{N}}_{\text{bits/token}}
+  \underbrace{\frac{N}{U}}_{\text{tokens/byte}}
+  \frac{1}{8}.
+  \label{eq:factorization}
+\end{equation}
+Thus high bits/token can be offset by high bytes/token. This is the robustness
+mechanism we test: tokenization can buffer severe prediction failure when
+adversarial tokens represent many source bytes.
+
+\subsection{Threat model and generation policies}
+The adversary is white-box and has access to the tokenizer, model logits, and coding
+algorithm. It chooses a length-$N$ token sequence after a fixed seed, subject to a
+candidate alphabet $G$. Because arbitrary token IDs need not survive decoding and
+retokenization, every accepted prefix must satisfy
+\begin{equation}
+  T(\operatorname{decode}(x_{1:t}))=x_{1:t}.
+  \label{eq:canonical}
+\end{equation}
+Final decoding must recover exactly the same IDs and bytes.
+
+We compare five generation policies. \emph{Natural text} is the non-adversarial
+corpus baseline. \emph{Random canonical} uniformly samples valid canonical
+extensions and controls for unusual token sequences without optimizing against the
+model. \emph{Minimum probability} greedily maximizes Eq.~\ref{eq:minprob}.
+\emph{Maximum surprisal/byte} greedily maximizes Eq.~\ref{eq:spb}.
+\emph{Realized-size beam} searches over multiple canonical continuations to
+approximately maximize Eq.~\ref{eq:actualrate}.
+
+The \emph{one-byte constraint} is not a separate attack objective. It is an ablation
+of the candidate alphabet in which $G$ contains only canonical tokens contributing
+one decoded byte. This fixes fertility near one byte/token and removes the
+multi-byte-token buffering mechanism. Under an exact one-byte constraint,
+MinProb and SurprisalPerByte induce the same greedy ranking.
+
+\paragraph{Global mask.}
+When evaluating occurring-token dictionaries, we construct each adversarial
+sequence once under the full distribution and replay identical IDs and histories
+under the post-hoc occurring-token mask. This isolates probability renormalization;
+it is not a mask-adaptive attack.
+
+\section{Experimental design}
+\label{sec:design}
+
+\paragraph{Model and codec.}
+We evaluate Qwen2.5-0.5B with its 151,643-token vocabulary. The natural-text control
+uses the first 100,000 text8 tokens with context length 1,000, retained context 100,
+KV caching, and arithmetic coding. It uses 16 independently seeded batches, so
+99,984 tokens are predicted. Model weights are treated as shared decoder state.
+
+\paragraph{Adversarial runs.}
+The existing full-vocabulary experiment contains three 1,000-token minimum-
+probability sequences initialized with token IDs 785, 32, and 641. All completed
+sequences satisfy Eq.~\ref{eq:canonical} and decode to 6,988, 6,812, and 6,943 UTF-8
+bytes. Their post-hoc occurring-token dictionaries contain 592, 606, and 587 tokens.
+We report adversarial means with sample standard deviation across the three starts.
+The matched text8 run is deterministic for each dictionary policy and therefore has
+no error bar.
+
+The decisive evaluation runs the generation policies side by side under the same
+sequence-length, seed, canonicality, context, and codec settings. This controls the
+search objective while keeping the compression pipeline fixed. The one-byte
+experiment repeats the relevant attacks with the restricted candidate alphabet to
+isolate the contribution of token fertility.
+
+\paragraph{Reported quantities.}
+For every input or attack we report the same decomposition:
+\begin{align}
+  \text{Bits/token} &= \frac{L(x)}{N_{\rm pred}},\\
+  \text{Bytes/token} &= \frac{\bytes{\operatorname{decode}(x)}}{N},\\
+  \text{Ideal bits/byte} &= \frac{L(x)}{\bytes{\operatorname{decode}(x)}},\\
+  \text{Actual bits/byte} &=
+  \frac{\left|\operatorname{SerializeCodec}(x)\right|}
+       {\bytes{\operatorname{decode}(x)}},\\
+  \text{Final ratio} &= \frac{\text{Actual bits/byte}}{8}.
+\end{align}
+A final ratio below one denotes compression relative to raw UTF-8; a value above
+one denotes expansion. Where a realized codec run has not yet been measured, we
+report ``--'' rather than substituting an ideal rate.
+
+\begin{table*}[t]
+  \centering
+  \small
+  \caption{Side-by-side attack evaluation. Bits/token measures model prediction
+  difficulty; bytes/token measures tokenizer fertility; ideal bits/byte combines
+  the two; actual bits/byte includes the realized codec; and the final ratio is
+  actual size divided by the original 8-bit UTF-8 size. The one-byte row is a
+  constrained-alphabet ablation rather than a distinct objective.}
+  \label{tab:decisive}
+  \begin{tabular}{@{}lrrrrr@{}}
+    \toprule
+    Attack / input & Bits/token & Bytes/token & Ideal bits/byte & Actual bits/byte & Final ratio \\
+    \midrule
+    Natural text & 4.954 & \todo{measure} & \todo{derive} & \todo{measure} & 0.14405 \\
+    Random canonical & \todo{run} & \todo{run} & \todo{run} & \todo{run} & \todo{run} \\
+    Minimum probability & $28.409\pm0.077$ & 6.914 & 4.108 & \todo{run} & \todo{run} \\
+    Maximum surprisal/byte & \todo{run} & \todo{run} & \todo{run} & \todo{run} & \todo{run} \\
+    Realized-size beam & \todo{run} & \todo{run} & \todo{run} & \todo{run} & \todo{run} \\
+    \midrule
+    One-byte constrained & \todo{report matched attack} & 1.000 & \todo{report} & \todo{report} & \todo{report} \\
+    \bottomrule
+  \end{tabular}
+\end{table*}
+
+\section{Results}
+\label{sec:results}
+
+\paragraph{Prediction failure does not imply compression failure.}
+The existing minimum-probability full-vocabulary attack reaches
+$28.409\pm0.077$ ideal bits per predicted token, $5.734\times$ the matched text8
+value of 4.954 bits/token. Because a fixed ID for the 151,643-token vocabulary
+requires 18 bits, prediction makes this adversarial token stream substantially more
+expensive than fixed-width IDs. Yet the sequences decode to an average 6.914 source
+bytes/token. Dividing model cost by this fertility gives approximately 4.108 ideal
+bits/source byte, or 51.346\% of raw UTF-8. The model therefore fails badly at the
+token level while the composed tokenizer--predictor system still has an ideal
+compression rate below one.
+
+\paragraph{Byte-aware attacks test the relevant compression objective.}
+Minimum probability optimizes only the numerator of Eq.~\ref{eq:factorization}.
+Maximum surprisal/byte additionally penalizes tokens that obtain high surprisal only
+by representing many bytes, while realized-size beam targets the serialized output
+itself. Table~\ref{tab:decisive} is therefore the primary comparison: it determines
+whether progressively more end-to-end objectives increase ideal or realized
+bits/source byte. The corresponding full-vocabulary SurprisalPerByte and realized-
+size beam measurements are required before making a claim that MinProb is the
+strongest compression attack.
+
+\paragraph{Removing tokenization gain exposes predictive expansion.}
+The existing one-byte-ASCII ablation fixes fertility at one byte/token. In this
+setting greedy minimum probability and surprisal-per-byte coincide. The measured
+model floor is 135.48\% of raw bytes and the arithmetic payload is 143.36\%; an NLL
+beam reaches 136.70\% ideal and 144.14\% arithmetic payload. Thus the predictive
+layer cannot beat the original 8-bit bytes once the tokenizer is prevented from
+absorbing model surprise through multi-byte tokens. The narrow 32-token beam
+validates this mechanism and the accounting, not global optimality.
+
+\paragraph{Dictionary masking changes prediction cost, not the attack sequence.}
+Post-hoc occurring-token dictionaries contain 592, 606, and 587 symbols for the
+three existing adversarial sequences. Replaying identical IDs and histories under
+these masks lowers adversarial cost from $28.409\pm0.077$ to
+$18.402\pm0.833$ bits/token, a 35.2\% reduction, and lowers the byte-normalized
+ideal rate from 51.346\% to 33.284\%. It remains $3.806\times$ the matched masked-
+text8 cost of 4.835 bits/token. Because generation is unchanged, this experiment
+isolates renormalization rather than adaptive robustness.
+
+\paragraph{Realized overhead must be reported separately from the ideal floor.}
+For text8, model-induced floors are 11.631\% of raw UTF-8 with the full vocabulary
+and 11.352\% with occurring tokens. Finite coding and metadata raise realized totals
+to 14.405\% and 13.434\%, corresponding to $6.942\times$ and $7.444\times$
+compression. The occurring-token bitmap costs 10,818 bytes (2.03\% of raw size),
+less than its coding gain at 100,000 tokens. These gaps motivate keeping ideal and
+actual columns separate in Table~\ref{tab:decisive}.
+
+\section{Systems implications and limitations}
+
+\label{sec\:limitations}
+
+The systems lesson is to preserve token IDs as the global, queryable in-memory
+
+representation and treat predictive arithmetic coding as an optional block-level
+
+storage or transport layer. Source-normalized accounting identifies whether
+
+fragility comes from the tokenizer, predictor, quantizer, dictionary, or
+
+container. For untrusted blocks, a guard can store the smaller of predictive and
+
+conventional encodings plus a selector bit, bounding size by the fallback plus one
+
+bit; its decoding granularity, latency, and throughput remain to be measured.
+
+Our evidence is limited to one model, synthetic white-box inputs, three starts,
+
+finite context, approximate search, and one coder/container. It does not establish
+
+global worst cases or generalize to multilingual text or code. The attack could
+
+enable storage or compute amplification; practical mitigations include size caps,
+
+early-abort expansion detection, bounded inference, and fallback codecs.
+
+\section{Conclusion}
+
+Robust learned compression is an end-to-end systems problem. Canonical byte-aware attacks and explicit cost attribution show that the tested
+
+adversarial sequences are 3.81--5.73 times harder than matched text8, while
+
+guarded fallback offers a principled path from diagnosis to robust operation.
+
+\begin{ack}
+
+\todo{Camera-ready only: funding and competing-interest disclosures. The supplied
+
+style hides this environment in anonymous submission mode.}
+
+\end{ack}
+
+{\small
+
+\begin{thebibliography}{5}
+
+\bibitem[Delétang et al.(2024)]{deletang2024language}
+
+Grégoire Delétang, Anian Ruoss, Paul-Ambroise Duquenne, Elliot Catt, Tim
+
+Genewein, Christopher Mattern, Jordi Grau-Moya, Li Kevin Wenliang, Matthew
+
+Aitchison, Laurent Orseau, Marcus Hutter, and Joel Veness.
+
+\newblock Language modeling is compression.
+
+\newblock In \emph{*ICLR*}, 2024.
+
+\bibitem[Schmidt et al.(2026)]{schmidt2026token}
+
+Tobias Schmidt, Nicolas Schmitt, Thomas Neumann, and Andreas Kipf.
+
+\newblock Accelerating string-heavy queries with LLM token tables.
+
+\newblock Manuscript, 2026.
+
+\bibitem[Shannon(1948)]{shannon1948}
+
+Claude E. Shannon.
+
+\newblock A mathematical theory of communication.
+
+\newblock \emph{*Bell System Technical Journal*}, 27:379--423, 623--656, 1948.
+
+\bibitem[Valmeekam et al.(2023)]{valmeekam2023llmzip}
+
+Chandra S. K. Valmeekam, Krishna Narayanan, Dileep Kalathil,
+
+Jean-François Chamberland, and Srinivas Shakkottai.
+
+\newblock LLMZip: Lossless text compression using large language models.
+
+\newblock arXiv:2306.04050, 2023.
+
+\bibitem[Witten et al.(1987)]{witten1987}
+
+Ian H. Witten, Radford M. Neal, and John G. Cleary.
+
+\newblock Arithmetic coding for data compression.
+
+\newblock \emph{*Communications of the ACM*}, 30(6):520--540, 1987.
+
+\end{thebibliography}
+
+}
+
+% Supplementary planning notes (do not count toward the four-page narrative):
+
+% - Prove the token/byte objective mismatch and give attack pseudocode.
+
+% - Record configurations, revisions, commands, seeds, hardware, compute, and
+
+%   licenses; report full per-run tables and search-budget ablations.
+
+% - Document exact seed-token, quantization, bitmap, payload, and header costs.
+
+% - Repository map: src/adversarial.py; src/compression\_attacks.py;
+
+%   scripts/run\_compression\_attacks.py; evaluation/notebooks/neurips/
+
+%   adversarial\_worst\_case.ipynb; and artifacts/runs/adversarial/
+
+%   qwen\_05b\_ascii\_bytes\_n1000.
+
+% - Confirm whether references and the NeurIPS checklist are outside the
+
+%   organizers four-page limit. Keep the checklist unless organizers explicitly
+
+%   say their workshop does not require it.
+
+\newpage
+
+\input{checklist.tex}
+
+\end{document}
