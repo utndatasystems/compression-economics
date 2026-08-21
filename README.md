@@ -204,3 +204,40 @@ alphabet. It disables the KV cache because pruning changes beam ancestry. The ou
 records beam parameters, all token IDs, entropy-floor ratios, realized payload and
 serialized ratios, raw byte sizes, and matched classical-compressor results in one
 `results.json`.
+
+### Resumable paper evaluation
+
+The paper suite separates scalable long-sequence experiments from expensive beam
+search. Its default long length is 10,000 tokens: large enough to move beyond the
+1,000-token pilot without committing to the slow 100,000-token run. Beam search
+defaults to 512 tokens because it keeps multiple model and arithmetic-coder states
+per step.
+
+```bash
+# Full suite: long runs followed by bounded beam searches.
+bash experiments/sweeps/paper_evaluation.sh all
+
+# Run only the long greedy/replay experiments.
+bash experiments/sweeps/paper_evaluation.sh core
+
+# Override either budget independently.
+PAPER_LENGTH=20000 PAPER_SEARCH_LENGTH=1000 \
+  bash experiments/sweeps/paper_evaluation.sh all
+```
+
+The long suite includes the full, printable-ASCII, and canonical one-byte ASCII
+alphabets, three starts, matched text8/random controls, and both full-vocabulary
+and occurring-token arithmetic payloads. The attack runner writes an atomic
+checkpoint after every completed condition; the payload scorer checkpoints after
+every sequence and dictionary policy, while adversarial generation checkpoints
+every 250 tokens. Re-running the same command skips or resumes completed work.
+Configuration mismatches fail rather than silently combining incompatible rows;
+use a new output directory or explicitly pass `--force` to the underlying runner.
+
+To fill only the currently missing arithmetic payloads for an existing generated
+adversarial directory:
+
+```bash
+python scripts/score_adversarial_payloads.py \
+  --input-dir artifacts/runs/adversarial/qwen_05b_n1000
+```

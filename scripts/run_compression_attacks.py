@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import random
 import sys
@@ -85,6 +86,18 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("artifacts/runs/compression-attacks"),
     )
+    parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="Ignore a compatible checkpoint and run every requested condition.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite an existing checkpoint even when its configuration differs.",
+    )
+    parser.set_defaults(resume=True)
     return parser.parse_args()
 
 
@@ -126,6 +139,7 @@ def _run_attack(
             candidate_sets,
             seed=args.random_seed,
             candidate_validator=validator,
+            progress_desc="random-token: generating",
         )
         if any(not token_ids_round_trip(predictor.tokenizer, row) for row in sequences):
             raise RuntimeError(
@@ -138,7 +152,8 @@ def _run_attack(
             candidate_sets=candidate_sets,
             context_length=args.context_length,
             retain_tokens=args.retain_tokens,
-            use_kv_cache=False,
+            use_kv_cache=True,
+            progress_desc="random-token: Qwen scoring",
         )
     if name in {"min-probability", "surprisal-per-byte"}:
         return generate_greedy_sequences(
@@ -151,6 +166,7 @@ def _run_attack(
             objective=AttackObjective(name),
             byte_increment=byte_increment,
             candidate_validator=validator,
+            progress_desc=f"{name}: generating",
         )
 
     objective = (
@@ -175,8 +191,9 @@ def _run_attack(
             branch_factor=args.branch_factor,
             fixed_overhead_bits=args.fixed_overhead_bits,
             candidate_validator=validator,
+            progress_desc=f"{name} run {run_index + 1}/{len(starts)}: searching",
         )
-        for start in starts
+        for run_index, start in enumerate(starts)
     ])
 
 
@@ -195,6 +212,8 @@ def _result_rows(
         ),
         context_length=args.context_length,
         retain_tokens=args.retain_tokens,
+        use_kv_cache=True,
+        progress_desc=f"{name}: AC scoring",
     )
     rows = []
     for run_index, (tokens, model_logs, bits) in enumerate(zip(
@@ -242,6 +261,7 @@ def _score_text_control(
         start_length=1,
         context_length=args.context_length,
         retain_tokens=args.retain_tokens,
+        progress_desc=f"{name}: Qwen scoring",
     )
     return _result_rows(name, generation, predictor, args)
 
@@ -263,7 +283,9 @@ def _read_text_prefix(path: Path, tokenizer, token_limit: int) -> str:
 
 def _write_rows(output_dir: Path, rows: list[dict], metadata: dict) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
-    (output_dir / "results.json").write_text(
+    result_path = output_dir / "results.json"
+    temporary_path = output_dir / ".results.json.tmp"
+    temporary_path.write_text(
         json.dumps({"metadata": metadata, "runs": rows}, indent=2),
         encoding="utf-8",
     )
@@ -276,6 +298,62 @@ def _write_rows(output_dir: Path, rows: list[dict], metadata: dict) -> None:
         (output_dir / f"{stem}.tokens.json").write_text(
             json.dumps(row["token_ids"]), encoding="utf-8"
         )
+    os.replace(temporary_path, result_path)
+
+
+_CONFIGURATION_KEYS = (
+    "model_name",
+    "attacks",
+    "total_length",
+    "generation_alphabet",
+    "generation_candidate_size",
+    "beam_width",
+    "branch_factor",
+    "fixed_overhead_bits",
+    "random_seed",
+    "controls",
+)
+
+
+def _load_checkpoint(
+    output_dir: Path,
+    metadata: dict,
+    *,
+    resume: bool,
+    force: bool,
+) -> list[dict]:
+    """Load rows from an exact-compatible checkpoint."""
+    result_path = output_dir / "results.json"
+    if not result_path.exists() or not resume or force:
+        return []
+    payload = json.loads(result_path.read_text(encoding="utf-8"))
+    stored = payload.get("metadata", {})
+    mismatches = {
+        key: (stored.get(key), metadata.get(key))
+        for key in _CONFIGURATION_KEYS
+        if stored.get(key) != metadata.get(key)
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{key}: stored={old!r}, requested={new!r}"
+            for key, (old, new) in mismatches.items()
+        )
+        raise ValueError(
+            f"Incompatible checkpoint at {result_path}: {details}. "
+            "Choose another --output-dir or pass --force."
+        )
+    return list(payload.get("runs", []))
+
+
+def _condition_is_complete(
+    rows: list[dict], condition: str, expected_runs: int
+) -> bool:
+    indices = {
+        row.get("run_index")
+        for row in rows
+        if row.get("condition") == condition
+    }
+    return indices == set(range(expected_runs))
 
 
 def main() -> None:
@@ -298,39 +376,17 @@ def main() -> None:
             tokenizer,
             printable_only=args.generation_alphabet == "printable-ascii",
         )
-    byte_increment = decoded_utf8_increment(tokenizer)
+    byte_increment = (
+        (lambda _prefix, _candidate: 1)
+        if args.generation_alphabet in {"printable-ascii", "ascii-bytes"}
+        else decoded_utf8_increment(tokenizer)
+    )
     validator = make_round_trip_validator(tokenizer)
 
-    rows = []
-    for attack in attacks:
-        print(f"Running {attack}...")
-        generation = _run_attack(
-            attack,
-            predictor,
-            starts,
-            candidates,
-            args,
-            byte_increment,
-            validator,
-        )
-        rows.extend(_result_rows(attack, generation, predictor, args))
-
-    control_names = []
-    for path in args.ordinary_text or []:
-        text = _read_text_prefix(path, tokenizer, args.total_length)
-        name = f"ordinary-{path.stem}"
-        rows.extend(_score_text_control(name, text, predictor, args))
-        control_names.append(name)
-    if args.random_utf8_bytes:
-        rng = random.Random(args.random_seed)
-        text = "".join(
-            chr(rng.randrange(32, 127))
-            for _ in range(args.random_utf8_bytes)
-        )
-        name = "random-printable-utf8"
-        rows.extend(_score_text_control(name, text, predictor, args))
-        control_names.append(name)
-
+    control_names = [
+        *(f"ordinary-{path.stem}" for path in args.ordinary_text or []),
+        *(["random-printable-utf8"] if args.random_utf8_bytes else []),
+    ]
     metadata = {
         "model_name": args.model_name,
         "attacks": attacks,
@@ -346,7 +402,55 @@ def main() -> None:
             "(finalized arithmetic payload bits + fixed overhead bits) / "
             "(8 * decoded UTF-8 bytes)"
         ),
+        "checkpointing": "atomic after each completed condition",
     }
+    rows = _load_checkpoint(
+        args.output_dir,
+        metadata,
+        resume=args.resume,
+        force=args.force,
+    )
+    for attack in attacks:
+        if _condition_is_complete(rows, attack, len(starts)):
+            print(f"Skipping completed condition {attack}.")
+            continue
+        print(f"Running {attack}...")
+        generation = _run_attack(
+            attack,
+            predictor,
+            starts,
+            candidates,
+            args,
+            byte_increment,
+            validator,
+        )
+        rows = [row for row in rows if row.get("condition") != attack]
+        rows.extend(_result_rows(attack, generation, predictor, args))
+        _write_rows(args.output_dir, rows, metadata)
+
+    for path in args.ordinary_text or []:
+        name = f"ordinary-{path.stem}"
+        if _condition_is_complete(rows, name, 1):
+            print(f"Skipping completed condition {name}.")
+            continue
+        text = _read_text_prefix(path, tokenizer, args.total_length)
+        rows = [row for row in rows if row.get("condition") != name]
+        rows.extend(_score_text_control(name, text, predictor, args))
+        _write_rows(args.output_dir, rows, metadata)
+    if args.random_utf8_bytes:
+        name = "random-printable-utf8"
+        if _condition_is_complete(rows, name, 1):
+            print(f"Skipping completed condition {name}.")
+        else:
+            rng = random.Random(args.random_seed)
+            text = "".join(
+                chr(rng.randrange(32, 127))
+                for _ in range(args.random_utf8_bytes)
+            )
+            rows = [row for row in rows if row.get("condition") != name]
+            rows.extend(_score_text_control(name, text, predictor, args))
+            _write_rows(args.output_dir, rows, metadata)
+
     _write_rows(args.output_dir, rows, metadata)
     print(f"Saved matched attack results to {args.output_dir}")
 

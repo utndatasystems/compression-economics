@@ -4,11 +4,13 @@ import pytest
 import torch
 
 from src.adversarial import (
+    AdversarialGeneration,
     generate_worst_case_sequences,
     rescore_sequences,
     score_target_tokens,
     select_worst_tokens,
 )
+from scripts.generate_adversarial import _combine_generation
 
 
 class FakePredictor:
@@ -172,3 +174,58 @@ def test_rescore_rejects_target_outside_post_hoc_mask():
             context_length=4,
             retain_tokens=2,
         )
+
+
+def test_checkpoint_extension_keeps_prior_scores_once():
+    previous = AdversarialGeneration(
+        token_ids=[[0, 1]],
+        model_log_probabilities=[[-1.0]],
+        masked_log_probabilities=[[-0.5]],
+        candidate_sizes=[3],
+    )
+    extension = AdversarialGeneration(
+        token_ids=[[0, 1, 2, 1]],
+        model_log_probabilities=[[-2.0, -3.0]],
+        masked_log_probabilities=[[-1.5, -2.5]],
+        candidate_sizes=[3],
+    )
+
+    combined = _combine_generation(previous, extension, candidate_size=3)
+
+    assert combined.token_ids == [[0, 1, 2, 1]]
+    assert combined.model_log_probabilities == [[-1.0, -2.0, -3.0]]
+    assert combined.masked_log_probabilities == [[-0.5, -1.5, -2.5]]
+
+
+def test_resumed_generation_reconstructs_uninterrupted_context():
+    predictor = FakePredictor([2.0, -3.0, 0.0])
+    uninterrupted = generate_worst_case_sequences(
+        predictor,
+        [[0]],
+        total_length=8,
+        candidate_sets=[[0, 1, 2]],
+        context_length=4,
+        retain_tokens=2,
+    )
+    predictor = FakePredictor([2.0, -3.0, 0.0])
+    first = generate_worst_case_sequences(
+        predictor,
+        [[0]],
+        total_length=5,
+        candidate_sets=[[0, 1, 2]],
+        context_length=4,
+        retain_tokens=2,
+    )
+    resumed = generate_worst_case_sequences(
+        predictor,
+        first.token_ids,
+        total_length=8,
+        candidate_sets=[[0, 1, 2]],
+        context_length=4,
+        retain_tokens=2,
+    )
+    assert resumed.token_ids == uninterrupted.token_ids
+    assert predictor.prompt_lengths[-3:] == [3, 2, 3]
+    assert resumed.model_log_probabilities[0] == pytest.approx(
+        uninterrupted.model_log_probabilities[0][-3:]
+    )

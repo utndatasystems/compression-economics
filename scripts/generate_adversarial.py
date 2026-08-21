@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,6 +60,24 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("artifacts/runs/adversarial"),
     )
+    parser.add_argument(
+        "--checkpoint-every",
+        type=int,
+        default=250,
+        help="Save generation progress after this many additional tokens.",
+    )
+    parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="Ignore a compatible full/results.json checkpoint.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace an incompatible or completed checkpoint.",
+    )
+    parser.set_defaults(resume=True)
     return parser.parse_args()
 
 
@@ -193,7 +212,9 @@ def make_payload(generation, tokenizer) -> dict:
 def save_mode(output_dir: Path, mode: str, payload: dict) -> None:
     mode_dir = output_dir / mode
     mode_dir.mkdir(parents=True, exist_ok=True)
-    (mode_dir / "results.json").write_text(
+    result_path = mode_dir / "results.json"
+    temporary_path = mode_dir / ".results.json.tmp"
+    temporary_path.write_text(
         json.dumps(payload, indent=2, allow_nan=False),
         encoding="utf-8",
     )
@@ -208,10 +229,71 @@ def save_mode(output_dir: Path, mode: str, payload: dict) -> None:
         ).write_text(
             json.dumps(run["token_ids"]), encoding="utf-8"
         )
+    os.replace(temporary_path, result_path)
+
+
+def _generation_from_payload(
+    payload: dict, candidate_size: int
+) -> AdversarialGeneration:
+    return AdversarialGeneration(
+        token_ids=[run["token_ids"] for run in payload["runs"]],
+        model_log_probabilities=[
+            run["model_log_probabilities"] for run in payload["runs"]
+        ],
+        masked_log_probabilities=[
+            run["masked_log_probabilities"] for run in payload["runs"]
+        ],
+        candidate_sizes=[candidate_size for _ in payload["runs"]],
+    )
+
+
+def _combine_generation(
+    previous: AdversarialGeneration,
+    extension: AdversarialGeneration,
+    candidate_size: int,
+) -> AdversarialGeneration:
+    return AdversarialGeneration(
+        token_ids=extension.token_ids,
+        model_log_probabilities=[
+            [*old, *new]
+            for old, new in zip(
+                previous.model_log_probabilities,
+                extension.model_log_probabilities,
+            )
+        ],
+        masked_log_probabilities=[
+            [*old, *new]
+            for old, new in zip(
+                previous.masked_log_probabilities,
+                extension.masked_log_probabilities,
+            )
+        ],
+        candidate_sizes=[candidate_size for _ in extension.token_ids],
+    )
+
+
+def _as_full_scored(
+    generation: AdversarialGeneration,
+    *,
+    generation_alphabet: str,
+    full_candidate_size: int,
+) -> AdversarialGeneration:
+    if generation_alphabet == "full":
+        return generation
+    return AdversarialGeneration(
+        token_ids=generation.token_ids,
+        model_log_probabilities=generation.model_log_probabilities,
+        masked_log_probabilities=[
+            row[:] for row in generation.model_log_probabilities
+        ],
+        candidate_sizes=[full_candidate_size for _ in generation.token_ids],
+    )
 
 
 def main() -> None:
     args = parse_args()
+    if args.checkpoint_every <= 0:
+        raise ValueError("--checkpoint-every must be positive")
     modes = list(dict.fromkeys(
         args.candidate_mode or ["full", "occurring"]
     ))
@@ -267,35 +349,8 @@ def main() -> None:
         )
     else:
         generation_candidates = full_candidates
-    full_generation = generate_worst_case_sequences(
-        predictor,
-        starts,
-        args.total_length,
-        [generation_candidates for _ in starts],
-        context_length=args.context_length,
-        retain_tokens=args.retain_tokens,
-        use_kv_cache=args.use_kv_cache,
-        candidate_validator=round_trip_validator,
-    )
-
-    if args.generation_alphabet == "full":
-        full_scored_generation = full_generation
-    else:
-        full_scored_generation = AdversarialGeneration(
-            token_ids=full_generation.token_ids,
-            model_log_probabilities=(
-                full_generation.model_log_probabilities
-            ),
-            masked_log_probabilities=[
-                row[:]
-                for row in full_generation.model_log_probabilities
-            ],
-            candidate_sizes=[len(full_candidates) for _ in starts],
-        )
-
     shared_metadata = {
         "model_name": args.model_name,
-        "total_length": args.total_length,
         "context_length": args.context_length,
         "retain_tokens": args.retain_tokens,
         "use_kv_cache": args.use_kv_cache,
@@ -311,10 +366,88 @@ def main() -> None:
         "roundtrip_constraint": "encode(decode(prefix + token)) == prefix + token",
     }
 
-    if "full" in modes:
+    checkpoint_path = args.output_dir / "full" / "results.json"
+    full_generation = None
+    if checkpoint_path.exists() and args.resume and not args.force:
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        stored = checkpoint.get("metadata", {})
+        stable_keys = (
+            "model_name",
+            "context_length",
+            "retain_tokens",
+            "use_kv_cache",
+            "include_special_tokens",
+            "sequence_generation_dictionary",
+            "generation_candidate_size",
+        )
+        mismatches = {
+            key: (stored.get(key), shared_metadata.get(key))
+            for key in stable_keys
+            if stored.get(key) != shared_metadata.get(key)
+        }
+        stored_starts = [run["start_token_ids"] for run in checkpoint["runs"]]
+        if stored_starts != starts:
+            mismatches["start_token_ids"] = (stored_starts, starts)
+        if mismatches:
+            details = ", ".join(
+                f"{key}: stored={old!r}, requested={new!r}"
+                for key, (old, new) in mismatches.items()
+            )
+            raise ValueError(
+                f"Incompatible checkpoint at {checkpoint_path}: {details}. "
+                "Choose another --output-dir or pass --force."
+            )
+        full_generation = _generation_from_payload(
+            checkpoint, len(generation_candidates)
+        )
+        completed_length = len(full_generation.token_ids[0])
+        if completed_length > args.total_length:
+            raise ValueError(
+                f"Checkpoint length {completed_length} exceeds requested "
+                f"length {args.total_length}; choose another output directory"
+            )
+        print(
+            f"Resuming full generation at token {completed_length} "
+            f"of {args.total_length}."
+        )
+
+    if full_generation is None:
+        full_generation = AdversarialGeneration(
+            token_ids=[start[:] for start in starts],
+            model_log_probabilities=[[] for _ in starts],
+            masked_log_probabilities=[[] for _ in starts],
+            candidate_sizes=[len(generation_candidates) for _ in starts],
+        )
+
+    while len(full_generation.token_ids[0]) < args.total_length:
+        completed_length = len(full_generation.token_ids[0])
+        checkpoint_length = min(
+            args.total_length, completed_length + args.checkpoint_every
+        )
+        extension = generate_worst_case_sequences(
+            predictor,
+            full_generation.token_ids,
+            checkpoint_length,
+            [generation_candidates for _ in starts],
+            context_length=args.context_length,
+            retain_tokens=args.retain_tokens,
+            use_kv_cache=args.use_kv_cache,
+            candidate_validator=round_trip_validator,
+        )
+        full_generation = _combine_generation(
+            full_generation, extension, len(generation_candidates)
+        )
+        full_scored_generation = _as_full_scored(
+            full_generation,
+            generation_alphabet=args.generation_alphabet,
+            full_candidate_size=len(full_candidates),
+        )
         payload = make_payload(full_scored_generation, tokenizer)
         payload["metadata"] = dict(
             shared_metadata,
+            total_length=checkpoint_length,
+            requested_total_length=args.total_length,
+            checkpoint_every=args.checkpoint_every,
             candidate_mode="full",
             scoring_dictionary="full",
             mask_application=(
@@ -324,8 +457,29 @@ def main() -> None:
         )
         save_mode(args.output_dir, "full", payload)
         print(
-            f"Saved full results to {args.output_dir / 'full'}"
+            f"Checkpointed full generation at {checkpoint_length} tokens."
         )
+
+    full_scored_generation = _as_full_scored(
+        full_generation,
+        generation_alphabet=args.generation_alphabet,
+        full_candidate_size=len(full_candidates),
+    )
+    if "full" in modes and not checkpoint_path.exists():
+        payload = make_payload(full_scored_generation, tokenizer)
+        payload["metadata"] = dict(
+            shared_metadata,
+            total_length=args.total_length,
+            requested_total_length=args.total_length,
+            checkpoint_every=args.checkpoint_every,
+            candidate_mode="full",
+            scoring_dictionary="full",
+            mask_application=(
+                "generation alphabet applied during construction; "
+                "full vocabulary used for probability scoring"
+            ),
+        )
+        save_mode(args.output_dir, "full", payload)
 
     if "occurring" in modes:
         occurring_candidates = [

@@ -7,6 +7,7 @@ import math
 from typing import Callable, Protocol, Sequence
 
 import torch
+from tqdm.auto import tqdm
 
 
 CandidateValidator = Callable[[int, Sequence[int], int], bool]
@@ -240,7 +241,21 @@ def generate_worst_case_sequences(
         raise ValueError("Require 0 < retain_tokens <= context_length")
 
     candidates = [list(candidate_set) for candidate_set in candidate_sets]
-    contexts = [sequence[:] for sequence in sequences]
+    # A checkpointed call receives the entire sequence but a fresh predictor
+    # cache. Reconstruct the context length that uninterrupted generation would
+    # have retained; blindly truncating every resumed sequence to
+    # ``retain_tokens`` changes both selection and stored probabilities at each
+    # checkpoint boundary.
+    def resumed_context(sequence: list[int]) -> list[int]:
+        length = len(sequence)
+        if length <= context_length:
+            return sequence[:]
+        cycle = context_length - retain_tokens
+        offset = (length - context_length) % cycle
+        retained = context_length if offset == 0 else retain_tokens + offset
+        return sequence[-retained:]
+
+    contexts = [resumed_context(sequence) for sequence in sequences]
     model_logs = [[] for _ in sequences]
     masked_logs = [[] for _ in sequences]
     predictor.reset_kv_cache()
@@ -287,6 +302,7 @@ def rescore_sequences(
     context_length: int,
     retain_tokens: int,
     use_kv_cache: bool = True,
+    progress_desc: str | None = None,
 ) -> AdversarialGeneration:
     """Replay fixed sequences and score them under post-hoc dictionaries."""
     fixed_sequences = [list(sequence) for sequence in sequences]
@@ -317,7 +333,14 @@ def rescore_sequences(
     predictor.reset_kv_cache()
 
     sequence_length = lengths.pop()
-    for token_index in range(start_length, sequence_length):
+    positions = tqdm(
+        range(start_length, sequence_length),
+        desc=progress_desc,
+        unit="step",
+        dynamic_ncols=True,
+        disable=progress_desc is None,
+    )
+    for token_index in positions:
         if len(contexts[0]) >= context_length:
             contexts = [
                 context[-retain_tokens:] for context in contexts

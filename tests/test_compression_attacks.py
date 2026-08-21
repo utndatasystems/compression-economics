@@ -1,4 +1,5 @@
 import gzip
+import json
 import math
 
 import pytest
@@ -14,6 +15,10 @@ from src.compression_attacks import (
     rank_candidates,
     score_arithmetic_payloads,
     score_full_vocab_sequences,
+)
+from scripts.run_compression_attacks import (
+    _condition_is_complete,
+    _load_checkpoint,
 )
 
 
@@ -143,6 +148,22 @@ def test_random_control_is_seeded_and_does_not_change_start():
     assert all(left != right for left, right in zip(first[0], first[0][1:]))
 
 
+def test_random_control_stops_drawing_after_first_valid_candidate():
+    calls = []
+
+    def validator(_row, _prefix, token):
+        calls.append(token)
+        return True
+
+    result = generate_random_sequences(
+        [[0]], 4, [list(range(1, 100_001))], seed=7,
+        candidate_validator=validator,
+    )
+
+    assert len(result[0]) == 4
+    assert len(calls) == 3
+
+
 def test_classical_baselines_use_the_exact_input_bytes():
     data = (b"compression ratio " * 40) + bytes(range(32))
     results = classical_compression_baselines(data)
@@ -187,6 +208,68 @@ def test_fixed_sequence_scoring_reports_model_and_realized_costs():
         generation.model_log_probabilities
     )
     assert payload_bits[0] > 0
+    assert predictor.cache_flags == [True, True, True, True]
+
+
+def test_occurring_dictionary_compacts_arithmetic_coder_alphabet():
+    logits = [10.0, -1.0, 0.0]
+    prefixes = {
+        (0,): logits,
+        (0, 1): logits,
+        (0, 1, 1): logits,
+        (0, 1, 1, 1): logits,
+    }
+    sequence = [[0, 1, 1, 1, 1]]
+    full = score_arithmetic_payloads(
+        FakePredictor(prefixes),
+        sequence,
+        start_length=1,
+        context_length=8,
+        retain_tokens=4,
+    )
+    occurring = score_arithmetic_payloads(
+        FakePredictor(prefixes),
+        sequence,
+        start_length=1,
+        context_length=8,
+        retain_tokens=4,
+        candidate_sets=[[1, 2]],
+        use_kv_cache=True,
+    )
+
+    assert occurring[0] < full[0]
+
+
+def test_attack_checkpoint_requires_an_exact_configuration(tmp_path):
+    metadata = {
+        "model_name": "test-model",
+        "attacks": ["min-probability"],
+        "total_length": 10,
+        "generation_alphabet": "ascii-bytes",
+        "generation_candidate_size": 128,
+        "beam_width": 2,
+        "branch_factor": 4,
+        "fixed_overhead_bits": 0,
+        "random_seed": 0,
+        "controls": [],
+    }
+    rows = [{"condition": "min-probability", "run_index": 0}]
+    (tmp_path / "results.json").write_text(
+        json.dumps({"metadata": metadata, "runs": rows}),
+        encoding="utf-8",
+    )
+
+    assert _load_checkpoint(
+        tmp_path, metadata, resume=True, force=False
+    ) == rows
+    assert _condition_is_complete(rows, "min-probability", 1)
+    with pytest.raises(ValueError, match="Incompatible checkpoint"):
+        _load_checkpoint(
+            tmp_path,
+            {**metadata, "total_length": 11},
+            resume=True,
+            force=False,
+        )
 
 
 def test_byte_objective_requires_a_byte_measurement():

@@ -19,6 +19,7 @@ from typing import Callable, Protocol, Sequence
 import brotli
 import torch
 import zstandard
+from tqdm.auto import tqdm
 
 from src.adversarial import AdversarialGeneration, normalize_candidate_ids
 from src.encoding import LLMCompressor
@@ -158,6 +159,7 @@ def generate_greedy_sequences(
     byte_increment: DecodedByteIncrement | None = None,
     candidate_validator: CandidateValidator | None = None,
     use_kv_cache: bool = True,
+    progress_desc: str | None = None,
 ) -> AdversarialGeneration:
     """Generate sequences with a token- or byte-level greedy objective."""
     objective = AttackObjective(objective)
@@ -179,6 +181,13 @@ def generate_greedy_sequences(
     masked_logs = [[] for _ in sequences]
     contexts = [sequence[:] for sequence in sequences]
     predictor.reset_kv_cache()
+    progress = tqdm(
+        total=total_length - len(sequences[0]),
+        desc=progress_desc,
+        unit="step",
+        dynamic_ncols=True,
+        disable=progress_desc is None,
+    )
     while len(sequences[0]) < total_length:
         if len(contexts[0]) >= context_length:
             contexts = [context[-retain_tokens:] for context in contexts]
@@ -214,7 +223,9 @@ def generate_greedy_sequences(
             contexts[row_index].append(token_id)
             model_logs[row_index].append(model_log)
             masked_logs[row_index].append(masked_log)
+        progress.update(1)
 
+    progress.close()
     return AdversarialGeneration(
         token_ids=sequences,
         model_log_probabilities=model_logs,
@@ -230,12 +241,20 @@ def generate_random_sequences(
     *,
     seed: int = 0,
     candidate_validator: CandidateValidator | None = None,
+    progress_desc: str | None = None,
 ) -> list[list[int]]:
     """Generate a seeded uniform control over valid token extensions."""
     if len(start_sequences) != len(candidate_sets):
         raise ValueError("One candidate set is required per start sequence")
     generator = random.Random(seed)
     results = []
+    progress = tqdm(
+        total=sum(total_length - len(start) for start in start_sequences),
+        desc=progress_desc,
+        unit="token",
+        dynamic_ncols=True,
+        disable=progress_desc is None,
+    )
     for row_index, (start, raw_candidates) in enumerate(
         zip(start_sequences, candidate_sets)
     ):
@@ -246,19 +265,33 @@ def generate_random_sequences(
             raise ValueError("total_length must include the start sequence")
         sequence = list(start)
         while len(sequence) < total_length:
-            valid_candidates = (
-                candidates
-                if candidate_validator is None
-                else [
-                    token_id
-                    for token_id in candidates
-                    if candidate_validator(row_index, sequence, token_id)
-                ]
-            )
-            if not valid_candidates:
+            # Draw a lazy Fisher-Yates permutation. The old implementation
+            # copied and shuffled the complete candidate vocabulary at every
+            # position, even though the first valid candidate is usually found
+            # after only a few draws. This retains uniform sampling without
+            # replacement while doing work proportional to the candidates that
+            # are actually inspected.
+            swaps: dict[int, int] = {}
+            remaining = len(candidates)
+            chosen = None
+            while remaining:
+                offset = generator.randrange(remaining)
+                candidate_index = swaps.get(offset, offset)
+                remaining -= 1
+                swaps[offset] = swaps.get(remaining, remaining)
+                token_id = candidates[candidate_index]
+                if (
+                    candidate_validator is None
+                    or candidate_validator(row_index, sequence, token_id)
+                ):
+                    chosen = token_id
+                    break
+            if chosen is None:
                 raise ValueError("No random candidate satisfies the constraints")
-            sequence.append(generator.choice(valid_candidates))
+            sequence.append(chosen)
+            progress.update(1)
         results.append(sequence)
+    progress.close()
     return results
 
 
@@ -281,6 +314,7 @@ def generate_beam_search_sequence(
     branch_factor: int = 8,
     fixed_overhead_bits: int = 0,
     candidate_validator: CandidateValidator | None = None,
+    progress_desc: str | None = None,
 ) -> AdversarialGeneration:
     """Optimize the sequence-level entropy or realized arithmetic-code ratio.
 
@@ -314,6 +348,13 @@ def generate_beam_search_sequence(
         ),
     )]
     predictor.reset_kv_cache()
+    progress = tqdm(
+        total=total_length - len(beams[0].token_ids),
+        desc=progress_desc,
+        unit="step",
+        dynamic_ncols=True,
+        disable=progress_desc is None,
+    )
     while len(beams[0].token_ids) < total_length:
         contexts = [
             beam.token_ids[-retain_tokens:]
@@ -380,7 +421,9 @@ def generate_beam_search_sequence(
             return numerator / (8 * beam.decoded_bytes), tie_break
 
         beams = sorted(expanded, key=score, reverse=True)[:beam_width]
+        progress.update(1)
 
+    progress.close()
     best = beams[0]
     return AdversarialGeneration(
         token_ids=[best.token_ids],
@@ -400,6 +443,8 @@ def score_full_vocab_sequences(
     start_length: int,
     context_length: int,
     retain_tokens: int,
+    use_kv_cache: bool = True,
+    progress_desc: str | None = None,
 ) -> AdversarialGeneration:
     """Score fixed sequences without rebuilding a full candidate mask per token."""
     fixed = [list(sequence) for sequence in sequences]
@@ -413,11 +458,18 @@ def score_full_vocab_sequences(
     contexts = [sequence[:start_length] for sequence in fixed]
     model_logs = [[] for _ in fixed]
     predictor.reset_kv_cache()
-    for position in range(start_length, len(fixed[0])):
+    positions = tqdm(
+        range(start_length, len(fixed[0])),
+        desc=progress_desc,
+        unit="step",
+        dynamic_ncols=True,
+        disable=progress_desc is None,
+    )
+    for position in positions:
         if len(contexts[0]) >= context_length:
             contexts = [context[-retain_tokens:] for context in contexts]
         token_ids, logits, _, _ = predictor.run_batched_inference(
-            contexts, enable_kv_cache=False
+            contexts, enable_kv_cache=use_kv_cache
         )
         logits = _full_vocab_logits(token_ids, logits)
         log_probabilities = torch.log_softmax(logits.float(), dim=1)
@@ -442,8 +494,16 @@ def score_arithmetic_payloads(
     start_length: int,
     context_length: int,
     retain_tokens: int,
+    candidate_sets: Sequence[Sequence[int]] | None = None,
+    use_kv_cache: bool = True,
+    progress_desc: str | None = None,
 ) -> list[int]:
-    """Replay fixed sequences and return exact arithmetic-coder payload bits."""
+    """Replay fixed sequences and return exact arithmetic-coder payload bits.
+
+    When ``candidate_sets`` is supplied, logits are compacted and renormalized
+    over each sequence's dictionary before coding.  This matches the occurring-
+    token policy instead of merely zeroing entries in the full vocabulary.
+    """
     fixed = [list(sequence) for sequence in sequences]
     if not fixed or any(len(sequence) <= start_length for sequence in fixed):
         raise ValueError("Every sequence must contain at least one predicted token")
@@ -451,23 +511,65 @@ def score_arithmetic_payloads(
         raise ValueError("All sequences must have equal length")
     if start_length <= 0 or not 0 < retain_tokens <= context_length:
         raise ValueError("Invalid start or context length")
+    if candidate_sets is not None and len(candidate_sets) != len(fixed):
+        raise ValueError("One candidate set is required per sequence")
+
+    compact_candidates = (
+        None
+        if candidate_sets is None
+        else [
+            sorted(set(candidate_set)) for candidate_set in candidate_sets
+        ]
+    )
+    if compact_candidates is not None:
+        for sequence, candidates in zip(fixed, compact_candidates):
+            if not candidates or candidates[0] < 0:
+                raise ValueError("Candidate token set must contain non-negative IDs")
+            missing = sorted(set(sequence[start_length:]) - set(candidates))
+            if missing:
+                raise ValueError(
+                    f"Targets are outside their candidate set: {missing[:5]}"
+                )
+        compact_target_offsets = [
+            {token_id: offset for offset, token_id in enumerate(candidates)}
+            for candidates in compact_candidates
+        ]
+    else:
+        compact_target_offsets = None
 
     contexts = [sequence[:start_length] for sequence in fixed]
     compressors = [LLMCompressor() for _ in fixed]
     predictor.reset_kv_cache()
-    for position in range(start_length, len(fixed[0])):
+    positions = tqdm(
+        range(start_length, len(fixed[0])),
+        desc=progress_desc,
+        unit="step",
+        dynamic_ncols=True,
+        disable=progress_desc is None,
+    )
+    for position in positions:
         if len(contexts[0]) >= context_length:
             contexts = [context[-retain_tokens:] for context in contexts]
         token_ids, logits, _, _ = predictor.run_batched_inference(
-            contexts, enable_kv_cache=False
+            contexts, enable_kv_cache=use_kv_cache
         )
         logits = _full_vocab_logits(token_ids, logits)
         for row_index, (sequence, row, compressor) in enumerate(
             zip(fixed, logits, compressors)
         ):
             target = sequence[position]
-            probabilities = torch.softmax(row.float(), dim=0).cpu().numpy()
-            compressor.next_token(target, probabilities)
+            if compact_candidates is None:
+                coder_target = target
+                coder_logits = row.float()
+            else:
+                candidates = compact_candidates[row_index]
+                indices = torch.tensor(
+                    candidates, dtype=torch.long, device=row.device
+                )
+                coder_logits = row.index_select(0, indices).float()
+                coder_target = compact_target_offsets[row_index][target]
+            probabilities = torch.softmax(coder_logits, dim=0).cpu().numpy()
+            compressor.next_token(coder_target, probabilities)
             contexts[row_index].append(target)
     return [len(compressor.compress()) for compressor in compressors]
 
