@@ -8,6 +8,7 @@ from evaluation.crucial_figures import (
     benchmark_fsst,
     deserialize_token_ids,
     parse_predictive_payload,
+    plot_compressor_bars,
     plot_surprisal_scatter,
     serialize_predictive_payload,
     serialize_token_ids,
@@ -117,5 +118,54 @@ def test_surprisal_scatter_connects_means_and_fades_individual_runs():
         ]
         assert len(mean_markers) == 2
         assert all(len(collection.get_offsets()) == 1 for collection in mean_markers)
+    finally:
+        fig.clear()
+
+
+def test_bar_validation_can_include_preliminary_payloads():
+    frame = pd.DataFrame(
+        [
+            {
+                "dataset": "all one-byte adversary",
+                "codec": "Qwen + AC",
+                "raw_size_bytes": 100,
+                "serialized_size_bytes": 120,
+                "round_trip": False,
+                "status": "preliminary",
+            }
+        ]
+    )
+
+    assert validate_bar_results(frame, ["all one-byte adversary"]).empty
+    plotted = validate_bar_results(
+        frame, ["all one-byte adversary"], include_preliminary=True
+    )
+    assert plotted["relative_size_percent"].tolist() == [120.0]
+
+
+def test_compressor_bars_omits_payload_diamonds_and_marks_pending_data():
+    frame = pd.DataFrame([
+        {
+            "dataset": "text8", "codec": "Qwen + AC",
+            "raw_size_bytes": 100, "serialized_size_bytes": 30,
+            "payload_bits": 160, "round_trip": True, "status": "measured",
+        },
+        {
+            "dataset": "random text", "codec": "Qwen + AC",
+            "raw_size_bytes": 200, "serialized_size_bytes": 80,
+            "payload_bits": 480, "round_trip": True, "status": "measured",
+        },
+    ])
+    fig, ax = plot_compressor_bars(
+        frame, ["text8", "random text", "MaxSurprisal/Byte adversary"]
+    )
+    try:
+        payload_markers = [
+            collection for collection in ax.collections
+            if collection.get_label() == "Qwen AC payload only"
+        ]
+        assert payload_markers == []
+        pending = [text for text in ax.texts if text.get_text() == "pending\n10k run"]
+        assert len(pending) == 1
     finally:
         fig.clear()

@@ -267,7 +267,12 @@ def add_ratio(row: Mapping) -> dict:
     return result
 
 
-def validate_bar_results(frame: pd.DataFrame, expected_datasets: Sequence[str]) -> pd.DataFrame:
+def validate_bar_results(
+    frame: pd.DataFrame,
+    expected_datasets: Sequence[str],
+    *,
+    include_preliminary: bool = False,
+) -> pd.DataFrame:
     required = {
         "dataset",
         "codec",
@@ -279,8 +284,12 @@ def validate_bar_results(frame: pd.DataFrame, expected_datasets: Sequence[str]) 
     missing = required - set(frame.columns)
     if missing:
         raise ValueError(f"missing result columns: {sorted(missing)}")
-    measured = frame[frame["status"] == "measured"].copy()
-    if not measured["round_trip"].fillna(False).all():
+    accepted_statuses = (
+        {"measured", "preliminary"} if include_preliminary else {"measured"}
+    )
+    measured = frame[frame["status"].isin(accepted_statuses)].copy()
+    verified = measured[measured["status"] == "measured"]
+    if not verified["round_trip"].fillna(False).all():
         raise AssertionError("every measured bar must pass a round trip")
     duplicates = measured.duplicated(["dataset", "codec"], keep=False)
     if duplicates.any():
@@ -376,11 +385,18 @@ def plot_surprisal_scatter(frame: pd.DataFrame):
     return fig, ax
 
 
-def plot_compressor_bars(frame: pd.DataFrame, dataset_order: Sequence[str]):
-    measured = validate_bar_results(frame, dataset_order)
+def plot_compressor_bars(
+    frame: pd.DataFrame,
+    dataset_order: Sequence[str],
+    *,
+    include_preliminary: bool = False,
+):
+    measured = validate_bar_results(
+        frame, dataset_order, include_preliminary=include_preliminary
+    )
     codec_styles = [
         ("Qwen + AC", "Qwen + AC", COLORS["qwen"], ""),
-        ("Qwen token IDs", "Qwen tokenization only", COLORS["token"], "///"),
+        ("Qwen token IDs", "Qwen token IDs", COLORS["token"], "///"),
         ("FSST", "FSST", COLORS["fsst"], ""),
         ("Brotli q11", "Brotli q11", COLORS["brotli"], "\\\\"),
     ]
@@ -416,7 +432,7 @@ def plot_compressor_bars(frame: pd.DataFrame, dataset_order: Sequence[str]):
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     value + 3,
-                    f"{value:.1f}",
+                    f"{value + 1e-9:.1f}%".replace(".", ","),
                     ha="center",
                     va="bottom",
                     fontsize=6.4,
@@ -427,6 +443,7 @@ def plot_compressor_bars(frame: pd.DataFrame, dataset_order: Sequence[str]):
                     ),
                     rotation=90,
                 )
+
     ax.axhline(
         100,
         color=COLORS["token"],
@@ -437,16 +454,20 @@ def plot_compressor_bars(frame: pd.DataFrame, dataset_order: Sequence[str]):
     ax.text(
         x[0] - 0.38,
         102,
-        "raw UTF-8",
+        "raw UTF-8 (100%)",
         color=COLORS["token"],
         fontsize=6.8,
     )
     display_labels = {
         "text8": "text8",
         "random text": "random\ntext",
-        "token-level adversary": "token-level adversary\n(greedy)",
+        "token-level adversary": "MinProb\nadversary",
+        "MinProb adversary": "MinProb\nadversary",
         "byte-aware adversary": "byte-aware\nadversary",
+        "MaxSurprisal/Byte adversary": "MaxSurprisal/Byte\nadversary",
         "one-byte adversary": "one-byte\nadversary",
+        "printable one-byte adversary": "printable one-byte\nadversary",
+        "all one-byte adversary": "one-byte UTF-8\nablation",
     }
     display_labels = [display_labels.get(dataset, dataset) for dataset in dataset_order]
     ax.set_xticks(x, display_labels)
@@ -480,8 +501,49 @@ def plot_compressor_bars(frame: pd.DataFrame, dataset_order: Sequence[str]):
     if baseline_mask.any() and (~baseline_mask).any():
         separator = (x[baseline_mask].max() + x[~baseline_mask].min()) / 2
         ax.axvline(separator, color=COLORS["grid"], linewidth=0.8, zorder=0)
-    ax.set_ylim(top=ax.get_ylim()[1] * 1.15)
-    ax.set_ylabel(r"Realized size ratio $R$ (%)")
+    plot_top = ax.get_ylim()[1] * 1.15
+    ax.set_ylim(top=plot_top)
+    missing_datasets = [
+        dataset for dataset in dataset_order
+        if measured[measured["dataset"] == dataset].empty
+    ]
+    for dataset in missing_datasets:
+        position = x[list(dataset_order).index(dataset)]
+        ax.text(
+            position,
+            0.12 * plot_top,
+            "pending\n10k run",
+            ha="center",
+            va="center",
+            fontsize=6.4,
+            fontstyle="italic",
+            color=COLORS["token"],
+            bbox={
+                "boxstyle": "round,pad=0.3",
+                "facecolor": "#F9FAFB",
+                "edgecolor": "#9CA3AF",
+                "linestyle": "--",
+                "linewidth": 0.8,
+            },
+            zorder=4,
+        )
+    has_preliminary = (measured["status"] == "preliminary").any()
+    ax.set_ylabel(
+        "Encoded size / raw UTF-8 (%)"
+        if has_preliminary
+        else r"Realized size ratio $R$ (%)"
+    )
+    if has_preliminary:
+        ax.text(
+            0.995,
+            0.985,
+            "Qwen + AC: arithmetic payload only",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=6.4,
+            color=COLORS["qwen"],
+        )
     ax.grid(axis="y", color=COLORS["grid"], linewidth=0.6, zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(
@@ -490,5 +552,5 @@ def plot_compressor_bars(frame: pd.DataFrame, dataset_order: Sequence[str]):
         loc="lower center",
         bbox_to_anchor=(0.5, 1.0),
     )
-    fig.subplots_adjust(left=0.105, right=0.99, top=0.85, bottom=0.20)
+    fig.subplots_adjust(left=0.105, right=0.99, top=0.82, bottom=0.20)
     return fig, ax

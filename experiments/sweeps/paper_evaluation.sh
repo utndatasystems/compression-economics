@@ -10,6 +10,9 @@ PAPER_BEAM_WIDTH="${PAPER_BEAM_WIDTH:-4}"
 PAPER_BRANCH_FACTOR="${PAPER_BRANCH_FACTOR:-8}"
 PAPER_MODEL="${PAPER_MODEL:-Qwen/Qwen2.5-0.5B}"
 PAPER_RUN_ROOT="${PAPER_RUN_ROOT:-artifacts/runs/paper-evaluation}"
+PAPER_CONTEXT_LENGTH="${PAPER_CONTEXT_LENGTH:-1000}"
+PAPER_RETAIN_TOKENS="${PAPER_RETAIN_TOKENS:-100}"
+PAPER_TEXT8_PATH="${PAPER_TEXT8_PATH:-data/text8}"
 PYTHON_BIN="${PYTHON_BIN:-.venv/bin/python}"
 MODE="${1:-all}"
 
@@ -39,6 +42,8 @@ run_full_generation() {
     --start-token-id 32 \
     --start-token-id 641 \
     --total-length "$PAPER_LENGTH" \
+    --context-length "$PAPER_CONTEXT_LENGTH" \
+    --retain-tokens "$PAPER_RETAIN_TOKENS" \
     --candidate-mode full \
     --candidate-mode occurring \
     --output-dir "$FULL_DIR"
@@ -58,11 +63,13 @@ run_long_byte_attacks() {
     --start-text B \
     --start-text C \
     --total-length "$PAPER_LENGTH" \
+    --context-length "$PAPER_CONTEXT_LENGTH" \
+    --retain-tokens "$PAPER_RETAIN_TOKENS" \
     --generation-alphabet "$alphabet" \
     --attack random-token \
     --attack min-probability \
     --attack surprisal-per-byte \
-    --ordinary-text data/text8 \
+    --ordinary-text "$PAPER_TEXT8_PATH" \
     --random-utf8-bytes "$PAPER_LENGTH" \
     --output-dir "$output_dir"
 }
@@ -74,6 +81,8 @@ run_coder_aware_search() {
     --start-text B \
     --start-text C \
     --total-length "$PAPER_SEARCH_LENGTH" \
+    --context-length "$PAPER_CONTEXT_LENGTH" \
+    --retain-tokens "$PAPER_RETAIN_TOKENS" \
     --generation-alphabet ascii-bytes \
     --attack beam-surprisal-per-byte \
     --attack beam-actual-ratio \
