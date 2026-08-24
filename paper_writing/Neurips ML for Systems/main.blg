@@ -1,0 +1,48 @@
+This is BibTeX, Version 0.99d (TeX Live 2023/Debian)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: main.aux
+The style file: plainnat.bst
+Database file #1: references.bib
+Warning--I didn't find a database entry for "schmidt2026token"
+You've used 2 entries,
+            2773 wiz_defined-function locations,
+            607 strings with 5364 characters,
+and the built_in function-call counts, 1203 in all, are:
+= -- 108
+> -- 68
+< -- 1
++ -- 23
+- -- 21
+* -- 93
+:= -- 179
+add.period$ -- 8
+call.type$ -- 2
+change.case$ -- 12
+chr.to.int$ -- 2
+cite$ -- 4
+duplicate$ -- 59
+empty$ -- 97
+format.name$ -- 23
+if$ -- 260
+int.to.chr$ -- 1
+int.to.str$ -- 1
+missing$ -- 2
+newline$ -- 19
+num.names$ -- 8
+pop$ -- 29
+preamble$ -- 1
+purify$ -- 10
+quote$ -- 0
+skip$ -- 46
+stack$ -- 0
+substring$ -- 44
+swap$ -- 14
+text.length$ -- 1
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 22
+warning$ -- 0
+while$ -- 9
+width$ -- 0
+write$ -- 36
+(There was 1 warning)

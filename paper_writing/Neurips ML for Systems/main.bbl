@@ -1,0 +1,22 @@
+\begin{thebibliography}{2}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Del{\'e}tang et~al.(2024)Del{\'e}tang, Ruoss, Duquenne,
+  et~al.]{deletang2024language}
+Gr{\'e}goire Del{\'e}tang, Anian Ruoss, Paul-Ambroise Duquenne, et~al.
+\newblock Language modeling is compression.
+\newblock In \emph{International Conference on Learning Representations}, 2024.
+
+\bibitem[Sennrich et~al.(2016)Sennrich, Haddow, and Birch]{sennrich2016bpe}
+Rico Sennrich, Barry Haddow, and Alexandra Birch.
+\newblock Neural machine translation of rare words with subword units.
+\newblock In \emph{Proceedings of the 54th Annual Meeting of the Association
+  for Computational Linguistics (Volume 1: Long Papers)}, pages 1715--1725,
+  Berlin, Germany, 2016. Association for Computational Linguistics.
+\newblock \doi{10.18653/v1/P16-1162}.
+
+\end{thebibliography}

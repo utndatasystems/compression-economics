@@ -1,0 +1,101 @@
+\begin{table}[t]
+
+\centering
+
+\caption{
+\textbf{Source-normalized predictive coding under increasingly adverse inputs.} Token-level surprisal / LLM prediction cost alone is not predictive of compression failure. Arrows indicate the direction favorable to compression ($\downarrow$ lower is better; $\uparrow$ higher is better). AC size $R_{\mathrm{AC}}$ reports the arithmetic-coder payload relative to raw UTF-8; $^\dagger$ Preliminary 32- and 128-token smoke tests only (three seed runs each).
+$^\ddagger$ Preliminary 1,024-token smoke test (one seed run).
+}
+
+\label{tab:decisive}
+
+\small
+\setlength{\tabcolsep}{3.2pt}
+
+\begin{tabular}{lrrrrr}
+
+\toprule
+
+\multicolumn{1}{l}{Input / condition} &
+\multicolumn{1}{c}{Prediction cost $\downarrow$} &
+\multicolumn{1}{c}{Tokenizer fertility $\uparrow$} &
+\multicolumn{1}{c}{Ideal predictive rate $\downarrow$} &
+\multicolumn{1}{c}{AC payload rate $\downarrow$} &
+\multicolumn{1}{c}{AC size $R_{\mathrm{AC}}$ $\downarrow$} \\
+
+\multicolumn{1}{l}{} &
+\multicolumn{1}{c}{\footnotesize (bits/token)} &
+\multicolumn{1}{c}{\footnotesize (bytes/token)} &
+\multicolumn{1}{c}{\footnotesize (bits/byte)} &
+\multicolumn{1}{c}{\footnotesize (bits/byte)} &
+\multicolumn{1}{c}{\footnotesize (\% of raw)} \\
+
+\midrule
+
+\multicolumn{6}{l}{\textit{Baselines}} \\
+
+Natural text (text8, UTF-8)
+    & 5.11
+    & 5.59
+    & 0.92
+    & 1.13
+    & $14{,}1\%$ \\
+
+Random canonical (UTF-8)
+    & 8.74
+    & 1.30
+    & 6.71
+    & 7.59
+    & $94{,}8\%$ \\
+
+\midrule
+
+\multicolumn{6}{l}{\textit{Adversaries}} \\
+
+MinProb adversary
+    & $26.86 \pm 0.05$
+    & $7.09 \pm 0.04$
+    & $3.79 \pm 0.02$
+    & $2.53 \pm 0.01$
+    & $31{,}7 \pm 0{,}2\%$ \\
+
+Max. surprisal/byte ($N=32$)$^\dagger$
+    & $19.26 \pm 0.39$
+    & $1.45 \pm 0.02$
+    & $12.89 \pm 0.40$
+    & $10.74 \pm 0.31$
+    & $134{,}2 \pm 3{,}9\%$ \\
+
+Max. surprisal/byte ($N=128$)$^\dagger$
+    & $17.82 \pm 0.13$
+    & $1.48 \pm 0.01$
+    & $11.96 \pm 0.07$
+    & $10.43 \pm 0.06$
+    & $130{,}4 \pm 0{,}7\%$ \\
+
+Max. surprisal/byte ($N=1024$)$^\ddagger$
+    & $17.49 \pm 0.00$
+    & $1.47 \pm 0.00$
+    & $11.87 \pm 0.00$
+    & $10.50 \pm 0.00$
+    & $131{,}3 \pm 0{,}0\%$ \\
+
+Realized-size beam
+    & --- & --- & --- & --- & --- \\
+
+\midrule
+
+\multicolumn{6}{l}{\textit{Tokenizer ablation}} \\
+
+One-byte UTF-8 ablation
+    & $8.33 \pm 0.00$
+    & $1.00 \pm 0.00$
+    & $8.33 \pm 0.00$
+    & $9.57 \pm 0.00$
+    & $119{,}6 \pm 0{,}0\%$ \\
+
+\bottomrule
+
+\end{tabular}
+
+\end{table}

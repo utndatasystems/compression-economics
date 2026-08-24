@@ -1,0 +1,67 @@
+\section{Appendix}
+
+
+\paragraph{Why canonicality is required.}
+Not every sequence of valid token IDs can arise from tokenizing its own decoded
+bytes. For example, suppose the vocabulary contains tokens for
+\texttt{a}, \texttt{b}, and \texttt{ab}. The token sequence
+$[\texttt{a},\texttt{b}]$ decodes to \texttt{ab}, but the tokenizer may encode
+\texttt{ab} as the single token $[\texttt{ab}]$. Hence, decoding and
+retokenizing changes the token sequence. Since our attacks select token IDs
+directly from the model distribution, allowing such sequences would optimize
+over token histories that cannot occur for the corresponding source input.
+We therefore require every generated partial sequence to be canonical, i.e.,
+$T(\operatorname{decode}(x_{1:t}))=x_{1:t}$.
+
+
+
+\subsection{Experimental details}
+\label{app:experimental-details}
+
+\paragraph{Model and coder.}
+We use Qwen2.5-0.5B with 151,643 non-special candidate tokens, a context length of 1,000 tokens, 100 retained context tokens between coding blocks, and KV caching. The arithmetic coder uses a 32-bit state and a frequency total of 262,144. The finalized QACS version-1 stream records the seed, model and coder configuration, token count, raw byte count, arithmetic payload, any required token dictionary, and framing. Model weights and the shared tokenizer table are treated as shared decoder state and excluded from both Qwen representations.
+
+\paragraph{Inputs and aggregation.}
+Every production sequence in the primary attack evaluation contains 10,000 tokens. Table~\ref{tab:decisive} reports natural text, random canonical input, the full-vocabulary minimum-probability attack, and the one-byte UTF-8 ablation under this common token budget; the maximum-surprisal-per-byte row is populated only by a marked 32-token smoke test, and the missing realized-size measurement is left blank. Attack statistics are means and sample standard deviations over three independent canonical seed runs.
+
+Figure~\ref{fig:layered_compression_robustness} and Appendix Table~\ref{tab:codec-comparison} are a separate codec-level diagnostic. For that comparison only, we serialize representative prefixes with 9,996--10,000 decoded source bytes so that complete-stream sizes are directly comparable across codecs. Thus Table~\ref{tab:decisive} reports arithmetic payload ratio $R_{\mathrm{AC}}$ for the token-budget runs, whereas the figure reports complete-stream $R_{\mathrm{real}}$ for byte-matched prefixes.
+
+All generated prefixes satisfy
+\[
+\Tok(\Dec(x_{1:t}))=x_{1:t}, \qquad t=1,\ldots,N,
+\]
+and every final stream is independently decoded back to identical token IDs and UTF-8 bytes. FSST uses the official implementation at commit \texttt{e638d4cf8c26129d73c242a4127b42b975de5b63}; Brotli uses quality~11; token IDs use a fixed 18-bit representation with a stream header.
+
+\paragraph{Cost accounting.}
+In the auxiliary codec comparison, we report both the Qwen+AC arithmetic payload and the complete serialized stream. Their difference is 331--334 bytes across the five byte-matched inputs. The finite-frequency table reserves a nonzero count for every vocabulary entry, so extremely small model probabilities are clipped. Consequently, realized arithmetic length can be lower than unquantized NLL on the minimum-probability attack; this quantization effect is reported rather than interpreted as predictive accuracy.
+
+\paragraph{Layered compression robustness and cost attribution.} \textbf{(a)} End-to-end size relative to raw UTF-8, separating fixed-width token IDs, the ideal model surprisal cost, the realized arithmetic-coding (AC) payload plus dictionary metadata, and the final serialized file (dot). The serialized size can be decomposed as ($S_{\mathrm{total}} = S_{\mathrm{payload}} + S_{\mathrm{dict}} + S_{\mathrm{frame}}$), where $S_{\mathrm{payload}}$ is the finalized arithmetic payload, $S_{\mathrm{dict}}$ is dictionary metadata, and $S_{\mathrm{frame}}$ is the remaining container and framing overhead.
+
+\input{tables/codec_results_table}
+
+The printable-only row is retained solely as an alphabet-sensitivity check: restricting the candidate set to the 95 printable ASCII bytes weakens, but does not remove, predictive expansion.
+
+
+\paragraph{Tokenizer fertility stats}
+
+\input{tables/tokenizer_fertility}
+
+
+
+\paragraph{Reported quantities.}
+The primary and auxiliary evaluations share the same token- and source-normalized quantities but differ in stream accounting:
+
+\begin{align}
+  \text{Bits/token} &= \frac{L_\theta(x)}{N},\\
+  \text{Bytes/token} &= \frac{\bytes{\operatorname{decode}(x)}}{N},\\
+  \text{Ideal bits/byte} &= \frac{L_\theta(x)}
+    {\bytes{\operatorname{decode}(x)}},\\
+  \text{AC bits/byte} &= \frac{S_{\mathrm{AC}}(x)}
+    {\bytes{\operatorname{decode}(x)}},\\
+  R_{\mathrm{AC}} &= 100\,\frac{S_{\mathrm{AC}}(x)}
+    {8\,\bytes{\operatorname{decode}(x)}},\\
+  R_{\mathrm{real}} &= 100\,\frac{\left|\operatorname{SerializeCodec}(x)\right|}
+    {\bytes{\operatorname{decode}(x)}} \quad [\%].
+\end{align}
+
+Both ratios are relative to raw UTF-8; $R<100\%$ denotes compression and $R>100\%$ denotes expansion.

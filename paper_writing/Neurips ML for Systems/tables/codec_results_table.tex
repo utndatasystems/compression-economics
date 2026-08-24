@@ -1,0 +1,18 @@
+\begin{table}[t]
+\centering
+\caption{\textbf{Realized size ratio by input and codec.} Values are encoded bytes divided by raw UTF-8 bytes and reported as percentages; lower is better. AC payload excludes the Qwen container and is shown only for cost attribution. All remaining entries are complete, round-trip-verified streams, and bold marks the smallest complete stream per row.}
+\label{tab:codec-comparison}
+\small
+\setlength{\tabcolsep}{3.4pt}
+\begin{tabular}{lrrrrr}
+\toprule
+Input & AC payload & Qwen+AC & Token IDs & FSST & Brotli \\
+\midrule
+text8                    & $14{,}3\%$ & \textbf{$17{,}6\%$} & $41{,}3\%$ & $56{,}3\%$ & $29{,}6\%$ \\
+Random printable         & $94{,}8\%$ & $98{,}2\%$ & $172{,}8\%$ & $100{,}2\%$ & \textbf{$83{,}0\%$} \\
+MinProb adversary         & $32{,}9\%$ & $36{,}2\%$ & \textbf{$33{,}2\%$} & $79{,}5\%$ & $46{,}7\%$ \\
+Printable one-byte       & $103{,}9\%$ & $107{,}3\%$ & $225{,}2\%$ & $75{,}8\%$ & \textbf{$68{,}8\%$} \\
+One-byte UTF-8 ablation & $119{,}5\%$ & $122{,}8\%$ & $225{,}2\%$ & $83{,}6\%$ & \textbf{$76{,}1\%$} \\
+\bottomrule
+\end{tabular}
+\end{table}

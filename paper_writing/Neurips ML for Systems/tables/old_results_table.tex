@@ -1,0 +1,34 @@
+\begin{table}[t]
+\centering
+\caption{
+\textbf{End-to-end compression under increasingly system-aware adversaries.}
+Token-level surprisal alone is not predictive of compression failure:
+the relevant quantity is source-normalized rate.
+Values below $1\times$ indicate compression relative to raw UTF-8;
+values above $1\times$ indicate expansion.
+}
+\label{tab:decisive}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+Input (10k tokens) &
+Bits/token &
+Bytes/token &
+Ideal bits/byte &
+Actual bits/byte &
+Size ratio $R$ \\
+\midrule
+\multicolumn{6}{l}{\textit{Baselines}}\\
+Natural text (text8, UTF-8)      & ... & ... & ... & ... & ... \\
+Random canonical (UTF-8)  & ... & ... & ... & ... & ... \\
+\midrule
+\multicolumn{6}{l}{\textit{Adversaries}}\\
+Min. probability    & ... & ... & ... & ... & ... \\
+Max. surprisal/byte & ... & ... & ... & ... & ... \\
+Realized-size beam & ... & ... & ... & ... & ... \\
+\midrule
+\multicolumn{6}{l}{\textit{Tokenizer ablation}}\\
+One-byte constrained & ... & 1.000 & ... & ... & ... \\
+\bottomrule
+\end{tabular}
+\end{table}
