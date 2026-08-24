@@ -7,6 +7,9 @@ import torch
 
 from src.compression_attacks import (
     AttackObjective,
+    decode_arithmetic_payload,
+    decode_arithmetic_payloads,
+    encode_arithmetic_payloads,
     classical_compression_baselines,
     decoded_utf8_increment,
     generate_beam_search_sequence,
@@ -209,6 +212,53 @@ def test_fixed_sequence_scoring_reports_model_and_realized_costs():
     )
     assert payload_bits[0] > 0
     assert predictor.cache_flags == [True, True, True, True]
+
+
+def test_arithmetic_bitstream_decodes_back_to_exact_tokens():
+    prefixes = {
+        (0,): [2.0, -1.0, 0.0],
+        (0, 1): [2.0, -1.0, 0.0],
+        (0, 1, 2): [2.0, -1.0, 0.0],
+    }
+    sequence = [0, 1, 2, 1]
+    payload = encode_arithmetic_payloads(
+        FakePredictor(prefixes),
+        [sequence],
+        start_length=1,
+        context_length=8,
+        retain_tokens=4,
+    )[0]
+    decoded = decode_arithmetic_payload(
+        FakePredictor(prefixes),
+        payload,
+        seed_token_ids=[0],
+        token_count=len(sequence),
+        context_length=8,
+        retain_tokens=4,
+    )
+    assert decoded == sequence
+
+
+def test_variable_length_streams_round_trip_in_one_batched_replay():
+    prefixes = {
+        (0,): [2.0, -1.0, 0.0],
+        (0, 1): [2.0, -1.0, 0.0],
+        (0, 1, 2): [2.0, -1.0, 0.0],
+        (2,): [0.0, -1.0, 2.0],
+        (2, 0): [0.0, -1.0, 2.0],
+        (2, 0, 1): [0.0, -1.0, 2.0],
+    }
+    sequences = [[0, 1, 2], [2, 0, 1, 0]]
+    payloads = encode_arithmetic_payloads(
+        FakePredictor(prefixes), sequences, start_length=1,
+        context_length=8, retain_tokens=4,
+    )
+    decoded = decode_arithmetic_payloads(
+        FakePredictor(prefixes), payloads,
+        seed_token_ids=[[0], [2]], token_counts=[3, 4],
+        context_length=8, retain_tokens=4,
+    )
+    assert decoded == sequences
 
 
 def test_occurring_dictionary_compacts_arithmetic_coder_alphabet():
