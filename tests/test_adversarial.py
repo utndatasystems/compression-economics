@@ -229,3 +229,80 @@ def test_resumed_generation_reconstructs_uninterrupted_context():
     assert resumed.model_log_probabilities[0] == pytest.approx(
         uninterrupted.model_log_probabilities[0][-3:]
     )
+
+
+def _local_qwen_tokenizer():
+    transformers = pytest.importorskip("transformers")
+    try:
+        return transformers.AutoTokenizer.from_pretrained(
+            "Qwen/Qwen2.5-0.5B", local_files_only=True
+        )
+    except OSError:
+        pytest.skip("Qwen2.5 tokenizer is not available locally")
+
+
+def test_qwen_local_round_trip_validator_matches_full_oracle():
+    from scripts.generate_adversarial import (
+        ascii_byte_token_ids,
+        make_round_trip_validator,
+        token_ids_round_trip,
+    )
+
+    tokenizer = _local_qwen_tokenizer()
+    candidates = ascii_byte_token_ids(tokenizer, printable_only=False)
+    validator = make_round_trip_validator(tokenizer)
+
+    prefixes = [
+        tokenizer.encode(text, add_special_tokens=False)
+        for text in (
+            "guard. ordinary tail",
+            "guard. can't stop",
+            "guard!!!\nnext",
+            "guard. " + "x" * 600,
+        )
+    ]
+    prefixes.append([126190, 230])
+
+    for prefix in prefixes:
+        for candidate in candidates:
+            assert validator(0, prefix, candidate) == token_ids_round_trip(
+                tokenizer, [*prefix, candidate]
+            )
+
+    sampled_vocabulary = range(0, tokenizer.vocab_size, 997)
+    prefix = tokenizer.encode("guard. sampled tail", add_special_tokens=False)
+    for candidate in sampled_vocabulary:
+        assert validator(0, prefix, candidate) == token_ids_round_trip(
+            tokenizer, [*prefix, candidate]
+        )
+
+    assert validator.local_checks > 0
+    assert validator.fallback_checks > 0
+
+
+def test_qwen_local_validator_keeps_incremental_state_canonical():
+    from scripts.generate_adversarial import (
+        ascii_byte_token_ids,
+        make_round_trip_validator,
+        token_ids_round_trip,
+    )
+
+    tokenizer = _local_qwen_tokenizer()
+    candidates = ascii_byte_token_ids(tokenizer, printable_only=False)
+    validator = make_round_trip_validator(tokenizer)
+    prefix = tokenizer.encode("guard. evolving tail", add_special_tokens=False)
+
+    for _ in range(20):
+        decisions = [
+            validator(0, prefix, candidate) for candidate in candidates
+        ]
+        oracle = [
+            token_ids_round_trip(tokenizer, [*prefix, candidate])
+            for candidate in candidates
+        ]
+        assert decisions == oracle
+        candidate = candidates[oracle.index(True)]
+        prefix.append(candidate)
+
+    assert token_ids_round_trip(tokenizer, prefix)
+    assert validator.local_checks > validator.fallback_checks

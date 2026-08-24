@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left
+from collections import OrderedDict
+from dataclasses import dataclass
 import json
 import os
 import sys
@@ -161,14 +164,236 @@ def token_ids_round_trip(tokenizer, token_ids) -> bool:
     return tokenizer.encode(decoded, add_special_tokens=False) == list(token_ids)
 
 
-def make_round_trip_validator(tokenizer):
-    """Build a candidate validator that preserves canonical tokenization."""
-    def validator(_row_index, prefix, candidate_token_id):
-        return token_ids_round_trip(
-            tokenizer, [*prefix, candidate_token_id]
-        )
+def _byte_level_decoder():
+    byte_values = [
+        *range(ord("!"), ord("~") + 1),
+        *range(161, 173),
+        *range(174, 256),
+    ]
+    code_points = list(byte_values)
+    for byte_value in range(256):
+        if byte_value not in byte_values:
+            byte_values.append(byte_value)
+            code_points.append(256 + len(code_points) - 188)
+    return {
+        chr(code_point): byte_value
+        for byte_value, code_point in zip(byte_values, code_points)
+    }
 
-    return validator
+
+@dataclass(frozen=True)
+class _PrefixState:
+    raw: bytes
+    text: str
+    token_byte_offsets: tuple[int, ...]
+    char_byte_offsets: tuple[int, ...]
+    pieces: tuple[tuple[str, tuple[int, int]], ...]
+
+
+class CertifiedRoundTripValidator:
+    """Certified tokenizer-local validation with a full-prefix fallback."""
+
+    def __init__(self, tokenizer, *, max_local_bytes=512, cache_size=256):
+        self.tokenizer = tokenizer
+        self.max_local_bytes = max_local_bytes
+        self.cache_size = cache_size
+        self.local_checks = 0
+        self.fallback_checks = 0
+        self._states = OrderedDict()
+        self._token_bytes = {}
+        self._active_prefixes = OrderedDict()
+        self._byte_decoder = _byte_level_decoder()
+        backend = getattr(tokenizer, "backend_tokenizer", None)
+        self._pre_tokenizer = (
+            getattr(backend, "pre_tokenizer", None) if backend else None
+        )
+        self._special_ids = set(getattr(tokenizer, "all_special_ids", ()))
+
+    def _raw_token(self, token_id):
+        if token_id in self._token_bytes:
+            return self._token_bytes[token_id]
+        raw = None
+        if token_id not in self._special_ids:
+            token = self.tokenizer.convert_ids_to_tokens(token_id)
+            if isinstance(token, str):
+                try:
+                    raw = bytes(self._byte_decoder[char] for char in token)
+                except KeyError:
+                    pass
+        self._token_bytes[token_id] = raw
+        return raw
+
+    def _remember(self, key, state):
+        self._states[key] = state
+        self._states.move_to_end(key)
+        while len(self._states) > self.cache_size:
+            self._states.popitem(last=False)
+
+    def _build_state(self, token_ids):
+        raw_tokens = [self._raw_token(token_id) for token_id in token_ids]
+        if any(raw is None for raw in raw_tokens):
+            return None
+        offsets = [0]
+        for raw_token in raw_tokens:
+            offsets.append(offsets[-1] + len(raw_token))
+        raw = b"".join(raw_tokens)
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+        decoded = self.tokenizer.decode(
+            token_ids,
+            skip_special_tokens=False,
+            clean_up_tokenization_spaces=False,
+        )
+        if text != decoded or self._pre_tokenizer is None:
+            return None
+        pieces = tuple(self._pre_tokenizer.pre_tokenize_str(text))
+        char_offsets = tuple(self._char_byte_offsets(text))
+        return _PrefixState(raw, text, tuple(offsets), char_offsets, pieces)
+
+    def _state(self, token_ids):
+        state = self._states.get(token_ids)
+        if state is None:
+            state = self._build_state(token_ids)
+            if state is not None:
+                self._remember(token_ids, state)
+        else:
+            self._states.move_to_end(token_ids)
+        return state
+
+    @staticmethod
+    def _char_byte_offsets(text):
+        offsets = [0]
+        for char in text:
+            offsets.append(offsets[-1] + len(char.encode("utf-8")))
+        return offsets
+
+    def _local_result(self, state, prefix, candidate_token_id):
+        candidate_raw = self._raw_token(candidate_token_id)
+        if state is None or candidate_raw is None or len(state.pieces) < 2:
+            return None
+        try:
+            candidate_text = candidate_raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+        checkpoint_char = state.pieces[-2][1][0]
+        checkpoint_byte = state.char_byte_offsets[checkpoint_char]
+        if len(state.raw) - checkpoint_byte > self.max_local_bytes:
+            return None
+        token_index = bisect_left(state.token_byte_offsets, checkpoint_byte)
+        if (
+            token_index == len(state.token_byte_offsets)
+            or state.token_byte_offsets[token_index] != checkpoint_byte
+        ):
+            return None
+
+        old_suffix = state.text[checkpoint_char:]
+        if not old_suffix or ord(old_suffix[0]) >= 128:
+            return None
+        new_suffix = old_suffix + candidate_text
+        old_pieces = tuple(self._pre_tokenizer.pre_tokenize_str(old_suffix))
+        new_pieces = tuple(self._pre_tokenizer.pre_tokenize_str(new_suffix))
+        expected_pieces = tuple(
+            (piece, (start - checkpoint_char, end - checkpoint_char))
+            for piece, (start, end) in state.pieces[-2:]
+        )
+        if (
+            len(old_pieces) < 2
+            or old_pieces != expected_pieces
+            or not new_pieces
+            or old_pieces[0] != new_pieces[0]
+        ):
+            return None
+
+        expected_old = list(prefix[token_index:])
+        if self.tokenizer.encode(
+            old_suffix, add_special_tokens=False
+        ) != expected_old:
+            return None
+        expected_new = [*expected_old, candidate_token_id]
+        accepted = self.tokenizer.encode(
+            new_suffix, add_special_tokens=False
+        ) == expected_new
+        adjusted_pieces = tuple(
+            (piece, (start + checkpoint_char, end + checkpoint_char))
+            for piece, (start, end) in new_pieces
+        )
+        candidate_char_offsets = []
+        byte_offset = len(state.raw)
+        for char in candidate_text:
+            byte_offset += len(char.encode("utf-8"))
+            candidate_char_offsets.append(byte_offset)
+        child = _PrefixState(
+            raw=state.raw + candidate_raw,
+            text=state.text + candidate_text,
+            token_byte_offsets=(
+                *state.token_byte_offsets,
+                len(state.raw) + len(candidate_raw),
+            ),
+            char_byte_offsets=(
+                *state.char_byte_offsets,
+                *candidate_char_offsets,
+            ),
+            pieces=(*state.pieces[:-2], *adjusted_pieces),
+        )
+        return accepted, child
+
+    def __call__(self, _row_index, prefix, candidate_token_id):
+        identity = (id(prefix), len(prefix))
+        active = self._active_prefixes.get(identity)
+        if (
+            active is not None
+            and active[0] is prefix
+            and (active[3] is None or prefix[-1] == active[3])
+        ):
+            _, prefix_key, state, _ = active
+            self._active_prefixes.move_to_end(identity)
+        else:
+            prefix_key = tuple(prefix)
+            state = self._state(prefix_key)
+            self._active_prefixes[identity] = (
+                prefix, prefix_key, state, None
+            )
+            while len(self._active_prefixes) > 64:
+                self._active_prefixes.popitem(last=False)
+        local = self._local_result(state, prefix_key, candidate_token_id)
+        if local is not None:
+            self.local_checks += 1
+            accepted, child = local
+            if accepted:
+                child_key = (*prefix_key, candidate_token_id)
+                self._remember(child_key, child)
+                next_identity = (id(prefix), len(prefix) + 1)
+                self._active_prefixes[next_identity] = (
+                    prefix, child_key, child, candidate_token_id
+                )
+                while len(self._active_prefixes) > 64:
+                    self._active_prefixes.popitem(last=False)
+            return accepted
+
+        child_key = (*prefix_key, candidate_token_id)
+        self.fallback_checks += 1
+        accepted = token_ids_round_trip(self.tokenizer, child_key)
+        if accepted:
+            child = self._build_state(child_key)
+            if child is not None:
+                self._remember(child_key, child)
+                next_identity = (id(prefix), len(prefix) + 1)
+                self._active_prefixes[next_identity] = (
+                    prefix, child_key, child, candidate_token_id
+                )
+                while len(self._active_prefixes) > 64:
+                    self._active_prefixes.popitem(last=False)
+        return accepted
+
+
+def make_round_trip_validator(tokenizer, *, max_local_bytes=512):
+    """Build a certified local validator with a full-prefix fallback."""
+    return CertifiedRoundTripValidator(
+        tokenizer, max_local_bytes=max_local_bytes
+    )
 
 
 def make_payload(generation, tokenizer) -> dict:
