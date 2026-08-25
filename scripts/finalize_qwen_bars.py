@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-length", type=int, default=1000)
     parser.add_argument("--retain-tokens", type=int, default=100)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
+    parser.add_argument("--dataset", action="append", default=[], help="Finalize only the named dataset; repeat to select multiple datasets")
     parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
@@ -99,6 +100,7 @@ def _source_rows(root: Path) -> list[dict]:
     printable_path = root / "printable-ascii_n10000/results.json"
     one_byte_path = root / "ascii-bytes_n10000/results.json"
     full_path = root / "full_vocab_n10000/full/results.json"
+    max_surprisal_path = root.parent / "smoke-surprisal-per-byte-n1024/results.json"
     printable = _read_json(printable_path)
     full = _read_json(full_path)
     full_runs = [row for row in full["runs"] if row["run_index"] == 0]
@@ -108,6 +110,7 @@ def _source_rows(root: Path) -> list[dict]:
         ("text8", _condition(printable_path, "ordinary-text8"), printable_path, None),
         ("random text", _condition(printable_path, "random-printable-utf8"), printable_path, None),
         ("MinProb adversary", full_runs[0], full_path, full_runs[0]["start_token_ids"]),
+        ("MaxSurprisal/Byte adversary", _condition(max_surprisal_path, "surprisal-per-byte"), max_surprisal_path, None),
         ("printable one-byte adversary", _condition(printable_path, "surprisal-per-byte"), printable_path, None),
         ("all one-byte adversary", _condition(one_byte_path, "surprisal-per-byte"), one_byte_path, None),
     ]
@@ -141,6 +144,7 @@ def _write_atomic(path: Path, data: bytes) -> None:
 
 def main() -> None:
     args = parse_args()
+    args.output_dir = args.output_dir.resolve()
     if not 0 < args.retain_tokens <= args.context_length:
         raise ValueError("Require 0 < retain_tokens <= context_length")
     predictor_args = SimpleNamespace(model_name=args.model_name)
@@ -148,6 +152,12 @@ def main() -> None:
     tokenizer = predictor.tokenizer
 
     rows = _source_rows(DEFAULT_SWEEP_ROOT)
+    if args.dataset:
+        available = {row["dataset"] for row in rows}
+        unknown = set(args.dataset) - available
+        if unknown:
+            raise ValueError(f"Unknown datasets: {sorted(unknown)}")
+        rows = [row for row in rows if row["dataset"] in args.dataset]
     for row in rows:
         tokens, data = _matched_prefix(
             tokenizer, row.pop("token_ids"), args.byte_budget

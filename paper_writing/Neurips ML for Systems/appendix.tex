@@ -1,54 +1,6 @@
 \section{Appendix}
 
-
-\paragraph{Why canonicality is required.}
-Not every sequence of valid token IDs can arise from tokenizing its own decoded
-bytes. For example, suppose the vocabulary contains tokens for
-\texttt{a}, \texttt{b}, and \texttt{ab}. The token sequence
-$[\texttt{a},\texttt{b}]$ decodes to \texttt{ab}, but the tokenizer may encode
-\texttt{ab} as the single token $[\texttt{ab}]$. Hence, decoding and
-retokenizing changes the token sequence. Since our attacks select token IDs
-directly from the model distribution, allowing such sequences would optimize
-over token histories that cannot occur for the corresponding source input.
-We therefore require every generated partial sequence to be canonical, i.e.,
-$T(\operatorname{decode}(x_{1:t}))=x_{1:t}$.
-
-
-
-\subsection{Experimental details}
-\label{app:experimental-details}
-
-\paragraph{Model and coder.}
-We use Qwen2.5-0.5B with 151,643 non-special candidate tokens, a context length of 1,000 tokens, 100 retained context tokens between coding blocks, and KV caching. The arithmetic coder uses a 32-bit state and a frequency total of 262,144. The finalized QACS version-1 stream records the seed, model and coder configuration, token count, raw byte count, arithmetic payload, any required token dictionary, and framing. Model weights and the shared tokenizer table are treated as shared decoder state and excluded from both Qwen representations.
-
-\paragraph{Inputs and aggregation.}
-Every production sequence in the primary attack evaluation contains 10,000 tokens. Table~\ref{tab:decisive} reports natural text, random canonical input, the full-vocabulary minimum-probability attack, and the one-byte UTF-8 ablation under this common token budget; the maximum-surprisal-per-byte row is populated only by a marked 32-token smoke test, and the missing realized-size measurement is left blank. Attack statistics are means and sample standard deviations over three independent canonical seed runs.
-
-Figure~\ref{fig:layered_compression_robustness} and Appendix Table~\ref{tab:codec-comparison} are a separate codec-level diagnostic. For that comparison only, we serialize representative prefixes with 9,996--10,000 decoded source bytes so that complete-stream sizes are directly comparable across codecs. Thus Table~\ref{tab:decisive} reports arithmetic payload ratio $R_{\mathrm{AC}}$ for the token-budget runs, whereas the figure reports complete-stream $R_{\mathrm{real}}$ for byte-matched prefixes.
-
-All generated prefixes satisfy
-\[
-\Tok(\Dec(x_{1:t}))=x_{1:t}, \qquad t=1,\ldots,N,
-\]
-and every final stream is independently decoded back to identical token IDs and UTF-8 bytes. FSST uses the official implementation at commit \texttt{e638d4cf8c26129d73c242a4127b42b975de5b63}; Brotli uses quality~11; token IDs use a fixed 18-bit representation with a stream header.
-
-\paragraph{Cost accounting.}
-In the auxiliary codec comparison, we report both the Qwen+AC arithmetic payload and the complete serialized stream. Their difference is 331--334 bytes across the five byte-matched inputs. The finite-frequency table reserves a nonzero count for every vocabulary entry, so extremely small model probabilities are clipped. Consequently, realized arithmetic length can be lower than unquantized NLL on the minimum-probability attack; this quantization effect is reported rather than interpreted as predictive accuracy.
-
-\paragraph{Layered compression robustness and cost attribution.} \textbf{(a)} End-to-end size relative to raw UTF-8, separating fixed-width token IDs, the ideal model surprisal cost, the realized arithmetic-coding (AC) payload plus dictionary metadata, and the final serialized file (dot). The serialized size can be decomposed as ($S_{\mathrm{total}} = S_{\mathrm{payload}} + S_{\mathrm{dict}} + S_{\mathrm{frame}}$), where $S_{\mathrm{payload}}$ is the finalized arithmetic payload, $S_{\mathrm{dict}}$ is dictionary metadata, and $S_{\mathrm{frame}}$ is the remaining container and framing overhead.
-
-\input{tables/codec_results_table}
-
-The printable-only row is retained solely as an alphabet-sensitivity check: restricting the candidate set to the 95 printable ASCII bytes weakens, but does not remove, predictive expansion.
-
-
-\paragraph{Tokenizer fertility stats}
-
-\input{tables/tokenizer_fertility}
-
-
-
-\paragraph{Reported quantities.}
+\subsection{Metric Definitions}
 The primary and auxiliary evaluations share the same token- and source-normalized quantities but differ in stream accounting:
 
 \begin{align}
@@ -65,3 +17,152 @@ The primary and auxiliary evaluations share the same token- and source-normalize
 \end{align}
 
 Both ratios are relative to raw UTF-8; $R<100\%$ denotes compression and $R>100\%$ denotes expansion.
+
+\subsection{Evaluation Protocol}
+\label{app:experimental-details}
+
+\paragraph{Canonical Inputs.}
+\label{app:canonicality}
+Not every sequence of valid token IDs can arise from tokenizing its own decoded
+bytes. For example, suppose the vocabulary contains tokens for
+\texttt{a}, \texttt{b}, and \texttt{ab}. The token sequence
+$[\texttt{a},\texttt{b}]$ decodes to \texttt{ab}, but the tokenizer may encode
+\texttt{ab} as the single token $[\texttt{ab}]$. Hence, decoding and
+retokenizing changes the token sequence. Since our attacks select token IDs
+directly from the model distribution, allowing such sequences would optimize
+over token histories that cannot occur for the corresponding source input.
+We therefore require every generated partial sequence to be canonical, i.e.,
+$T(\operatorname{decode}(x_{1:t}))=x_{1:t}$. This ensures that final decoding
+recovers exactly the same token IDs and bytes.
+
+\paragraph{Model and Coder.}
+We use Qwen2.5-0.5B with 151,643 non-special candidate tokens, a context length of 1,000 tokens, 100 retained context tokens between coding blocks, and KV caching. The arithmetic coder uses a 32-bit state and a frequency total of 262,144. The finalized QACS version-1 stream records the seed, model and coder configuration, token count, raw byte count, arithmetic payload, any required token dictionary, and framing. Model weights and the shared tokenizer table are treated as shared decoder state and excluded from both Qwen representations.
+
+\paragraph{Inputs and Aggregation.}
+The primary evaluation uses 10,000-token sequences for natural text, random
+canonical input, MinProb ($\vtok$), and the one-byte UTF-8 ablation. MaxSurprisal/Byte ($\vbyte$) is
+reported at the largest feasible budget of 1,024 tokens and is the final
+evaluation for that attack. Values marked with $\pm$ are means and sample
+standard deviations over three independent canonical seed runs; the
+MaxSurprisal/Byte ($\vbyte$) result is a single run.
+
+\paragraph{Round-Trip Validation and Baselines.}
+All generated prefixes satisfy
+\[
+\Tok(\Dec(x_{1:t}))=x_{1:t}, \qquad t=1,\ldots,N,
+\]
+and every complete stream is independently decoded back to identical token IDs or UTF-8 bytes, as applicable. FSST uses the official implementation at commit \texttt{e638d4cf8c26129d73c242a4127b42b975de5b63}; Brotli uses quality~11; token IDs use a fixed 18-bit representation with a stream header.
+
+\subsection{Detailed Results and Accounting}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{../../artifacts/figures/neurips/crucial/paper_prediction_difficulty.pdf}
+  \caption{\textbf{Adversarial prediction difficulty.} Each condition is
+  compared with the same natural-text prediction cost of $5.11$ bits/token.
+  Labels inside the plot report the ratio to text8. Error bars show sample
+  standard deviation across three canonical seeds where available;
+  $^\dagger$ marks the final 1,024-token MaxSurprisal/Byte ($\vbyte$) single run.}
+  \label{fig:paper-prediction-difficulty}
+\end{figure}
+
+\paragraph{Effect of the Shorter MaxSurprisal/Byte ($\vbyte$) Sequence.}
+\label{app:maxsurprisal-length}
+The shorter sequence affects the magnitude but not the qualitative conclusion.
+Under the same replay configuration, the arithmetic-payload ratio is $136.4\%$,
+$133.2\%$, $131.7\%$, and $122.4\%$ at $N=32$, $64$, $128$, and $1{,}024$,
+respectively; even the longest evaluated prefix remains larger than raw UTF-8.
+The complete 1,024-token QACS stream is $144.3\%$ of its 1,508 source bytes.
+Moreover, all bars in the MaxSurprisal/Byte group use those same source bytes,
+so their comparison is size matched. Fixed codec overhead is relatively larger
+on short inputs, which disadvantages rather than favors the conventional codecs.
+
+\paragraph{Codec Comparison.}
+Figure~\ref{fig:layered_compression_robustness} and
+Table~\ref{tab:codec-comparison} compare codecs on identical source bytes. The
+four non-Max groups contain 9,996--13,087 bytes; the 1,024-token
+MaxSurprisal/Byte output contains 1,508 bytes. All plotted results are complete, round-trip-verified streams.
+
+\paragraph{Stream Accounting.}
+\label{app:stream-accounting}
+The auxiliary comparison reports both the Qwen+AC payload and complete stream,
+whose difference is 331--334 bytes across the four non-Max serialized inputs.
+For text8, this overhead raises the size ratio from a $14.3\%$ arithmetic-coder
+payload to a $17.6\%$ complete stream. The
+complete size is $S_{\mathrm{total}}=S_{\mathrm{payload}}+S_{\mathrm{dict}}+
+S_{\mathrm{frame}}$. Finite frequencies clip extremely small probabilities, so
+realized arithmetic length can be below unquantized NLL for MinProb; we report
+this as quantization, not improved prediction.
+
+\input{tables/codec_results_table}
+
+\paragraph{Tokenizer Fertility.}
+
+\input{tables/tokenizer_fertility}
+
+\subsection{Beam Search Experiments}
+\label{app:beam-search}
+
+\paragraph{Search Setup.}
+A realized-size beam search approximately maximizes Eq.~\ref{eq:size-ratios}
+by cloning the codec state for candidate continuations. Unlike the greedy
+objectives, it captures arithmetic-coder, metadata, and framing effects during
+generation. Because the search considers only a bounded beam and candidate set,
+its result is an approximation to the sequence-level optimum.
+
+\paragraph{Results.}
+\todo{Report the beam width, branch factor, token and byte budgets, search
+runtime, and realized-size results; compare against the greedy MinProb and
+MaxSurprisal/Byte attacks and the conventional-codec baselines.}
+
+\subsection{Guarded Compression Pipeline}
+
+\begin{figure}[h]
+  \centering
+  \begin{tikzpicture}[
+    font=\scriptsize,
+    box/.style={draw, rounded corners=2pt, align=center, minimum height=7mm,
+      text width=20mm, inner sep=2pt},
+    smallbox/.style={box, text width=18mm},
+    decision/.style={box, fill=blue!7, text width=23mm},
+    storage/.style={box, fill=gray!12, text width=20mm},
+    arrow/.style={-{Latex[length=1.8mm]}, line width=.45pt},
+    note/.style={font=\scriptsize\itshape, text=black!70}
+  ]
+    \node[box] (source) at (0,0) {String block};
+    \node[box] (tokens) at (2.7,0) {Stable token IDs};
+    \node[smallbox] (qwen) at (5.4,.75) {Qwen predictor\\+ arithmetic coder};
+    \node[smallbox] (brotli) at (5.4,-.75) {Decode to bytes\\+ Brotli};
+    \node[decision] (compare) at (8.2,0) {Compare complete\\bytes/source byte};
+    \node[storage] (cold) at (11.0,0) {Cold block\\1-bit tag + payload};
+
+    \draw[arrow] (source) -- node[above,note] {tokenize} (tokens);
+    \draw[arrow] (tokens.east) -- ++(.35,0) |- (qwen.west);
+    \draw[arrow] (tokens.east) -- ++(.35,0) |- (brotli.west);
+    \draw[arrow] (qwen.east) -- ++(.35,0) |- (compare.west);
+    \draw[arrow] (brotli.east) -- ++(.35,0) |- (compare.west);
+    \draw[arrow] (compare) -- (cold);
+
+    \node[smallbox] (tag) at (11.0,-2.25) {Read codec tag};
+    \node[smallbox] (acdec) at (8.2,-1.75) {AC decode\\token IDs};
+    \node[smallbox] (brdec) at (8.2,-2.75) {Brotli decode\\+ tokenize};
+    \node[box] (restored) at (5.4,-2.25) {Restored token IDs};
+    \node[box, fill=green!7] (query) at (2.7,-2.25) {Token-table\\query execution};
+
+    \draw[arrow] (cold) -- node[right,note] {access} (tag);
+    \draw[arrow] (tag.west) -- ++(-.35,0) |- (acdec.east);
+    \draw[arrow] (tag.west) -- ++(-.35,0) |- (brdec.east);
+    \draw[arrow] (acdec.west) -- ++(-.35,0) |- (restored.east);
+    \draw[arrow] (brdec.west) -- ++(-.35,0) |- (restored.east);
+    \draw[arrow] (restored) -- node[above,note] {cold} (query);
+    \draw[arrow] (tokens) -- node[right,note] {hot} (query);
+
+    \node[draw=black!35, dashed, rounded corners=3pt, fit=(qwen)(brotli)(compare),
+      inner sep=4pt, label={[note]above:cold eviction: encode both}] {};
+  \end{tikzpicture}
+  \caption{\textbf{Guarded layered compression pipeline.} Hot blocks retain
+  queryable token IDs. At cold eviction, both complete encodings are produced
+  and the smaller is stored with a codec tag. On access, either path restores
+  token IDs before token-table query execution.}
+  \label{fig:block-guard-pipeline}
+\end{figure}

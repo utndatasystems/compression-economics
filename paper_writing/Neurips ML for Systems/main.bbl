@@ -1,22 +1,79 @@
-\begin{thebibliography}{2}
+\begin{thebibliography}{12}
 \providecommand{\natexlab}[1]{#1}
 \providecommand{\url}[1]{\texttt{#1}}
 \expandafter\ifx\csname urlstyle\endcsname\relax
   \providecommand{\doi}[1]{doi: #1}\else
   \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
 
-\bibitem[Del{\'e}tang et~al.(2024)Del{\'e}tang, Ruoss, Duquenne,
-  et~al.]{deletang2024language}
-Gr{\'e}goire Del{\'e}tang, Anian Ruoss, Paul-Ambroise Duquenne, et~al.
-\newblock Language modeling is compression.
-\newblock In \emph{International Conference on Learning Representations}, 2024.
+\bibitem[Kipf et~al.(2026)]{kipf2026waiting}
+Andreas Kipf et~al.
+\newblock Waiting to decompress: The economics of llm-based compression.
+\newblock In \emph{CIDR}, 2026.
 
-\bibitem[Sennrich et~al.(2016)Sennrich, Haddow, and Birch]{sennrich2016bpe}
-Rico Sennrich, Barry Haddow, and Alexandra Birch.
+\bibitem[Schmidt et~al.(2026)]{schmidt2026accelerating}
+Tobias Schmidt et~al.
+\newblock Accelerating string-heavy queries with {LLM} token tables.
+\newblock \emph{PVLDB}, 19, 2026.
+
+\bibitem[Alakuijala et~al.(2016)]{alakuijala2016brotli}
+Jyrki Alakuijala et~al.
+\newblock Brotli compressed data format.
+\newblock RFC 7932, Internet Engineering Task Force, July 2016.
+\newblock URL \url{https://www.rfc-editor.org/info/rfc7932}.
+
+\bibitem[Witten et~al.(1987)]{witten1987arithmetic}
+Ian~H. Witten et~al.
+\newblock Arithmetic coding for data compression.
+\newblock \emph{Commun. ACM}, 30\penalty0 (6):\penalty0 520--540, June 1987.
+\newblock \doi{10.1145/214762.214771}.
+
+\bibitem[Steinruecken(2015)]{steinruecken2015lossless}
+Christian Steinruecken.
+\newblock \emph{Lossless Data Compression}.
+\newblock PhD thesis, University of Cambridge, Cambridge, UK, 2015.
+
+\bibitem[Valmeekam et~al.(2023)]{valmeekam2023llmzip}
+Chandra Shekhara~Kaushik Valmeekam et~al.
+\newblock {LLMZip}: Lossless text compression using large language models.
+\newblock \emph{arXiv preprint arXiv:2306.04050}, 2023.
+
+\bibitem[Del{\'e}tang et~al.(2024)]{deletang2024language}
+Gr{\'e}goire Del{\'e}tang et~al.
+\newblock Language modeling is compression.
+\newblock In \emph{ICLR}, 2024.
+
+\bibitem[Gage(1994)]{gage1994new}
+Philip Gage.
+\newblock A new algorithm for data compression.
+\newblock \emph{The C Users Journal}, 12\penalty0 (2):\penalty0 23--38, 1994.
+
+\bibitem[Gall{\'e}(2019)]{galle2019investigating}
+Matthias Gall{\'e}.
+\newblock Investigating the effectiveness of {BPE}: The power of shorter
+  sequences.
+\newblock In \emph{EMNLP-IJCNLP}, pages 1375--1381, Hong Kong, China, 2019.
+  Association for Computational Linguistics.
+\newblock \doi{10.18653/v1/D19-1141}.
+
+\bibitem[Sennrich et~al.(2016)]{sennrich2016bpe}
+Rico Sennrich et~al.
 \newblock Neural machine translation of rare words with subword units.
-\newblock In \emph{Proceedings of the 54th Annual Meeting of the Association
-  for Computational Linguistics (Volume 1: Long Papers)}, pages 1715--1725,
-  Berlin, Germany, 2016. Association for Computational Linguistics.
+\newblock In \emph{ACL}, pages 1715--1725, Berlin, Germany, 2016. Association
+  for Computational Linguistics.
 \newblock \doi{10.18653/v1/P16-1162}.
+
+\bibitem[Qwen et~al.(2024)]{qwen2024qwen25}
+Qwen et~al.
+\newblock {Qwen2.5} technical report.
+\newblock \emph{arXiv preprint arXiv:2412.15115}, 2024.
+\newblock \doi{10.48550/arXiv.2412.15115}.
+\newblock URL \url{https://arxiv.org/abs/2412.15115}.
+
+\bibitem[Boncz et~al.(2020)]{boncz2020fsst}
+Peter Boncz et~al.
+\newblock {FSST}: Fast random access string compression.
+\newblock \emph{Proceedings of the VLDB Endowment}, 13\penalty0 (11):\penalty0
+  2649--2661, 2020.
+\newblock \doi{10.14778/3407790.3407851}.
 
 \end{thebibliography}

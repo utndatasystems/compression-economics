@@ -2,62 +2,92 @@
 \providecommand\hyper@newdestlabel[2]{}
 \providecommand\HyField@AuxAddToFields[1]{}
 \providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{kipf2026waiting}
+\citation{schmidt2026accelerating}
+\citation{alakuijala2016brotli}
+\citation{witten1987arithmetic,steinruecken2015lossless}
+\citation{valmeekam2023llmzip}
 \citation{deletang2024language}
-\citation{schmidt2026token}
+\citation{gage1994new}
+\citation{galle2019investigating}
 \citation{sennrich2016bpe}
-\@writefile{toc}{\contentsline {section}{\numberline {1}Who is actually doing the heavy lifting in LLM-based compression?}{1}{section.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Contributions.}{1}{section*.1}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Systems implication.}{2}{section*.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {2}Compression objectives and how to construct worst-case inputs}{2}{section.2}\protected@file@percent }
-\newlabel{sec:attacks}{{2}{2}{Compression objectives and how to construct worst-case inputs}{section.2}{}}
-\newlabel{eq:source-bytes}{{1}{2}{Compression objectives and how to construct worst-case inputs}{equation.2.1}{}}
-\newlabel{eq:minprob}{{2}{2}{Compression objectives and how to construct worst-case inputs}{equation.2.2}{}}
-\newlabel{eq:spb}{{4}{2}{Compression objectives and how to construct worst-case inputs}{equation.2.4}{}}
-\newlabel{eq:nll}{{5}{2}{Compression objectives and how to construct worst-case inputs}{equation.2.5}{}}
-\newlabel{eq:ideal-ratio}{{6}{2}{Compression objectives and how to construct worst-case inputs}{equation.2.6}{}}
-\newlabel{eq:actualrate}{{7}{2}{Compression objectives and how to construct worst-case inputs}{equation.2.7}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Prediction Loss Is Not Compression Loss}{3}{subsection.2.1}\protected@file@percent }
-\newlabel{sec:objective-mismatch}{{2.1}{3}{Prediction Loss Is Not Compression Loss}{subsection.2.1}{}}
-\newlabel{eq:factorization}{{9}{3}{Prediction Loss Is Not Compression Loss}{equation.2.9}{}}
-\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Token-, Byte-, and Codec-Level Attacks}{3}{subsection.2.2}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{(Global mask re-scoring as an optimization}{3}{section*.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {3}Experimental design}{3}{section.3}\protected@file@percent }
-\newlabel{sec:design}{{3}{3}{Experimental design}{section.3}{}}
-\@writefile{toc}{\contentsline {paragraph}{Setup.}{3}{section*.4}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Reported quantities.}{3}{section*.5}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces  \textbf  {Source-normalized predictive coding under increasingly adverse inputs.} Token-level surprisal / LLM prediction cost alone is not predictive of compression failure. Arrows indicate the direction favorable to compression ($\downarrow $ lower is better; $\uparrow $ higher is better). AC size $R_{\mathrm  {AC}}$ reports the arithmetic-coder payload relative to raw UTF-8; $^\dagger $ Preliminary 32- and 128-token smoke tests only (three seed runs each). $^\ddagger $ Preliminary 1,024-token smoke test (one seed run). }}{4}{table.1}\protected@file@percent }
-\newlabel{tab:decisive}{{1}{4}{\textbf {Source-normalized predictive coding under increasingly adverse inputs.} Token-level surprisal / LLM prediction cost alone is not predictive of compression failure. Arrows indicate the direction favorable to compression ($\downarrow $ lower is better; $\uparrow $ higher is better). AC size $R_{\mathrm {AC}}$ reports the arithmetic-coder payload relative to raw UTF-8; $^\dagger $ Preliminary 32- and 128-token smoke tests only (three seed runs each). $^\ddagger $ Preliminary 1,024-token smoke test (one seed run)}{table.1}{}}
-\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces \textbf  {End-to-end compression across natural and adversarial inputs.} Realized size ratio $R$ for complete Qwen+AC, fixed-width Qwen token-ID, FSST, and Brotli streams. The dashed line marks raw UTF-8 ($R=100\%$); lower is better, and bold values mark the smallest complete stream for each input. The MinProb adversary greedily selects the least-probable canonical continuation. The 10,000-token full-vocabulary MaxSurprisal/Byte result is pending. Shared Qwen model weights and the tokenizer table are excluded from both Qwen representations.}}{4}{figure.1}\protected@file@percent }
-\newlabel{fig:layered_compression_robustness}{{1}{4}{\textbf {End-to-end compression across natural and adversarial inputs.} Realized size ratio $R$ for complete Qwen+AC, fixed-width Qwen token-ID, FSST, and Brotli streams. The dashed line marks raw UTF-8 ($R=100\%$); lower is better, and bold values mark the smallest complete stream for each input. The MinProb adversary greedily selects the least-probable canonical continuation. The 10,000-token full-vocabulary MaxSurprisal/Byte result is pending. Shared Qwen model weights and the tokenizer table are excluded from both Qwen representations}{figure.1}{}}
-\@writefile{toc}{\contentsline {section}{\numberline {4}Results}{4}{section.4}\protected@file@percent }
-\newlabel{sec:results}{{4}{4}{Results}{section.4}{}}
-\@writefile{toc}{\contentsline {paragraph}{Natural text versus distribution shift. (interpretation of first two datasets in barplot)}{4}{section*.6}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Prediction failure does not imply compression failure. (interpretation of the MinProb adversary result)}{4}{section*.7}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Removing tokenizer fertility exposes predictive expansion. (interpretation of the one-byte UTF-8 ablation and the max. suprisal/byte result)}{5}{section*.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {5}Results (old)}{5}{section.5}\protected@file@percent }
-\newlabel{sec:results}{{5}{5}{Results (old)}{section.5}{}}
-\@writefile{toc}{\contentsline {paragraph}{Prediction helps strongly on natural text, but not under distribution shift.}{5}{section*.9}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Prediction failure does not imply compression failure.}{5}{section*.10}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Removing tokenizer fertility exposes predictive expansion.}{5}{section*.11}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {6}System Implications - Designing LLM Compression That Fails Gracefully}{5}{section.6}\protected@file@percent }
-\newlabel{sec:limitations}{{6}{5}{System Implications - Designing LLM Compression That Fails Gracefully}{section.6}{}}
-\bibstyle{plainnat}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Who Is Actually Doing the Heavy Lifting in LLM-Based Compression?}{1}{section.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Contributions.}{2}{section*.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Compression Objectives and How to Construct Worst-Case Inputs}{2}{section.2}\protected@file@percent }
+\newlabel{sec:attacks}{{2}{2}{Compression Objectives and How to Construct Worst-Case Inputs}{section.2}{}}
+\newlabel{eq:minprob}{{1}{2}{Compression Objectives and How to Construct Worst-Case Inputs}{equation.2.1}{}}
+\newlabel{eq:spb}{{3}{2}{Compression Objectives and How to Construct Worst-Case Inputs}{equation.2.3}{}}
+\newlabel{eq:nll}{{4}{2}{Compression Objectives and How to Construct Worst-Case Inputs}{equation.2.4}{}}
+\newlabel{eq:size-ratios}{{5}{2}{Compression Objectives and How to Construct Worst-Case Inputs}{equation.2.5}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Prediction Loss Is Not Compression Loss}{2}{subsection.2.1}\protected@file@percent }
+\newlabel{sec:objective-mismatch}{{2.1}{2}{Prediction Loss Is Not Compression Loss}{subsection.2.1}{}}
+\newlabel{eq:factorization}{{7}{2}{Prediction Loss Is Not Compression Loss}{equation.2.7}{}}
+\citation{qwen2024qwen25}
+\citation{boncz2020fsst}
+\citation{boncz2020fsst}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Token- and Byte-Level Attacks}{3}{subsection.2.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Threat Model.}{3}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Adversarial Input Generation.}{3}{section*.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Practical Relevance (should be rewritten and the paragraph renamed).}{3}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {3}Evaluation}{3}{section.3}\protected@file@percent }
+\newlabel{sec:evaluation}{{3}{3}{Evaluation}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}Experimental Setup}{3}{subsection.3.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Results}{3}{subsection.3.2}\protected@file@percent }
+\newlabel{sec:results}{{3.2}{3}{Results}{subsection.3.2}{}}
+\@writefile{toc}{\contentsline {paragraph}{Natural-to-Random Shift Removes the Predictive Advantage.}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Prediction Failure Does Not Imply Compression Failure.}{3}{section*.6}\protected@file@percent }
+\citation{kipf2026waiting}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces  \textbf  {Source-normalized predictive coding under increasingly adverse inputs.} Token-level surprisal alone is not predictive of compression failure. $\downarrow $ lower is better, $\uparrow $ higher is better for compression. AC size $R_{\mathrm  {AC}}$ reports the arithmetic-coder payload relative to raw UTF-8. $^\dagger $ Final 1,024-token evaluation (one run). }}{4}{table.1}\protected@file@percent }
+\newlabel{tab:decisive}{{1}{4}{\textbf {Source-normalized predictive coding under increasingly adverse inputs.} Token-level surprisal alone is not predictive of compression failure. $\downarrow $ lower is better, $\uparrow $ higher is better for compression. AC size $R_{\mathrm {AC}}$ reports the arithmetic-coder payload relative to raw UTF-8. $^\dagger $ Final 1,024-token evaluation (one run)}{table.1}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces \textbf  {End-to-end compression across natural vs. adversarial inputs.} Realized size ratio $R$ for Qwen+AC, fixed-width Qwen token-ID, FSST~\citep  {boncz2020fsst}, and Brotli. Bold values mark the smallest stream for each input. All streams are round-trip-verified. Qwen model weights, tokenizer table are excluded.}}{4}{figure.1}\protected@file@percent }
+\newlabel{fig:layered_compression_robustness}{{1}{4}{\textbf {End-to-end compression across natural vs. adversarial inputs.} Realized size ratio $R$ for Qwen+AC, fixed-width Qwen token-ID, FSST~\citep {boncz2020fsst}, and Brotli. Bold values mark the smallest stream for each input. All streams are round-trip-verified. Qwen model weights, tokenizer table are excluded}{figure.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Attacking Fertility-Adjusted Cost Causes Expansion.}{4}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}Implications and Conclusion }{4}{section.4}\protected@file@percent }
+\newlabel{sec:limitations}{{4}{4}{Implications and Conclusion}{section.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{LLM-based compression survives model errors.}{4}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Queryable token representation as the foundation.}{4}{section*.9}\protected@file@percent }
+\bibstyle{unsrtnat}
 \bibdata{references}
-\bibcite{deletang2024language}{{1}{2024}{{Del{\'e}tang et~al.}}{{Del{\'e}tang, Ruoss, Duquenne, et~al.}}}
-\bibcite{sennrich2016bpe}{{2}{2016}{{Sennrich et~al.}}{{Sennrich, Haddow, and Birch}}}
-\@writefile{toc}{\contentsline {section}{\numberline {7}Conclusion}{6}{section.7}\protected@file@percent }
-\@writefile{toc}{\contentsline {section}{\numberline {8}Appendix}{7}{section.8}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Why canonicality is required.}{7}{section*.13}\protected@file@percent }
-\@writefile{toc}{\contentsline {subsection}{\numberline {8.1}Experimental details}{7}{subsection.8.1}\protected@file@percent }
-\newlabel{app:experimental-details}{{8.1}{7}{Experimental details}{subsection.8.1}{}}
-\@writefile{toc}{\contentsline {paragraph}{Model and coder.}{7}{section*.14}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Inputs and aggregation.}{7}{section*.15}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Cost accounting.}{7}{section*.16}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Layered compression robustness and cost attribution.}{7}{section*.17}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Tokenizer fertility stats}{7}{table.3}\protected@file@percent }
-\@writefile{toc}{\contentsline {paragraph}{Reported quantities.}{7}{section*.19}\protected@file@percent }
-\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces \textbf  {Realized size ratio by input and codec.} Values are encoded bytes divided by raw UTF-8 bytes and reported as percentages; lower is better. AC payload excludes the Qwen container and is shown only for cost attribution. All remaining entries are complete, round-trip-verified streams, and bold marks the smallest complete stream per row.}}{8}{table.2}\protected@file@percent }
-\newlabel{tab:codec-comparison}{{2}{8}{\textbf {Realized size ratio by input and codec.} Values are encoded bytes divided by raw UTF-8 bytes and reported as percentages; lower is better. AC payload excludes the Qwen container and is shown only for cost attribution. All remaining entries are complete, round-trip-verified streams, and bold marks the smallest complete stream per row}{table.2}{}}
-\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Tokenizer fertility on the held-out 5\,MB text8 test region (855{,}233 whitespace-delimited words). The text8 BPE is trained only on the first 90\,MB with a 32k vocabulary. Fertility is tokens per word (lower is better); bytes per token is the compression-oriented inverse (higher is better). All tokenizers reconstruct the input exactly. The domain-trained BPE produces 4.4\% fewer tokens than Qwen.}}{8}{table.3}\protected@file@percent }
-\newlabel{tab:tokenizer-fertility}{{3}{8}{Tokenizer fertility on the held-out 5\,MB text8 test region (855{,}233 whitespace-delimited words). The text8 BPE is trained only on the first 90\,MB with a 32k vocabulary. Fertility is tokens per word (lower is better); bytes per token is the compression-oriented inverse (higher is better). All tokenizers reconstruct the input exactly. The domain-trained BPE produces 4.4\% fewer tokens than Qwen}{table.3}{}}
+\bibcite{kipf2026waiting}{{1}{2026}{{Kipf et~al.}}{{}}}
+\bibcite{schmidt2026accelerating}{{2}{2026}{{Schmidt et~al.}}{{}}}
+\bibcite{alakuijala2016brotli}{{3}{2016}{{Alakuijala et~al.}}{{}}}
+\bibcite{witten1987arithmetic}{{4}{1987}{{Witten et~al.}}{{}}}
+\bibcite{steinruecken2015lossless}{{5}{2015}{{Steinruecken}}{{}}}
+\bibcite{valmeekam2023llmzip}{{6}{2023}{{Valmeekam et~al.}}{{}}}
+\bibcite{deletang2024language}{{7}{2024}{{Del{\'e}tang et~al.}}{{}}}
+\bibcite{gage1994new}{{8}{1994}{{Gage}}{{}}}
+\bibcite{galle2019investigating}{{9}{2019}{{Gall{\'e}}}{{}}}
+\bibcite{sennrich2016bpe}{{10}{2016}{{Sennrich et~al.}}{{}}}
+\bibcite{qwen2024qwen25}{{11}{2024}{{Qwen et~al.}}{{}}}
+\bibcite{boncz2020fsst}{{12}{2020}{{Boncz et~al.}}{{}}}
+\@writefile{toc}{\contentsline {paragraph}{Block-level guard.}{5}{section*.10}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {5}Appendix}{6}{section.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.1}Metric Definitions}{6}{subsection.5.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.2}Evaluation Protocol}{6}{subsection.5.2}\protected@file@percent }
+\newlabel{app:experimental-details}{{5.2}{6}{Evaluation Protocol}{subsection.5.2}{}}
+\newlabel{app:canonicality}{{5.2}{6}{Canonical Inputs}{section*.12}{}}
+\@writefile{toc}{\contentsline {paragraph}{Canonical Inputs.}{6}{section*.12}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Model and Coder.}{6}{section*.13}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Inputs and Aggregation.}{6}{section*.14}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Round-Trip Validation and Baselines.}{6}{section*.15}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces \textbf  {Adversarial prediction difficulty.} Each condition is compared with the same natural-text prediction cost of $5.11$ bits/token. Labels inside the plot report the ratio to text8. Error bars show sample standard deviation across three canonical seeds where available; $^\dagger $ marks the final 1,024-token MaxSurprisal/Byte ($v^\star _{\mathrm  {byte}}$) single run.}}{7}{figure.2}\protected@file@percent }
+\newlabel{fig:paper-prediction-difficulty}{{2}{7}{\textbf {Adversarial prediction difficulty.} Each condition is compared with the same natural-text prediction cost of $5.11$ bits/token. Labels inside the plot report the ratio to text8. Error bars show sample standard deviation across three canonical seeds where available; $^\dagger $ marks the final 1,024-token MaxSurprisal/Byte ($\vbyte $) single run}{figure.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.3}Detailed Results and Accounting}{7}{subsection.5.3}\protected@file@percent }
+\newlabel{app:maxsurprisal-length}{{5.3}{7}{Effect of the Shorter MaxSurprisal/Byte ($\vbyte $) Sequence}{section*.16}{}}
+\@writefile{toc}{\contentsline {paragraph}{Effect of the Shorter MaxSurprisal/Byte ($v^\star _{\mathrm  {byte}}$) Sequence.}{7}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Codec Comparison.}{7}{section*.17}\protected@file@percent }
+\newlabel{app:stream-accounting}{{5.3}{7}{Stream Accounting}{section*.18}{}}
+\@writefile{toc}{\contentsline {paragraph}{Stream Accounting.}{7}{section*.18}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Tokenizer Fertility.}{7}{table.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.4}Beam Search Experiments}{7}{subsection.5.4}\protected@file@percent }
+\newlabel{app:beam-search}{{5.4}{7}{Beam Search Experiments}{subsection.5.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Search Setup.}{7}{section*.20}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Results.}{7}{section*.21}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {5.5}Guarded Compression Pipeline}{7}{subsection.5.5}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces \textbf  {Realized size ratio by input and codec.} Values are encoded bytes divided by raw UTF-8 bytes and reported as percentages; lower is better. AC payload excludes the Qwen container and is shown only for cost attribution. All entries in the four codec columns are complete, round-trip-verified streams, and bold marks the smallest complete stream per row.}}{8}{table.2}\protected@file@percent }
+\newlabel{tab:codec-comparison}{{2}{8}{\textbf {Realized size ratio by input and codec.} Values are encoded bytes divided by raw UTF-8 bytes and reported as percentages; lower is better. AC payload excludes the Qwen container and is shown only for cost attribution. All entries in the four codec columns are complete, round-trip-verified streams, and bold marks the smallest complete stream per row}{table.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Tokenizer fertility on the held-out 5\,MB text8 test region (855{,}233 whitespace-delimited words). The text8 BPE is trained only on the first 90\,MB with a 32k vocabulary. Fertility is tokens/word (lower is better); bytes/token is the compression-oriented inverse (higher is better). All tokenizers reconstruct the input exactly. The domain-trained BPE produces 4.4\% fewer tokens than Qwen.}}{8}{table.3}\protected@file@percent }
+\newlabel{tab:tokenizer-fertility}{{3}{8}{Tokenizer fertility on the held-out 5\,MB text8 test region (855{,}233 whitespace-delimited words). The text8 BPE is trained only on the first 90\,MB with a 32k vocabulary. Fertility is tokens/word (lower is better); bytes/token is the compression-oriented inverse (higher is better). All tokenizers reconstruct the input exactly. The domain-trained BPE produces 4.4\% fewer tokens than Qwen}{table.3}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces \textbf  {Guarded layered compression pipeline.} Hot blocks retain queryable token IDs. At cold eviction, both complete encodings are produced and the smaller is stored with a codec tag. On access, either path restores token IDs before token-table query execution.}}{8}{figure.3}\protected@file@percent }
+\newlabel{fig:block-guard-pipeline}{{3}{8}{\textbf {Guarded layered compression pipeline.} Hot blocks retain queryable token IDs. At cold eviction, both complete encodings are produced and the smaller is stored with a codec tag. On access, either path restores token IDs before token-table query execution}{figure.3}{}}
 \gdef \@abspage@last{8}

@@ -9,6 +9,7 @@ from evaluation.crucial_figures import (
     deserialize_token_ids,
     parse_predictive_payload,
     plot_compressor_bars,
+    plot_paper_prediction_difficulty,
     plot_surprisal_scatter,
     serialize_predictive_payload,
     serialize_token_ids,
@@ -167,5 +168,34 @@ def test_compressor_bars_omits_payload_diamonds_and_marks_pending_data():
         assert payload_markers == []
         pending = [text for text in ax.texts if text.get_text() == "pending\n10k run"]
         assert len(pending) == 1
+    finally:
+        fig.clear()
+
+
+def test_paper_prediction_difficulty_uses_shared_text8_baseline_and_ratios():
+    frame = pd.DataFrame(
+        [
+            {
+                "condition": "MinProb",
+                "prediction_bits_per_token": 29.04,
+                "std_bits_per_token": 0.04,
+                "single_run": False,
+            },
+            {
+                "condition": "MaxSurprisal/Byte",
+                "prediction_bits_per_token": 15.52,
+                "std_bits_per_token": pd.NA,
+                "single_run": True,
+            },
+        ]
+    )
+    fig, ax = plot_paper_prediction_difficulty(frame, text8_bits_per_token=5.11)
+    try:
+        assert [patch.get_height() for patch in ax.patches[:2]] == [5.11, 5.11]
+        assert [patch.get_height() for patch in ax.patches[2:]] == [29.04, 15.52]
+        texts = {text.get_text() for text in ax.texts}
+        assert "5.68×" in texts
+        assert "3.04×" in texts
+        assert "$^{\\dagger}$" in ax.get_xticklabels()[1].get_text()
     finally:
         fig.clear()

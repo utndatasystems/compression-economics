@@ -150,7 +150,7 @@ run_long_attacks() {
     --context-length "$CONTEXT_LENGTH" \
     --retain-tokens "$RETAIN_TOKENS" \
     --ordinary-text "$TEXT8_PATH" \
-    --random-utf8-bytes "$PAPER_LENGTH" \
+    --random-utf8-bytes "$((2 * PAPER_LENGTH))" \
     --output-dir "$RUN_ROOT/full_vocab_attacks_n$PAPER_LENGTH"
 }
 

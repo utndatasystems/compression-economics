@@ -1,4 +1,4 @@
-"""Auditable helpers for the two crucial NeurIPS compression figures.
+"""Auditable helpers for the crucial NeurIPS compression figures.
 
 The notebook in ``evaluation/notebooks/neurips/crucial_figures.ipynb`` owns the
 paper-specific analysis.  This module keeps binary serialization, round-trip
@@ -285,7 +285,7 @@ def validate_bar_results(
     if missing:
         raise ValueError(f"missing result columns: {sorted(missing)}")
     accepted_statuses = (
-        {"measured", "preliminary"} if include_preliminary else {"measured"}
+        {"measured", "preliminary", "payload-only"} if include_preliminary else {"measured"}
     )
     measured = frame[frame["status"].isin(accepted_statuses)].copy()
     verified = measured[measured["status"] == "measured"]
@@ -364,7 +364,7 @@ def plot_surprisal_scatter(frame: pd.DataFrame):
     )
     ax.text(
         x=ax.get_xlim()[0] + 0.05 * (ax.get_xlim()[1] - ax.get_xlim()[0]),
-        y=102,
+        y=110,
         s="raw UTF-8",
         color=COLORS["token"],
         fontsize=6.8,
@@ -377,6 +377,7 @@ def plot_surprisal_scatter(frame: pd.DataFrame):
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(
         frameon=False,
+        fontsize=7.2,
         ncol=3,
         loc="lower center",
         bbox_to_anchor=(0.5, 1.0),
@@ -432,7 +433,7 @@ def plot_compressor_bars(
                 ax.text(
                     bar.get_x() + bar.get_width() / 2,
                     value + 3,
-                    f"{value + 1e-9:.1f}%".replace(".", ","),
+                    f"{value + 1e-9:.1f}%",
                     ha="center",
                     va="bottom",
                     fontsize=6.4,
@@ -453,7 +454,7 @@ def plot_compressor_bars(
     )
     ax.text(
         x[0] - 0.38,
-        102,
+        110,
         "raw UTF-8 (100%)",
         color=COLORS["token"],
         fontsize=6.8,
@@ -461,16 +462,19 @@ def plot_compressor_bars(
     display_labels = {
         "text8": "text8",
         "random text": "random\ntext",
-        "token-level adversary": "MinProb\nadversary",
-        "MinProb adversary": "MinProb\nadversary",
+        "token-level adversary": "MinProb\n($v^\\star_{\\mathrm{tok}}$)",
+        "MinProb adversary": "MinProb\n($v^\\star_{\\mathrm{tok}}$)",
         "byte-aware adversary": "byte-aware\nadversary",
-        "MaxSurprisal/Byte adversary": "MaxSurprisal/Byte\nadversary",
+        "MaxSurprisal/Byte adversary": (
+            "MaxSurprisal/Byte\n"
+            "($v^\\star_{\\mathrm{byte}}$; N=1,024)"
+        ),
         "one-byte adversary": "one-byte\nadversary",
-        "printable one-byte adversary": "printable one-byte\nadversary",
         "all one-byte adversary": "one-byte UTF-8\nablation",
     }
     display_labels = [display_labels.get(dataset, dataset) for dataset in dataset_order]
-    ax.set_xticks(x, display_labels)
+    ax.set_xticks(x, display_labels, fontsize=7.2)
+    ax.tick_params(axis="y", labelsize=7.5)
     group_specs = [
         ("BASELINES", x[baseline_mask]),
         ("INPUT ADVERSARIES", x[~baseline_mask]),
@@ -527,17 +531,18 @@ def plot_compressor_bars(
             },
             zorder=4,
         )
-    has_preliminary = (measured["status"] == "preliminary").any()
+    has_preliminary = (measured["status"] != "measured").any()
     ax.set_ylabel(
         "Encoded size / raw UTF-8 (%)"
         if has_preliminary
-        else r"Realized size ratio $R$ (%)"
+        else r"Realized size ratio $R$ (%)",
+        fontsize=8.5,
     )
     if has_preliminary:
         ax.text(
             0.995,
             0.985,
-            "Qwen + AC: arithmetic payload only",
+            "MaxSurprisal/Byte Qwen+AC: AC payload only",
             transform=ax.transAxes,
             ha="right",
             va="top",
@@ -548,9 +553,157 @@ def plot_compressor_bars(
     ax.spines[["top", "right"]].set_visible(False)
     ax.legend(
         frameon=False,
+        fontsize=7.2,
         ncol=4,
         loc="lower center",
         bbox_to_anchor=(0.5, 1.0),
+    )
+    fig.subplots_adjust(left=0.105, right=0.99, top=0.82, bottom=0.20)
+    return fig, ax
+
+
+def plot_paper_prediction_difficulty(
+    frame: pd.DataFrame,
+    *,
+    text8_bits_per_token: float,
+):
+    """Plot paper-table prediction costs against the shared text8 reference."""
+    required = {
+        "condition",
+        "prediction_bits_per_token",
+        "std_bits_per_token",
+        "single_run",
+    }
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"prediction-difficulty data missing {sorted(missing)}")
+    if frame.empty or text8_bits_per_token <= 0:
+        raise ValueError("prediction-difficulty values must be non-empty and positive")
+    values = frame["prediction_bits_per_token"].astype(float).to_numpy()
+    error_values = pd.to_numeric(
+        frame["std_bits_per_token"], errors="coerce"
+    ).to_numpy(dtype=float)
+    errors = np.nan_to_num(error_values, nan=0.0)
+    if np.any(values <= 0) or np.any(errors < 0):
+        raise ValueError("prediction costs and standard deviations must be non-negative")
+
+    x = np.arange(len(frame), dtype=float)
+    width = 0.32
+    typical_positions = x - width / 2
+    attack_positions = x + width / 2
+    ratios = values / text8_bits_per_token
+
+    fig, ax = plt.subplots(figsize=(7.05, 3.15))
+    typical_bars = ax.bar(
+        typical_positions,
+        np.full(len(frame), text8_bits_per_token),
+        width,
+        color=COLORS["qwen"],
+        edgecolor="white",
+        linewidth=0.7,
+        label="Natural text (text8)",
+        zorder=3,
+    )
+    attack_bars = ax.bar(
+        attack_positions,
+        values,
+        width,
+        color=COLORS["anti"],
+        edgecolor="white",
+        linewidth=0.7,
+        label="Adversarial condition",
+        zorder=3,
+    )
+    error_mask = np.isfinite(error_values)
+    ax.errorbar(
+        attack_positions[error_mask],
+        values[error_mask],
+        yerr=error_values[error_mask],
+        fmt="none",
+        ecolor=COLORS["ink"],
+        elinewidth=0.8,
+        capsize=3,
+        capthick=0.8,
+        zorder=4,
+    )
+    value_offset = max(values) * 0.025
+    for bar in typical_bars:
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            text8_bits_per_token + value_offset,
+            f"{text8_bits_per_token:.2f}",
+            ha="center",
+            va="bottom",
+            fontsize=6.4,
+            fontweight="bold",
+        )
+    for bar, value, error in zip(attack_bars, values, errors):
+        ax.text(
+            bar.get_x() + bar.get_width() / 2,
+            value + error + value_offset,
+            f"{value:.2f}",
+            ha="center",
+            va="bottom",
+            fontsize=6.4,
+            fontweight="bold",
+        )
+    for position, ratio in zip(x, ratios):
+        ax.text(
+            position,
+            0.025,
+            f"{ratio:.2f}×",
+            transform=ax.get_xaxis_transform(),
+            ha="center",
+            va="bottom",
+            fontsize=6.6,
+            color=COLORS["token"],
+            fontweight="bold",
+            bbox={
+                "boxstyle": "round,pad=0.15",
+                "facecolor": "white",
+                "edgecolor": "none",
+                "alpha": 0.92,
+            },
+        )
+
+    labels = frame["condition"].astype(str).tolist()
+    labels = [
+        label.replace("One-byte UTF-8 ablation", "One-byte UTF-8\nablation")
+        for label in labels
+    ]
+    objective_labels = {
+        "MinProb": "MinProb\n($v^\\star_{\\mathrm{tok}}$)",
+        "MaxSurprisal/Byte": (
+            "MaxSurprisal/Byte\n($v^\\star_{\\mathrm{byte}}$)"
+        ),
+    }
+    labels = [objective_labels.get(label, label) for label in labels]
+    labels = [
+        f"{label}$^{{\\dagger}}$" if single_run else label
+        for label, single_run in zip(labels, frame["single_run"].astype(bool))
+    ]
+    ax.set_xticks(x, labels)
+    ax.tick_params(axis="x", labelsize=7.2)
+    ax.tick_params(axis="y", labelsize=7.5)
+    ax.set_ylabel("Prediction cost (bits/token)", fontsize=8.5)
+    ax.set_ylim(0, max(values + errors) * 1.20)
+    ax.grid(axis="y", color=COLORS["grid"], linewidth=0.6, zorder=0)
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.legend(
+        frameon=False,
+        fontsize=7.2,
+        ncol=2,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.0),
+    )
+    fig.text(
+        0.99,
+        0.025,
+        r"$^\dagger$ $N=1{,}024$; one run",
+        ha="right",
+        va="bottom",
+        fontsize=6.4,
+        color=COLORS["token"],
     )
     fig.subplots_adjust(left=0.105, right=0.99, top=0.82, bottom=0.20)
     return fig, ax

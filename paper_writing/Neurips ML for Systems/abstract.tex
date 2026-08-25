@@ -1,2 +1,22 @@
-Large language models (LLMs) have been known to be capable of acting as powerful lossless compression machines: next-token probabilities coupled with entropy coding can substantially compress data below its raw size. Yet existing evaluations largely single out predictive performance of the LLM or at best aggregate compression ratios, leaving an important systems question understudied: \emph{when does LLM compression survive (catastrophic/worst-case) prediction failure?} We show that the answer lies in treating LLM-based compression as a two-layer system of (1) tokenization as pre-compression and (2) entropy coding with LLM-derived probabilities. On text8, Qwen2.5-0.5B compresses to $17.6\%$ of raw size, outperforming token IDs ($41.3\%$) and Brotli ($29.6\%$). Strikingly, a $5.26\times$ increase in adversarial prediction cost still yields a $31.7\%$ arithmetic-coded stream because long tokens amortize prediction errors. Removing this effect with one-byte tokens causes expansion to $119.6\%$, while conventional codecs remain compressive. 
+Large language models (LLMs) can be powerful lossless compressors:
+their next-token probabilities coupled with entropy coding can reduce data
+below its original size. Yet existing evaluations largely single out
+predictive performance of the LLM, leaving an important systems
+question understudied: when does compression survive severe model
+mismatch? We show that the answer lies in treating LLM-based
+compression as a two-layer system of (1) tokenization as a stable,
+queryable representation and (2) predictive entropy coding as an
+optional cold-storage layer, guarded by a block-level selector that
+stores the smaller of Qwen+AC and Brotli. On text8, Qwen2.5-0.5B
+compresses to $17.6\%$ of raw size,
+outperforming tokenization-only as compression ($41.3\%$) and the conventional compression algorithsm Brotli ($29.6\%$). Selecting
+the least-probable valid next token requires a prediction rate $5.68\times$ that of
+text8, measured in bits/token, yet long tokens buffer these
+errors and keep the complete data stream at $36.2\%$. Restricting
+candidates to one-byte tokens only removes this buffer and expands the
+complete stream to $122.8\%$, while conventional codecs remain
+compressive. We therefore introduce an objective that maximizes
+decoded-byte-normalized surprisal, attacking the buffer directly and producing
+an arithmetic payload of $122.4\%$ and a complete stream of $144.3\%$ of raw size.
+
 %Tokenizer fertility therefore defines a key robustness boundary, motivating selective predictive coding with a conventional fallback.

@@ -70,7 +70,7 @@ run_long_byte_attacks() {
     --attack min-probability \
     --attack surprisal-per-byte \
     --ordinary-text "$PAPER_TEXT8_PATH" \
-    --random-utf8-bytes "$PAPER_LENGTH" \
+    --random-utf8-bytes "$((2 * PAPER_LENGTH))" \
     --output-dir "$output_dir"
 }
 
