@@ -5,6 +5,12 @@ temp/*
 
 # Generated experiment outputs, model weights, figures, and logs
 /artifacts/*
+!/artifacts/papers/
+/artifacts/papers/*
+!/artifacts/papers/neurips-2026/
+/artifacts/papers/neurips-2026/*
+!/artifacts/papers/neurips-2026/README.md
+!/artifacts/papers/neurips-2026/manifest.json
 
 logs/*
 *.job
@@ -13,7 +19,7 @@ logs/*
 *.jpg
 *.jpeg
 *.png
-!paper_writing/Neurips ML for Systems/plots/end_to_end_compressor_robustness.png
+!papers/neurips_2026/manuscript/plots/end_to_end_compressor_robustness.png
 
 # LaTeX build intermediates
 *.aux

@@ -11,7 +11,7 @@ import re
 import sys
 from types import SimpleNamespace
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -28,8 +28,8 @@ from src.qwen_stream import (
 )
 
 
-DEFAULT_SWEEP_ROOT = REPO_ROOT / "artifacts/runs/paper-evaluation"
-DEFAULT_OUTPUT = DEFAULT_SWEEP_ROOT / "finalized-qwen-bars-b10000"
+ARTIFACT_ROOT = REPO_ROOT / "artifacts/papers/neurips-2026"
+DEFAULT_OUTPUT = ARTIFACT_ROOT / "finalized/qwen-bars/b10000"
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,10 +97,10 @@ def _matched_prefix(tokenizer, token_ids: list[int], budget: int) -> tuple[list[
 
 
 def _source_rows(root: Path) -> list[dict]:
-    printable_path = root / "printable-ascii_n10000/results.json"
-    one_byte_path = root / "ascii-bytes_n10000/results.json"
-    full_path = root / "full_vocab_n10000/full/results.json"
-    max_surprisal_path = root.parent / "smoke-surprisal-per-byte-n1024/results.json"
+    printable_path = root / "runs/auxiliary/printable-ascii/n10000/results.json"
+    one_byte_path = root / "runs/ablations/one-byte-utf8/n10000/results.json"
+    full_path = root / "runs/attacks/minprob/full-vocabulary/n10000/full/results.json"
+    max_surprisal_path = root / "runs/attacks/max-surprisal-per-byte/full-vocabulary/n1024/results.json"
     printable = _read_json(printable_path)
     full = _read_json(full_path)
     full_runs = [row for row in full["runs"] if row["run_index"] == 0]
@@ -151,7 +151,7 @@ def main() -> None:
     predictor = TokenPredictor(make_predictor_args(predictor_args), bitmap_data=None)
     tokenizer = predictor.tokenizer
 
-    rows = _source_rows(DEFAULT_SWEEP_ROOT)
+    rows = _source_rows(ARTIFACT_ROOT)
     if args.dataset:
         available = {row["dataset"] for row in rows}
         unknown = set(args.dataset) - available

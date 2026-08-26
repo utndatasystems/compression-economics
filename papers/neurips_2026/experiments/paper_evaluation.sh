@@ -9,7 +9,8 @@ PAPER_SEARCH_LENGTH="${PAPER_SEARCH_LENGTH:-512}"
 PAPER_BEAM_WIDTH="${PAPER_BEAM_WIDTH:-4}"
 PAPER_BRANCH_FACTOR="${PAPER_BRANCH_FACTOR:-8}"
 PAPER_MODEL="${PAPER_MODEL:-Qwen/Qwen2.5-0.5B}"
-PAPER_RUN_ROOT="${PAPER_RUN_ROOT:-artifacts/runs/paper-evaluation}"
+PAPER_ARTIFACT_ROOT="${PAPER_ARTIFACT_ROOT:-artifacts/papers/neurips-2026}"
+PAPER_RUN_ROOT="${PAPER_RUN_ROOT:-$PAPER_ARTIFACT_ROOT/runs}"
 PAPER_CONTEXT_LENGTH="${PAPER_CONTEXT_LENGTH:-1000}"
 PAPER_RETAIN_TOKENS="${PAPER_RETAIN_TOKENS:-100}"
 PAPER_TEXT8_PATH="${PAPER_TEXT8_PATH:-data/text8}"
@@ -29,7 +30,7 @@ case "$MODE" in
     ;;
 esac
 
-FULL_DIR="$PAPER_RUN_ROOT/full_vocab_n$PAPER_LENGTH"
+FULL_DIR="$PAPER_RUN_ROOT/attacks/minprob/full-vocabulary/n$PAPER_LENGTH"
 
 run_full_generation() {
   if [[ -f "$FULL_DIR/full/results.json" && -f "$FULL_DIR/occurring/results.json" ]]; then
@@ -56,7 +57,12 @@ score_full_payloads() {
 
 run_long_byte_attacks() {
   local alphabet="$1"
-  local output_dir="$PAPER_RUN_ROOT/${alphabet}_n$PAPER_LENGTH"
+  local output_dir
+  case "$alphabet" in
+    printable-ascii) output_dir="$PAPER_RUN_ROOT/auxiliary/printable-ascii/n$PAPER_LENGTH" ;;
+    ascii-bytes) output_dir="$PAPER_RUN_ROOT/ablations/one-byte-utf8/n$PAPER_LENGTH" ;;
+    *) echo "Unsupported paper alphabet: $alphabet" >&2; return 2 ;;
+  esac
   "$PYTHON_BIN" scripts/run_compression_attacks.py \
     --model-name "$PAPER_MODEL" \
     --start-text A \
@@ -88,7 +94,7 @@ run_coder_aware_search() {
     --attack beam-actual-ratio \
     --beam-width "$PAPER_BEAM_WIDTH" \
     --branch-factor "$PAPER_BRANCH_FACTOR" \
-    --output-dir "$PAPER_RUN_ROOT/ascii_bytes_beam_n$PAPER_SEARCH_LENGTH"
+    --output-dir "$PAPER_RUN_ROOT/ablations/one-byte-utf8/beam-n$PAPER_SEARCH_LENGTH"
 }
 
 if [[ "$MODE" == "all" || "$MODE" == "core" ]]; then

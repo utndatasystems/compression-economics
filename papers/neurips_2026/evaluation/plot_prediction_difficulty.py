@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 import sys
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -14,7 +14,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
 
-from evaluation.crucial_figures import (
+from papers.neurips_2026.evaluation.crucial_figures import (
     find_repo_root,
     plot_paper_prediction_difficulty,
 )
@@ -53,8 +53,8 @@ PAPER_VALUES = pd.DataFrame(
 
 def main() -> None:
     root = find_repo_root(Path(__file__))
-    output_dir = root / "paper_writing/Neurips ML for Systems/plots"
-    artifact_dir = root / "artifacts/figures/neurips/crucial"
+    output_dir = root / "papers/neurips_2026/manuscript/plots"
+    artifact_dir = root / "artifacts/papers/neurips-2026/derived/figure-data"
     output_dir.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     table = PAPER_VALUES.copy()
@@ -81,7 +81,6 @@ def main() -> None:
     )
     try:
         fig.savefig(output_dir / "paper_prediction_difficulty.pdf")
-        fig.savefig(output_dir / "paper_prediction_difficulty.png", dpi=300)
     finally:
         plt.close(fig)
 

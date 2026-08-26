@@ -1,6 +1,6 @@
 """Auditable helpers for the crucial NeurIPS compression figures.
 
-The notebook in ``evaluation/notebooks/neurips/crucial_figures.ipynb`` owns the
+The notebook in ``papers/neurips_2026/evaluation/crucial_figures.ipynb`` owns the
 paper-specific analysis.  This module keeps binary serialization, round-trip
 checks, and plotting logic in ordinary Python so they can be tested.
 """

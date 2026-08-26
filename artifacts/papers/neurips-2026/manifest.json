@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "paper": "NeurIPS ML for Systems 2026",
+  "artifact_root": "artifacts/papers/neurips-2026",
+  "migration": {
+    "strategy": "copy-first",
+    "legacy_paths_retained": true
+  },
+  "conditions": {
+    "natural-text8": {
+      "raw": "runs/natural-text/text8/n100000",
+      "finalized": "finalized/qwen-bars/b10000/results.json",
+      "finalized_dataset": "text8"
+    },
+    "random-printable-utf8": {
+      "raw": "runs/controls/random-printable/n10000/results.json",
+      "finalized": "finalized/qwen-bars/b10000/results.json",
+      "finalized_dataset": "random text"
+    },
+    "minprob-full-vocabulary": {
+      "raw": "runs/attacks/minprob/full-vocabulary/n10000/full/results.json",
+      "payloads": "runs/attacks/minprob/full-vocabulary/n10000/arithmetic_payloads.json",
+      "finalized": "finalized/qwen-bars/b10000/results.json",
+      "finalized_dataset": "token-level adversary"
+    },
+    "max-surprisal-per-byte": {
+      "raw": "runs/attacks/max-surprisal-per-byte/full-vocabulary/n1024/results.json",
+      "finalized": "finalized/max-surprisal-per-byte/n1024/results.json"
+    },
+    "one-byte-utf8-ablation": {
+      "raw": "runs/ablations/one-byte-utf8/n10000/results.json",
+      "finalized": "finalized/qwen-bars/b10000/results.json",
+      "finalized_dataset": "all one-byte adversary"
+    }
+  },
+  "studies": {
+    "tokenizer-fertility": "studies/tokenizer-fertility/results.json",
+    "max-surprisal-length": "studies/max-surprisal-length"
+  },
+  "derived": {
+    "compressor-robustness-audit": "derived/audit-tables/compressor_robustness_audit.csv",
+    "text8-model-scatter": "derived/audit-tables/text8_model_scatter.csv"
+  }
+}

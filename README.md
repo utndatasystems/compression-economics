@@ -20,9 +20,10 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - `scripts/`: standalone training, quantization, and data-generation CLIs.
 - `experiments/`: version-controlled sweep definitions and run configurations.
 - `evaluation/`: result loaders, baselines, plots, notebooks, and reference data.
-- `tests/`: automated tests for maintained code.
+- `tests/`: automated tests for maintained reusable code.
+- `papers/neurips_2026/`: manuscript, experiments, evaluation, and tests for the current paper.
 - `data/`: local datasets (ignored).
-- `artifacts/`: generated runs, figures, model weights, and logs (ignored).
+- `artifacts/`: generated runs, figures, model weights, and logs. Paper runs are indexed under `artifacts/papers/neurips-2026/`.
 
 See `experiments/README.md` and `evaluation/README.md` for the boundary between
 running experiments and analyzing their output.
@@ -213,15 +214,15 @@ defaults to 512 tokens because it keeps multiple model and arithmetic-coder stat
 per step.
 
 ```bash
-# Full suite: long runs followed by bounded beam searches.
-bash experiments/sweeps/paper_evaluation.sh all
+# Full suite: fertility, natural text, attacks, and bounded searches.
+bash papers/neurips_2026/experiments/run_all.sh all
 
 # Run only the long greedy/replay experiments.
-bash experiments/sweeps/paper_evaluation.sh core
+bash papers/neurips_2026/experiments/paper_evaluation.sh core
 
 # Override either budget independently.
 PAPER_LENGTH=20000 PAPER_SEARCH_LENGTH=1000 \
-  bash experiments/sweeps/paper_evaluation.sh all
+  bash papers/neurips_2026/experiments/run_all.sh all
 ```
 
 The long suite includes the full, printable-ASCII, and canonical one-byte ASCII

@@ -7,14 +7,14 @@ the ignored `artifacts/` directory.
 - `loaders.py`: shared result-loading and normalization helpers.
 - `baselines/`: implementations of non-LLM comparison methods.
 - `plots/`: reproducible plotting entry points and shared plotting code.
-- `notebooks/`: paper-specific and exploratory analyses.
+- `notebooks/`: exploratory analyses not owned by a paper package.
 - `reference_data/`: small, version-controlled inputs used by evaluations.
 
 Run Python entry points from the repository root. Notebook paths are organized by
 paper and may need their data path set explicitly when opened interactively.
 
-## Matched adversarial comparison
+## Paper-specific evaluation
 
-The auditable NeurIPS figures and paper-specific analysis are integrated into
-`notebooks/neurips/crucial_figures.ipynb`, with shared plotting and validation
-helpers in `crucial_figures.py`.
+The current NeurIPS evaluation lives in `papers/neurips_2026/evaluation/`. Its
+raw and finalized inputs are indexed by
+`artifacts/papers/neurips-2026/manifest.json`.

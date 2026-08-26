@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from evaluation.crucial_figures import (
+from papers.neurips_2026.evaluation.crucial_figures import (
     add_ratio,
     benchmark_brotli,
     benchmark_fsst,
