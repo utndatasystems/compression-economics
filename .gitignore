@@ -13,6 +13,7 @@ logs/*
 *.jpg
 *.jpeg
 *.png
+!paper_writing/Neurips ML for Systems/plots/end_to_end_compressor_robustness.png
 
 # LaTeX build intermediates
 *.aux

@@ -53,14 +53,16 @@ PAPER_VALUES = pd.DataFrame(
 
 def main() -> None:
     root = find_repo_root(Path(__file__))
-    output_dir = root / "artifacts/figures/neurips/crucial"
+    output_dir = root / "paper_writing/Neurips ML for Systems/plots"
+    artifact_dir = root / "artifacts/figures/neurips/crucial"
     output_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
     table = PAPER_VALUES.copy()
     table["text8_bits_per_token"] = TEXT8_BITS_PER_TOKEN
     table["relative_to_text8"] = (
         table["prediction_bits_per_token"] / TEXT8_BITS_PER_TOKEN
     )
-    table.to_csv(output_dir / "paper_prediction_difficulty.csv", index=False)
+    table.to_csv(artifact_dir / "paper_prediction_difficulty.csv", index=False)
 
     mpl.rcParams.update(
         {
