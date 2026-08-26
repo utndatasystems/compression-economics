@@ -1,15 +1,19 @@
-from src.utils import *
+from src.utils import check_mismatch
 
-import pytest
 
-@pytest.mark.parametrize(
-    "input_path, output_path, expected",
-    [   (   "/home/hpc/v164be/v164be10/src/compression-economics/text_results_gt.txt",
-            "/home/hpc/v164be/v164be10/src/compression-economics/text_results.txt",
-            False,),
-        (   "/home/hpc/v164be/v164be10/src/compression-economics/text_results.txt",
-            "/home/hpc/v164be/v164be10/src/compression-economics/text_results.txt",
-            True,),],)
-def test_check_mismatch(input_path, output_path, expected):
-    assert check_mismatch(input_path, output_path=output_path) is expected
+def test_check_mismatch_reports_different_files(tmp_path):
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.txt"
+    input_path.write_text("expected", encoding="utf-8")
+    output_path.write_text("actual", encoding="utf-8")
 
+    assert check_mismatch(input_path, output_path=output_path) is False
+
+
+def test_check_mismatch_reports_identical_files(tmp_path):
+    input_path = tmp_path / "input.txt"
+    output_path = tmp_path / "output.txt"
+    input_path.write_text("same", encoding="utf-8")
+    output_path.write_text("same", encoding="utf-8")
+
+    assert check_mismatch(input_path, output_path=output_path) is True

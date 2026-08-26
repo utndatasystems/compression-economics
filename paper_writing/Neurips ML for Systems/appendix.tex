@@ -36,7 +36,7 @@ $T(\operatorname{decode}(x_{1:t}))=x_{1:t}$. This ensures that final decoding
 recovers exactly the same token IDs and bytes.
 
 \paragraph{Model and Coder.}
-We use Qwen2.5-0.5B with 151,643 non-special candidate tokens, a context length of 1,000 tokens, 100 retained context tokens between coding blocks, and KV caching. The arithmetic coder uses a 32-bit state and a frequency total of 262,144. The finalized QACS version-1 stream records the seed, model and coder configuration, token count, raw byte count, arithmetic payload, any required token dictionary, and framing. Model weights and the shared tokenizer table are treated as shared decoder state and excluded from both Qwen representations.
+We chose Qwen2.5-0.5B because its small size makes full-vocabulary adversarial scoring tractable while retaining a large vocabulary, and allows the experiments to run locally on a CPU without requiring GPU access. We use 151,643 non-special candidates, a 1,000-token context with 100 tokens retained between coding blocks, and KV caching. Arithmetic coding uses a 32-bit state and frequency total 262,144. The version-1 Qwen+AC stream records the seed, model and coder configuration, token and raw-byte counts, arithmetic payload, any required token dictionary, and framing. Model weights and the shared tokenizer table are shared decoder state and excluded from both Qwen representations.
 
 \paragraph{Inputs and Aggregation.}
 The primary evaluation uses 10,000-token sequences for natural text, random
@@ -51,7 +51,7 @@ All generated prefixes satisfy
 \[
 \Tok(\Dec(x_{1:t}))=x_{1:t}, \qquad t=1,\ldots,N,
 \]
-and every complete stream is independently decoded back to identical token IDs or UTF-8 bytes, as applicable. FSST uses the official implementation at commit \texttt{e638d4cf8c26129d73c242a4127b42b975de5b63}; Brotli uses quality~11; token IDs use a fixed 18-bit representation with a stream header.
+and every complete stream is independently decoded back to identical token IDs or UTF-8 bytes, as applicable. FSST uses the official implementation at commit \texttt{e638d4cf8c26129d73c242a4127b42b975de5b63}; Brotli uses quality~11; the Qwen token IDs baseline stores each ID in a fixed 18-bit representation with a stream header.
 
 \subsection{Detailed Results and Accounting}
 
@@ -72,7 +72,7 @@ The shorter sequence affects the magnitude but not the qualitative conclusion.
 Under the same replay configuration, the arithmetic-payload ratio is $136.4\%$,
 $133.2\%$, $131.7\%$, and $122.4\%$ at $N=32$, $64$, $128$, and $1{,}024$,
 respectively; even the longest evaluated prefix remains larger than raw UTF-8.
-The complete 1,024-token QACS stream is $144.3\%$ of its 1,508 source bytes.
+The complete 1,024-token Qwen+AC stream is $144.3\%$ of its 1,508 source bytes.
 Moreover, all bars in the MaxSurprisal/Byte group use those same source bytes,
 so their comparison is size matched. Fixed codec overhead is relatively larger
 on short inputs, which disadvantages rather than favors the conventional codecs.

@@ -23,7 +23,6 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - `tests/`: automated tests for maintained code.
 - `data/`: local datasets (ignored).
 - `artifacts/`: generated runs, figures, model weights, and logs (ignored).
-- `archive/`: historical prototypes that are not part of the supported workflow.
 
 See `experiments/README.md` and `evaluation/README.md` for the boundary between
 running experiments and analyzing their output.

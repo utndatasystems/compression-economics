@@ -2,67 +2,6 @@ import numpy as np
 import math
 from typing import List
 
-# ------------------------------------------------------------------
-# Utility – convert probabilities → integer cumulative vector
-# ------------------------------------------------------------------
-def build_cumul_new(
-    probabilities: np.ndarray,
-    *,
-    total: int = 1 << 18,) -> np.ndarray:
-    """Convert probabilities into integer cumulative frequencies.
-
-    Arithmetic coders need integer cumulative frequencies. This function:
-    - assigns every symbol at least frequency 1;
-    - keeps the total exactly equal to `total`;
-    - returns an array of length alphabet_size + 1 where cumulative[0] == 0.
-
-    Args:
-        probabilities: 1D probability vector. It should sum to approximately 1.
-        total: Frequency-table total. Must be >= alphabet size.
-    """
-    probabilities = np.asarray(probabilities, dtype=np.float64)
-
-    if probabilities.ndim != 1:
-        raise ValueError("probabilities must be a 1D vector")
-    if np.any(probabilities < 0):
-        raise ValueError("probabilities must be non-negative")
-
-    alphabet_size = probabilities.size
-    if alphabet_size == 0:
-        raise ValueError("probabilities must not be empty")
-    if total < alphabet_size:
-        raise ValueError("total must be at least the alphabet size")
-
-    prob_sum = probabilities.sum()
-    if prob_sum <= 0:
-        raise ValueError("at least one probability must be positive")
-
-    probabilities = probabilities / prob_sum
-
-    # Reserve one count for every symbol, then distribute the remaining mass.
-    scaled = probabilities * (total - alphabet_size)
-    frequencies = np.floor(scaled).astype(np.int64) + 1
-
-    # Add the leftover counts to symbols with the largest fractional parts.
-    remainder = int(total - frequencies.sum())
-    if remainder > 0:
-        fractional_order = np.argsort(-(scaled - np.floor(scaled)))
-        frequencies[fractional_order[:remainder]] += 1
-    elif remainder < 0:
-        # This is uncommon, but keep the invariant robust.
-        removable = np.where(frequencies > 1)[0]
-        order = removable[np.argsort(probabilities[removable])]
-        for index in order[: -remainder]:
-            frequencies[index] -= 1
-
-    if frequencies.sum() != total:
-        raise AssertionError("frequency normalization failed")
-
-    cumulative = np.empty(alphabet_size + 1, dtype=np.int64)
-    cumulative[0] = 0
-    cumulative[1:] = np.cumsum(frequencies)
-    return cumulative
-                           
 def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
     """
     Turn a probability vector into a cumulative-frequency array for arithmetic coding.

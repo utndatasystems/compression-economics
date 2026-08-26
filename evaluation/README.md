@@ -15,6 +15,6 @@ paper and may need their data path set explicitly when opened interactively.
 
 ## Matched adversarial comparison
 
-The matched 1,000-token text8 comparison, reproduction commands, table, and
-publication plot are integrated into
-`notebooks/neurips/adversarial_worst_case.ipynb`.
+The auditable NeurIPS figures and paper-specific analysis are integrated into
+`notebooks/neurips/crucial_figures.ipynb`, with shared plotting and validation
+helpers in `crucial_figures.py`.

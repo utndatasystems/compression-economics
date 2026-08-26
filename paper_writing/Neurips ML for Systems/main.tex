@@ -75,55 +75,14 @@
 \maketitle
 \input{abstract}
 
-
-% -----------------------------------------------------------------------------
-
-% BLUEPRINT AT A GLANCE (delete before submission)
-
-% Target: at most four content pages, including figures and tables. Suggested
-
-% budget: motivation 0.75; formulation and attacks 1.0; evaluation 0.75; results
-
-% 0.9; systems implications, limitations, and conclusion 0.6. Do not assume
-
-% references or supplementary material are excluded from the organizers four-page
-
-% limit; confirm their counting rule before submission.
-
-%
-
-% One-sentence thesis:
-
-% Tokenization is a variable-rate front end to predictive coding, so robust
-
-% evaluation must optimize and report code length/decoded source byte, not
-
-% merely next-token surprisal.
-
-%
-
-% Claim discipline:
-
-% (C1) Formal: token surprisal and source-normalized compression ratio are
-
-%      different objectives whenever decoded token lengths vary.
-
-% (C2) Method: canonical token- and byte-aware greedy attacks optimize
-
-%      entropy-floor or realized arithmetic-code expansion.
-
-% (C3) Empirical: use only after the full multi-model/seed matrix supports it.
-
-%      The current repository establishes a Qwen2.5-0.5B case study, not broad
-
-%      tokenizer or model universality.
-
 % -----------------------------------------------------------------------------
 
 \section{Who Is Actually Doing the Heavy Lifting in LLM-Based Compression?}
 
-Strings are a core data type in production databases, and general-purpose
-systems must deal with arbitrary inputs rather than only text that matches a
+Strings are a core data type in production databases: in an Amazon Redshift
+fleet study, variable-length strings account for 52.1\% of stored columns and
+53.8\% of predicate columns~\citep{vanrenen2024tpc}. General-purpose systems
+must therefore deal with arbitrary inputs rather than only text that matches a
 model's training distribution. As data accumulates, compression becomes
 especially important for cold storage, where space savings must be weighed
 against encoding cost and access latency~\citep{kipf2026waiting}. An LLM
@@ -139,16 +98,16 @@ layer is optional: a block-level guard can store the smaller of Qwen+AC and a
 conventional codec such as Brotli~\citep{alakuijala2016brotli}, bounding learned-codec expansion by the
 fallback size.
 
-
 Arithmetic coding assigns shorter lossless descriptions to more probable
 outcomes~\citep{witten1987arithmetic,steinruecken2015lossless}. Prior LLM codecs combine next-token
-probabilities with arithmetic coding or another
-lossless coding scheme~\citep{valmeekam2023llmzip}; tokenization itself can also
+probabilities with arithmetic coding or another lossless coding scheme~\citep{valmeekam2023llmzip}; tokenization itself can also
 act as lossless precompression~\citep{deletang2024language}, with byte-pair
 encoding (BPE) originating as a compression algorithm~\citep{gage1994new} and
 its effectiveness linked to shorter token sequences~\citep{galle2019investigating}.
+From a systems perspective, an LLM codec competes with traditional hand-engineered
+compression algorithms such as Brotli~\citep{alakuijala2016brotli} and FSST~\citep{boncz2020fsst}.
 
-What remains unclear is how much of an LLM codec's behavior comes from this token
+What remains unclear is how much of an LLM codec's behavior comes from its token
 representation and how much comes from prediction. Delétang et al. compare ASCII
 and BPE ~\citep{sennrich2016bpe} on natural enwik9, but the two effects have not
 been isolated under inputs chosen against realized end-to-end size. This matters
@@ -307,7 +266,7 @@ All attacks use the same model, context, and arithmetic-coding configuration, an
 generated prefixes must round-trip through tokenizer decoding and re-encoding.
 % For every input, we report prediction cost $L_\theta(x)/N$,
 % tokenizer fertility $B(x)/N$, ideal model cost,  AC payload cost , and $R_{\mathrm{AC}}(x)=100\,S_{\mathrm{AC}}(x)/(8B(x))$
-% and exclude QACS container metadata. Figure~\ref{fig:layered_compression_robustness}
+% and exclude Qwen+AC container metadata. Figure~\ref{fig:layered_compression_robustness}
 % reports complete-stream ratios.
 
 \subsection{Results}
@@ -319,7 +278,7 @@ generated prefixes must round-trip through tokenizer decoding and re-encoding.
     \centering
     \includegraphics[width=\linewidth]{plots/end_to_end_compressor_robustness.png}
     \caption{\textbf{End-to-end compression across natural vs. adversarial inputs.}
-    Realized size ratio $R$ for Qwen+AC, fixed-width Qwen token-ID,
+    Realized size ratio $R_{\mathrm{real}}$ for Qwen+AC, Qwen token IDs,
     FSST~\citep{boncz2020fsst}, and Brotli. Bold values mark the smallest stream for each input.
     All streams are round-trip-verified. Qwen model weights, tokenizer table are excluded.}
     \label{fig:layered_compression_robustness}
@@ -329,7 +288,7 @@ generated prefixes must round-trip through tokenizer decoding and re-encoding.
 \paragraph{Natural-to-Random Shift Removes the Predictive Advantage.}
 As was to be expected, Qwen+AC strongly compresses natural text, but on random printable text its
 size ratio rises to $97.4\%$, compared with $83.0\%$ for Brotli. Prediction
-still repairs much of the fixed-width token representation's inefficiency, but
+still repairs much of the Qwen token IDs baseline's inefficiency, but
 under this distribution shift it no longer beats a conventional codec. It is worth noting
 that random input alone is still not able to break the $100\%$ compression barrier for Qwen+AC.
 
@@ -337,11 +296,10 @@ that random input alone is still not able to break the $100\%$ compression barri
 
 \paragraph{Prediction Failure Does Not Imply Compression Failure.}
 The MinProb ($\vtok$) attack increases prediction difficulty for the LLM $5.68\times$, yet remains
-compressive because fertility is high at $7.09$ source bytes/token. Fixed-width
-tokenization as compression is slightly smaller than Qwen+AC on the same bytes, confirming that
+compressive because fertility is high at $7.09$ source bytes/token. The Qwen token IDs baseline is slightly smaller than Qwen+AC on the same bytes, confirming that
 robustness comes from the multi-byte token representation rather than an
-additional predictive-coding gain. For the tokenization only approach, random input is worse
-than picking tokens according to their minimum probability under the model, which underlines that the tokenization itself is a strong pre-compression.
+additional predictive-coding gain. For Qwen token IDs, random input is larger
+than MinProb input, underscoring that tokenization alone provides substantial precompression.
 
 \paragraph{Attacking Fertility-Adjusted Cost Causes Expansion.}
 Restricting MinProb to a one-byte token vocabulary is one way of removing the fertility buffer and makes
@@ -358,7 +316,7 @@ is the most effective attack on the complete Qwen + AC codec.
 \paragraph{LLM-based compression survives model errors.}LLM compression is an end-to-end systems property, not merely a property of the language model: tokenization, prediction,
 coding, and serialization jointly determine final size. On natural text (text8), the complete Qwen+AC reaches $17.6\%$ of raw size. MinProb ($\vtok$) raises
 prediction cost to $5.68\times$ its text8 level, yet its payload remains at
-$31.7\%$ because multi-byte tokens absorb the surprise; fixed-width tokenization
+$31.7\%$ because multi-byte tokens absorb the surprise; the Qwen token IDs baseline
 is slightly smaller than Qwen+AC on the same MinProb input. Conversely, restricting
 candidates to one-byte tokens removes the tokenization-buffer and makes the complete stream
 expand to $122.8\%$. Compression therefore survives poor prediction because of
@@ -423,7 +381,7 @@ token-table execution (Figure~\ref{fig:block-guard-pipeline}).
 
 % include classical baselines such as brotli, llmzip
 
-% include tokenization only as baseline and report for different tokenizers (Qwen’s large vocabulary;, a smaller BPE tokenizer; ideally a byte-level or byte-fallback baseline)
+% include Qwen token IDs as baseline and report for different tokenizers (Qwen’s large vocabulary;, a smaller BPE tokenizer; ideally a byte-level or byte-fallback baseline)
 
 % mention FSST and include it as baseline
 

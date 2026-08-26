@@ -371,7 +371,7 @@ def plot_surprisal_scatter(frame: pd.DataFrame):
     )
     ax.set(
         xlabel="Mean model surprisal (bits / predicted token)",
-        ylabel=r"Realized size ratio $R$ (%)",
+        ylabel=r"Realized size ratio $R_{\mathrm{real}}$ (%)",
     )
     ax.grid(axis="y", color=COLORS["grid"], linewidth=0.6, zorder=0)
     ax.spines[["top", "right"]].set_visible(False)
@@ -535,7 +535,7 @@ def plot_compressor_bars(
     ax.set_ylabel(
         "Encoded size / raw UTF-8 (%)"
         if has_preliminary
-        else r"Realized size ratio $R$ (%)",
+        else r"Realized size ratio $R_{\mathrm{real}}$ (%)",
         fontsize=8.5,
     )
     if has_preliminary:

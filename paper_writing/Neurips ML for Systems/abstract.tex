@@ -9,7 +9,7 @@ queryable representation and (2) predictive entropy coding as an
 optional cold-storage layer, guarded by a block-level selector that
 stores the smaller of Qwen+AC and Brotli. On text8, Qwen2.5-0.5B
 compresses to $17.6\%$ of raw size,
-outperforming tokenization-only as compression ($41.3\%$) and the conventional compression algorithsm Brotli ($29.6\%$). Selecting
+outperforming Qwen token IDs ($41.3\%$) and the conventional codec Brotli ($29.6\%$). Selecting
 the least-probable valid next token requires a prediction rate $5.68\times$ that of
 text8, measured in bits/token, yet long tokens buffer these
 errors and keep the complete data stream at $36.2\%$. Restricting
