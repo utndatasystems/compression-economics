@@ -11,6 +11,9 @@ temp/*
 /artifacts/papers/neurips-2026/*
 !/artifacts/papers/neurips-2026/README.md
 !/artifacts/papers/neurips-2026/manifest.json
+!/artifacts/papers/neurips-2026/ablations/
+!/artifacts/papers/neurips-2026/ablations/arithmetic-quantization/
+!/artifacts/papers/neurips-2026/ablations/arithmetic-quantization/results.json
 
 logs/*
 *.job
@@ -20,6 +23,7 @@ logs/*
 *.jpeg
 *.png
 !papers/neurips_2026/manuscript/plots/end_to_end_compressor_robustness.png
+!papers/neurips_2026/manuscript/plots/paper_prediction_difficulty.png
 
 # LaTeX build intermediates
 *.aux
