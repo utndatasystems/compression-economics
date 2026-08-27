@@ -80,7 +80,10 @@ def main() -> None:
         text8_bits_per_token=TEXT8_BITS_PER_TOKEN,
     )
     try:
-        fig.savefig(output_dir / "paper_prediction_difficulty.pdf")
+        fig.savefig(
+            output_dir / "paper_prediction_difficulty.png",
+            dpi=300,
+        )
     finally:
         plt.close(fig)
 
