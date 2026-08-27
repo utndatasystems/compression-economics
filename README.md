@@ -31,8 +31,8 @@ running experiments and analyzing their output.
 ## Setup
 1. Clone the repo:
 ```
-git clone https://github.com/utndatasystems/summer-offsite.git
-cd summer-offsite
+git clone https://github.com/utndatasystems/compression-economics.git
+cd compression-economics
 ```
 2. Run the setup script to download the text8 dataset, create a virtual environment, and install dependencies:
 ```
