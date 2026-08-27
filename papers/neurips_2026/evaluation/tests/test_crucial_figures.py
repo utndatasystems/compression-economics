@@ -172,6 +172,23 @@ def test_compressor_bars_omits_payload_diamonds_and_marks_pending_data():
         fig.clear()
 
 
+def test_compressor_bars_names_one_byte_ablation_as_restricted_minprob():
+    frame = pd.DataFrame([
+        {
+            "dataset": "all one-byte adversary", "codec": "Qwen + AC",
+            "raw_size_bytes": 100, "serialized_size_bytes": 120,
+            "round_trip": True, "status": "measured",
+        },
+    ])
+    fig, ax = plot_compressor_bars(frame, ["all one-byte adversary"])
+    try:
+        assert ax.get_xticklabels()[0].get_text() == (
+            "MinProb\n($v^\\star_{\\mathrm{tok}}$, one-byte vocab)"
+        )
+    finally:
+        fig.clear()
+
+
 def test_paper_prediction_difficulty_uses_shared_text8_baseline_and_ratios():
     frame = pd.DataFrame(
         [

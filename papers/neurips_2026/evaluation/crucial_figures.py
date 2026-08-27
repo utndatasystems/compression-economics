@@ -470,7 +470,9 @@ def plot_compressor_bars(
             "($v^\\star_{\\mathrm{byte}}$; N=1,024)"
         ),
         "one-byte adversary": "one-byte\nadversary",
-        "all one-byte adversary": "one-byte UTF-8\nablation",
+        "all one-byte adversary": (
+            "MinProb\n($v^\\star_{\\mathrm{tok}}$, one-byte vocab)"
+        ),
     }
     display_labels = [display_labels.get(dataset, dataset) for dataset in dataset_order]
     ax.set_xticks(x, display_labels, fontsize=7.2)
