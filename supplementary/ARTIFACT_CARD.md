@@ -73,6 +73,9 @@ hardware-dependent; original result files did not record reliable wall-clock
 times. Floating-point execution may vary across CPU and GPU platforms.
 
 This artifact does not redistribute or introduce a dataset or pretrained model.
-Qwen2.5-0.5B is Apache-2.0 licensed; text8 is downloaded from the source above.
-The included code is MIT licensed. No human-subject study, crowdsourcing, or
-participant data is involved.
+Qwen2.5-0.5B is Apache-2.0 licensed. The FSST reference implementation at
+commit `e638d4cf8c26129d73c242a4127b42b975de5b63` and Brotli are MIT licensed.
+The upstream text8 page does not state an explicit dataset license, so text8 is
+downloaded by the reviewer and is not redistributed. The included code is MIT
+licensed. No human-subject study, crowdsourcing, or participant data is
+involved.
