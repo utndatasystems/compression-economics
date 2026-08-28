@@ -287,9 +287,3 @@ def check_mismatch(input_path = None, output_path = None, first_n_tokens = None,
 
 if __name__ == "__main__":
     pass
-     #TODO: move this to setup? 
-    # Example usage of folder_to_tar
-    #folder_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8"
-    #tar_path = "/home/hpc/v164be/v164be10/src/compression-economics/data/text8.tar"
-    #created_tar = folder_to_tar(folder_path, tar_path)
-    #print(f"Created tar archive: {created_tar}")

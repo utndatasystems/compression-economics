@@ -5,8 +5,9 @@ Raw artifacts are ignored by Git; this README and `manifest.json` are tracked.
 
 ## Primary runs
 
-- `runs/natural-text/text8/n100000/`: natural text8 baselines.
-- `runs/controls/random-printable/n10000/`: random printable UTF-8 control.
+- `runs/auxiliary/printable-ascii/n10000/results.json`: the 10,000-token
+  natural-text and random-printable conditions used by the main comparison.
+- `runs/natural-text/text8/n100000/`: auxiliary 100,000-token text8 runs.
 - `runs/attacks/minprob/full-vocabulary/n10000/`: full-vocabulary MinProb runs.
 - `runs/attacks/max-surprisal-per-byte/full-vocabulary/`: byte-aware attacks.
 - `runs/ablations/one-byte-utf8/n10000/`: one-byte UTF-8 ablation.

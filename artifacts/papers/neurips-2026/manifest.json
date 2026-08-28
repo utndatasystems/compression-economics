@@ -8,12 +8,14 @@
   },
   "conditions": {
     "natural-text8": {
-      "raw": "runs/natural-text/text8/n100000",
+      "raw": "runs/auxiliary/printable-ascii/n10000/results.json",
+      "raw_condition": "ordinary-text8",
       "finalized": "finalized/qwen-bars/b10000/results.json",
       "finalized_dataset": "text8"
     },
     "random-printable-utf8": {
-      "raw": "runs/controls/random-printable/n10000/results.json",
+      "raw": "runs/auxiliary/printable-ascii/n10000/results.json",
+      "raw_condition": "random-printable-utf8",
       "finalized": "finalized/qwen-bars/b10000/results.json",
       "finalized_dataset": "random text"
     },
@@ -34,6 +36,7 @@
     }
   },
   "studies": {
+    "natural-text8-100000-token": "runs/natural-text/text8/n100000",
     "tokenizer-fertility": "studies/tokenizer-fertility/results.json",
     "max-surprisal-length": "studies/max-surprisal-length",
     "arithmetic-quantization-sensitivity": "ablations/arithmetic-quantization/results.json"

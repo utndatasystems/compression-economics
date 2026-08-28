@@ -27,6 +27,7 @@ RUN_ROOT="${PAPER_RUN_ROOT:-$ARTIFACT_ROOT/runs}"
 
 # Long greedy attacks and natural-text settings used by the main paper table.
 PAPER_LENGTH="${PAPER_LENGTH:-10000}"
+MAX_SURPRISAL_LENGTH="${MAX_SURPRISAL_LENGTH:-1024}"
 TEXT8_TOKENS="${TEXT8_TOKENS:-100000}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-1000}"
 RETAIN_TOKENS="${RETAIN_TOKENS:-100}"
@@ -135,10 +136,7 @@ run_long_attacks() {
     PYTHON_BIN="$PYTHON_BIN" \
     bash papers/neurips_2026/experiments/paper_evaluation.sh core
 
-  # The existing core sweep constructs the full-vocabulary MinProb sequence,
-  # then covers byte-restricted objectives. These are the missing full-vocabulary
-  # random-canonical and byte-aware rows from the paper's decisive table.
-  stage "Full-vocabulary random and surprisal-per-byte attacks"
+  stage "Full-vocabulary random canonical control"
   run "$PYTHON_BIN" scripts/run_compression_attacks.py \
     --model-name "$MODEL" \
     --start-token-id 785 \
@@ -147,12 +145,24 @@ run_long_attacks() {
     --total-length "$PAPER_LENGTH" \
     --generation-alphabet full \
     --attack random-token \
-    --attack surprisal-per-byte \
     --context-length "$CONTEXT_LENGTH" \
     --retain-tokens "$RETAIN_TOKENS" \
     --ordinary-text "$TEXT8_PATH" \
     --random-utf8-bytes "$((2 * PAPER_LENGTH))" \
-    --output-dir "$RUN_ROOT/attacks/max-surprisal-per-byte/full-vocabulary/n$PAPER_LENGTH"
+    --output-dir "$RUN_ROOT/controls/random-canonical/full-vocabulary/n$PAPER_LENGTH"
+
+  # This objective performs a context-sensitive decode for every vocabulary
+  # item at every step, so the paper reports it at a separate 1,024-token budget.
+  stage "Full-vocabulary MaxSurprisal/Byte attack"
+  run "$PYTHON_BIN" scripts/run_compression_attacks.py \
+    --model-name "$MODEL" \
+    --start-token-id 32 \
+    --total-length "$MAX_SURPRISAL_LENGTH" \
+    --generation-alphabet full \
+    --attack surprisal-per-byte \
+    --context-length "$CONTEXT_LENGTH" \
+    --retain-tokens "$RETAIN_TOKENS" \
+    --output-dir "$RUN_ROOT/attacks/max-surprisal-per-byte/full-vocabulary/n$MAX_SURPRISAL_LENGTH"
 }
 
 run_searches() {
