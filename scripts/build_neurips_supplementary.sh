@@ -11,7 +11,7 @@ OUTPUT_PATH="${1:-$REPO_ROOT/dist/neurips-2026-supplementary.zip}"
 ARCHIVE_ROOT_NAME="compression-economics-artifact"
 MAX_BYTES=100000000
 
-for command_name in jq rg zip; do
+for command_name in grep jq zip; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -124,13 +124,13 @@ find "$ARCHIVE_ROOT" -type d \( \
 }
 
 IDENTITY_PATTERN='(/home/|/Users/|@utn\.de|@in\.tum\.de|@campus\.lmu\.de|neubauer|zimmerer|heller|stoian|skander|ping-lin|tobias schmidt|v164be)'
-if rg -n -i "$IDENTITY_PATTERN" "$ARCHIVE_ROOT"; then
+if grep -EIRn "$IDENTITY_PATTERN" "$ARCHIVE_ROOT"; then
   echo "Potential author or institutional identity found in artifact" >&2
   exit 1
 fi
 
 SECRET_PATTERN='(-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|hf_[A-Za-z0-9]{20,})'
-if rg -n "$SECRET_PATTERN" "$ARCHIVE_ROOT"; then
+if grep -ERn "$SECRET_PATTERN" "$ARCHIVE_ROOT"; then
   echo "Potential credential found in artifact" >&2
   exit 1
 fi
