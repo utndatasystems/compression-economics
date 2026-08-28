@@ -1,81 +1,78 @@
-# Anonymous supplementary artifact
+# Anonymous supplementary code
 
-This artifact accompanies the submission *When Adversarial Prediction Still
-Compresses: Tokenization and Adversarial Robustness in LLM-Based Lossless
-Compression*. It contains the implementation, experiment entry points, locked
-software environment, evaluation code, and tests needed to reproduce the
-paper's reported results. It intentionally contains no author or affiliation
-information for review.
+Minimal code artifact for *When Adversarial Prediction Still Compresses:
+Tokenization and Adversarial Robustness in LLM-Based Lossless Compression*.
+It contains only the code and configuration needed to rerun the reported
+Qwen2.5-0.5B experiments. Tests, notebooks, manuscript sources, plotting code,
+model weights, datasets, and generated outputs are deliberately excluded.
 
-## Quick start
+## Setup
 
-Start with `papers/neurips_2026/README.md`. It provides the exact commands to:
+The reported runs used Python 3.12.3. Install the exact locked environment:
 
-1. create the Python 3.12 environment from `uv.lock`;
-2. download the pinned Qwen2.5-0.5B snapshot;
-3. download and checksum the text8 input;
-4. run the natural-text, adversarial, and tokenizer-fertility experiments;
-5. build the pinned FSST baseline;
-6. finalize and independently decode the Qwen arithmetic streams; and
-7. rebuild the paper's tables and figures.
+```bash
+uv sync --frozen
+```
 
-The machine-readable mapping from paper conditions to raw and finalized
-artifacts is `artifacts/papers/neurips-2026/manifest.json`.
+Download the pinned model snapshot into the cache expected by the code:
 
-## Contents and scope
+```bash
+.venv/bin/hf download Qwen/Qwen2.5-0.5B \
+  --revision 060db6499f32faf8b98477b0a26969ef7d8b9987 \
+  --cache-dir .cache
+mkdir -p .cache/models--Qwen--Qwen2.5-0.5B/refs
+printf '%s' 060db6499f32faf8b98477b0a26969ef7d8b9987 \
+  > .cache/models--Qwen--Qwen2.5-0.5B/refs/main
+```
 
-- `src/`: compression, prediction, adversarial-generation, and stream code.
-- `scripts/`: paper attack generation and scoring entry points.
+Download and verify the 100,000,000-byte text8 input:
+
+```bash
+wget -O /tmp/text8.zip http://mattmahoney.net/dc/text8.zip
+mkdir -p data
+unzip -o /tmp/text8.zip -d data
+sha256sum data/text8
+```
+
+Expected SHA-256:
+`6e890197040d37d85beb962ae1f041ff1d9a9ca8d20c7d99c85027eebf51dca7`.
+
+## Run
+
+Run both reported stages, or select `fertility` or `attacks`:
+
+```bash
+HF_HUB_OFFLINE=1 bash papers/neurips_2026/experiments/run_all.sh all
+```
+
+Set `DRY_RUN=1` to print every expanded command without running the model.
+Outputs are written below `artifacts/papers/neurips-2026/`. The manifest at
+`artifacts/papers/neurips-2026/manifest.json` maps paper conditions to their
+generated paths. Long generation stages checkpoint completed outputs.
+
+The main attack budget is 10,000 tokens with context length 1,000 and 100
+retained tokens. Full-vocabulary MaxSurprisal/Byte uses a separate 1,024-token
+budget because it decodes every vocabulary candidate at every step. These
+values can be overridden through the environment variables documented directly
+in `run_all.sh`.
+
+## Contents
+
+- `src/`: only the runtime modules imported by the experiments.
+- `scripts/`: adversarial generation, compression, and payload scoring CLIs.
 - `experiments/tokenizer_fertility.py`: tokenizer-fertility experiment.
-- `papers/neurips_2026/experiments/`: reproducible paper stages.
-- `papers/neurips_2026/evaluation/`: validation, plotting, and focused tests.
-- `tests/`: unit tests for the included implementation.
-- `artifacts/papers/neurips-2026/`: artifact manifest and the small,
-  rebuildable quantization-sensitivity result included in the repository.
+- `papers/neurips_2026/experiments/`: two shell entry points.
+- `pyproject.toml`, `uv.lock`: minimal CPU-only locked runtime.
+- `artifacts/papers/neurips-2026/manifest.json`: condition-to-output mapping.
 
-The archive does not bundle model weights, text8, generated attack sequences,
-or large finalized streams. The README gives pinned sources and checksums for
-external inputs, and all omitted generated artifacts are recreated by the
-provided entry points. No new dataset or pretrained model is released.
+## Platform and scope
 
-## Hardware and expected cost
+The primary CPU-only runs used Ubuntu 24.04.1 LTS, one Intel Xeon Gold 5318Y
+processor (24 physical cores, 48 hardware threads), and 125 GiB RAM. Runtime is
+hardware-dependent; original result files did not record reliable wall-clock
+times. Floating-point execution may vary across CPU and GPU platforms.
 
-The primary experiments ran CPU-only on Ubuntu 24.04.1 LTS using one Intel Xeon
-Gold 5318Y processor (24 physical cores, 48 hardware threads) with 125 GiB RAM.
-The full-vocabulary MaxSurprisal/Byte attack is intentionally limited to 1,024
-tokens because it performs a context-sensitive decode for each vocabulary item
-at every generation step. The scripts checkpoint long-running generation.
-
-## Limitations
-
-- Full reproduction requires downloading the public Qwen model and text8 data.
-- Wall-clock time is hardware-dependent and the original result files did not
-  record reliable per-run elapsed times.
-- Floating-point execution can vary across CPU and GPU platforms; the paper
-  reports the observed cross-hardware discrepancies.
-- The release reproduces the paper's Qwen2.5-0.5B evaluation and does not claim
-  identical behavior for other models, tokenizers, languages, or domains.
-- The archive omits exploratory notebooks and experiments unrelated to the
-  submitted paper.
-
-## Licensing and third-party assets
-
-The code in this archive is released under the MIT License; see `LICENSE`.
-Third-party assets are not redistributed:
-
-- `Qwen/Qwen2.5-0.5B`, revision
-  `060db6499f32faf8b98477b0a26969ef7d8b9987`: Apache License 2.0.
-- FSST, commit `e638d4cf8c26129d73c242a4127b42b975de5b63`: MIT License.
-- Brotli: MIT License.
-- text8: downloaded from the Large Text Compression Benchmark source listed in
-  the reproduction README; it is not repackaged in this archive.
-
-The review-stage copyright notice uses "Anonymous Authors" solely to preserve
-anonymous review. It should be replaced with the correct holder information in
-the public camera-ready release.
-
-## Human subjects and consent
-
-This artifact introduces no human-subject study, crowdsourcing activity, or new
-human-derived dataset. Consequently, participant consent and compensation are
-not applicable to the released code artifact.
+This artifact does not redistribute or introduce a dataset or pretrained model.
+Qwen2.5-0.5B is Apache-2.0 licensed; text8 is downloaded from the source above.
+The included code is MIT licensed. No human-subject study, crowdsourcing, or
+participant data is involved.

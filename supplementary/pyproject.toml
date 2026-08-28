@@ -1,0 +1,26 @@
+[project]
+name = "compression-economics-artifact"
+version = "0.1.0"
+description = "Anonymous artifact for LLM-guided lossless compression experiments"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "accelerate==1.13.0",
+    "brotli==1.2.0",
+    "numpy==2.4.3",
+    "peft==0.18.1",
+    "pyroaring==1.0.3",
+    "tokenizers==0.22.2",
+    "torch==2.10.0",
+    "tqdm==4.67.3",
+    "transformers==5.3.0",
+    "zstandard==0.25.0",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

@@ -11,7 +11,7 @@ OUTPUT_PATH="${1:-$REPO_ROOT/dist/neurips-2026-supplementary.zip}"
 ARCHIVE_ROOT_NAME="compression-economics-artifact"
 MAX_BYTES=100000000
 
-for command_name in grep jq zip; do
+for command_name in grep zip; do
   if ! command -v "$command_name" >/dev/null 2>&1; then
     echo "Required command not found: $command_name" >&2
     exit 1
@@ -37,69 +37,27 @@ copy_file() {
   cp -- "$REPO_ROOT/$relative_path" "$ARCHIVE_ROOT/$relative_path"
 }
 
-copy_tree() {
-  local relative_path="$1"
-  if [[ ! -d "$REPO_ROOT/$relative_path" ]]; then
-    echo "Required artifact directory is missing: $relative_path" >&2
-    exit 1
-  fi
-  mkdir -p -- "$ARCHIVE_ROOT/$(dirname -- "$relative_path")"
-  cp -R -- "$REPO_ROOT/$relative_path" "$ARCHIVE_ROOT/$relative_path"
-}
-
 for relative_path in \
-  main.py \
-  models.json \
-  pyproject.toml \
-  pytest.ini \
-  uv.lock \
   experiments/tokenizer_fertility.py \
   scripts/generate_adversarial.py \
   scripts/run_compression_attacks.py \
   scripts/score_adversarial_payloads.py \
-  artifacts/papers/neurips-2026/README.md \
   artifacts/papers/neurips-2026/manifest.json \
-  artifacts/papers/neurips-2026/ablations/arithmetic-quantization/results.json \
-  papers/neurips_2026/__init__.py \
-  papers/neurips_2026/README.md \
-  papers/neurips_2026/evaluation/__init__.py \
-  papers/neurips_2026/evaluation/crucial_figures.py \
-  papers/neurips_2026/evaluation/finalize_qwen_bars.py \
-  papers/neurips_2026/evaluation/plot_prediction_difficulty.py \
-  papers/neurips_2026/evaluation/quantization_sensitivity.py \
   papers/neurips_2026/experiments/paper_evaluation.sh \
-  papers/neurips_2026/experiments/run_all.sh; do
+  papers/neurips_2026/experiments/run_all.sh \
+  src/__init__.py \
+  src/adversarial.py \
+  src/compression_attacks.py \
+  src/encoding.py \
+  src/encoding_utils.py \
+  src/prediction.py; do
   copy_file "$relative_path"
 done
 
-copy_tree src
-copy_tree tests
-copy_tree papers/neurips_2026/evaluation/tests
-
 cp -- "$REPO_ROOT/supplementary/ARTIFACT_CARD.md" "$ARCHIVE_ROOT/README.md"
 cp -- "$REPO_ROOT/supplementary/LICENSE" "$ARCHIVE_ROOT/LICENSE"
-
-# Retain the executable figure notebook but remove outputs, execution counts,
-# widget state, and environment-specific cell metadata.
-NOTEBOOK_SOURCE="$REPO_ROOT/papers/neurips_2026/evaluation/crucial_figures.ipynb"
-NOTEBOOK_TARGET="$ARCHIVE_ROOT/papers/neurips_2026/evaluation/crucial_figures.ipynb"
-jq '
-  del(.metadata.widgets)
-  | .metadata = {
-      kernelspec: .metadata.kernelspec,
-      language_info: {
-        name: .metadata.language_info.name,
-        version: .metadata.language_info.version
-      }
-    }
-  | .cells |= map(
-      .metadata = {}
-      | if .cell_type == "code"
-        then .execution_count = null | .outputs = []
-        else .
-        end
-    )
-' "$NOTEBOOK_SOURCE" > "$NOTEBOOK_TARGET"
+cp -- "$REPO_ROOT/supplementary/pyproject.toml" "$ARCHIVE_ROOT/pyproject.toml"
+cp -- "$REPO_ROOT/supplementary/uv.lock" "$ARCHIVE_ROOT/uv.lock"
 
 # Source-tree caches are generated locally and are never part of the research
 # artifact. Removal is confined to the freshly created temporary staging tree.
@@ -110,11 +68,6 @@ find "$ARCHIVE_ROOT" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 find "$ARCHIVE_ROOT" -type f \( \
   -name '*.orig' -o -name '*.rej' -o -name '*~' -o -name '.DS_Store' \
 \) -delete
-
-# The artifact intentionally excludes the manuscript, so omit manuscript-only
-# build instructions from the packaged experiment README.
-sed -i '/^## Build the manuscript$/,$d' \
-  "$ARCHIVE_ROOT/papers/neurips_2026/README.md"
 
 find "$ARCHIVE_ROOT" -type d \( \
   -name .git -o -name .cache -o -name .venv -o -name __pycache__ \

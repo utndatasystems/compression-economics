@@ -4,10 +4,8 @@
 #
 # The default `all` mode runs:
 #   1. tokenizer fertility on the held-out 5 MB text8 region;
-#   2. 100k-token text8 compression with full and occurring vocabularies;
-#   3. long full-vocabulary, printable-ASCII, and one-byte attacks;
-#   4. arithmetic payload scoring for full/occurring dictionaries;
-#   5. bounded full-vocabulary and one-byte beam searches.
+#   2. long full-vocabulary, printable-ASCII, and one-byte attacks; and
+#   3. arithmetic payload scoring for full/occurring dictionaries.
 #
 # All experiment programs checkpoint or are skipped when their expected result
 # already exists. Set FORCE=1 to rerun the non-checkpointed fertility experiment.
@@ -25,28 +23,20 @@ TEXT8_PATH="${TEXT8_PATH:-data/text8}"
 ARTIFACT_ROOT="${PAPER_ARTIFACT_ROOT:-artifacts/papers/neurips-2026}"
 RUN_ROOT="${PAPER_RUN_ROOT:-$ARTIFACT_ROOT/runs}"
 
-# Long greedy attacks and natural-text settings used by the main paper table.
+# Long greedy attacks used by the main paper table.
 PAPER_LENGTH="${PAPER_LENGTH:-10000}"
 MAX_SURPRISAL_LENGTH="${MAX_SURPRISAL_LENGTH:-1024}"
-TEXT8_TOKENS="${TEXT8_TOKENS:-100000}"
 CONTEXT_LENGTH="${CONTEXT_LENGTH:-1000}"
 RETAIN_TOKENS="${RETAIN_TOKENS:-100}"
-TEXT8_BATCH_SIZE="${TEXT8_BATCH_SIZE:-16}"
-
-# Beam search has a separate budget because it clones model and coder state.
-PAPER_SEARCH_LENGTH="${PAPER_SEARCH_LENGTH:-512}"
-PAPER_BEAM_WIDTH="${PAPER_BEAM_WIDTH:-4}"
-PAPER_BRANCH_FACTOR="${PAPER_BRANCH_FACTOR:-8}"
-PAPER_FIXED_OVERHEAD_BITS="${PAPER_FIXED_OVERHEAD_BITS:-0}"
 
 FERTILITY_OUTPUT="${FERTILITY_OUTPUT:-$ARTIFACT_ROOT/studies/tokenizer-fertility}"
 FORCE="${FORCE:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 
 case "$MODE" in
-  all|fertility|natural|attacks|search) ;;
+  all|fertility|attacks) ;;
   *)
-    echo "Usage: $0 [all|fertility|natural|attacks|search]" >&2
+    echo "Usage: $0 [all|fertility|attacks]" >&2
     exit 2
     ;;
 esac
@@ -96,34 +86,6 @@ run_fertility() {
     --qwen-tokenizer "$MODEL"
 }
 
-run_natural_text() {
-  stage "Natural text8: full vocabulary"
-  run "$PYTHON_BIN" main.py \
-    --mode compress \
-    --input_path "$TEXT8_PATH" \
-    --output_path "$RUN_ROOT/natural-text/text8/n${TEXT8_TOKENS}/full/compression_data.bin" \
-    --model_name "$MODEL" \
-    --first_n_tokens "$TEXT8_TOKENS" \
-    --context_length "$CONTEXT_LENGTH" \
-    --retain_tokens "$RETAIN_TOKENS" \
-    --batch_size "$TEXT8_BATCH_SIZE" \
-    --encoding AC \
-    --no_reduce_tokens
-
-  stage "Natural text8: occurring-token vocabulary"
-  run "$PYTHON_BIN" main.py \
-    --mode compress \
-    --input_path "$TEXT8_PATH" \
-    --output_path "$RUN_ROOT/natural-text/text8/n${TEXT8_TOKENS}/occurring/compression_data.bin" \
-    --model_name "$MODEL" \
-    --first_n_tokens "$TEXT8_TOKENS" \
-    --context_length "$CONTEXT_LENGTH" \
-    --retain_tokens "$RETAIN_TOKENS" \
-    --batch_size "$TEXT8_BATCH_SIZE" \
-    --encoding AC \
-    --reduce_tokens
-}
-
 run_long_attacks() {
   stage "Long adversarial and control runs"
   run env \
@@ -165,49 +127,11 @@ run_long_attacks() {
     --output-dir "$RUN_ROOT/attacks/max-surprisal-per-byte/full-vocabulary/n$MAX_SURPRISAL_LENGTH"
 }
 
-run_searches() {
-  stage "One-byte coder-aware beam search"
-  run env \
-    PAPER_SEARCH_LENGTH="$PAPER_SEARCH_LENGTH" \
-    PAPER_BEAM_WIDTH="$PAPER_BEAM_WIDTH" \
-    PAPER_BRANCH_FACTOR="$PAPER_BRANCH_FACTOR" \
-    PAPER_MODEL="$MODEL" \
-    PAPER_RUN_ROOT="$RUN_ROOT" \
-    PAPER_CONTEXT_LENGTH="$CONTEXT_LENGTH" \
-    PAPER_RETAIN_TOKENS="$RETAIN_TOKENS" \
-    PAPER_TEXT8_PATH="$TEXT8_PATH" \
-    PYTHON_BIN="$PYTHON_BIN" \
-    bash papers/neurips_2026/experiments/paper_evaluation.sh search
-
-  stage "Full-vocabulary ideal and realized-size beam search"
-  run "$PYTHON_BIN" scripts/run_compression_attacks.py \
-    --model-name "$MODEL" \
-    --start-token-id 785 \
-    --start-token-id 32 \
-    --start-token-id 641 \
-    --total-length "$PAPER_SEARCH_LENGTH" \
-    --generation-alphabet full \
-    --attack beam-surprisal-per-byte \
-    --attack beam-actual-ratio \
-    --context-length "$CONTEXT_LENGTH" \
-    --retain-tokens "$RETAIN_TOKENS" \
-    --beam-width "$PAPER_BEAM_WIDTH" \
-    --branch-factor "$PAPER_BRANCH_FACTOR" \
-    --fixed-overhead-bits "$PAPER_FIXED_OVERHEAD_BITS" \
-    --output-dir "$RUN_ROOT/attacks/realized-size-beam/full-vocabulary/n$PAPER_SEARCH_LENGTH"
-}
-
 if [[ "$MODE" == "all" || "$MODE" == "fertility" ]]; then
   run_fertility
 fi
-if [[ "$MODE" == "all" || "$MODE" == "natural" ]]; then
-  run_natural_text
-fi
 if [[ "$MODE" == "all" || "$MODE" == "attacks" ]]; then
   run_long_attacks
-fi
-if [[ "$MODE" == "all" || "$MODE" == "search" ]]; then
-  run_searches
 fi
 echo
 echo "NeurIPS evaluation stage '$MODE' complete."
