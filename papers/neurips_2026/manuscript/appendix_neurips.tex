@@ -1,0 +1,315 @@
+\section{Appendix}
+
+\subsection{Metric Definitions}
+For a token sequence $x$ of length $N$, let
+$B(x)=\bytes{\operatorname{decode}(x)}$ be its decoded UTF-8 size in bytes,
+$L_\theta(x)$ its model negative log-likelihood in bits, and
+$S_{\mathrm{AC}}(x)$ its arithmetic-coded payload in bits. We report prediction
+cost and tokenizer fertility per token, and predictive coding cost per source
+byte:
+
+\begin{align}
+  \text{Prediction cost} &= \frac{L_\theta(x)}{N}
+    && [\mathrm{bits/token}],\\
+  \text{Tokenizer fertility} &= \frac{B(x)}{N}
+    && [\mathrm{bytes/token}],\\
+  \text{Ideal predictive rate} &= \frac{L_\theta(x)}{B(x)}
+    && [\mathrm{bits/byte}],\\
+  \text{Realized AC rate} &= \frac{S_{\mathrm{AC}}(x)}{B(x)}
+    && [\mathrm{bits/byte}].
+\end{align}
+
+The ideal rate factorizes as
+$L_\theta(x)/B(x)=[L_\theta(x)/N]/[B(x)/N]$: high prediction cost can therefore
+be offset when each token represents many source bytes. To compare encoded
+sizes directly with raw UTF-8, we report
+\begin{align}
+  R_{\mathrm{AC}}(x)
+    &=100\,\frac{S_{\mathrm{AC}}(x)}{8B(x)},\\
+  R_{\mathrm{real}}(x)
+    &=100\,\frac{\left|\operatorname{SerializeCodec}(x)\right|}{B(x)}.
+\end{align}
+Here $R_{\mathrm{AC}}$ covers only the arithmetic payload, whereas
+$R_{\mathrm{real}}$ covers the complete serialized stream in bytes, including
+its dictionary, metadata, and framing. Both are percentages of the raw source
+size: values below $100\%$ denote compression and values above $100\%$ denote
+expansion.
+
+\subsection{How We Generate the Adversarial Inputs}
+\label{app:attack-algorithms}
+
+Each attack builds its input one token at a time. At every step, it (1) asks
+the model to score the next token, (2) ranks the candidate tokens according to
+the attack objective, and (3) tries candidates in that order until it finds one
+that remains unchanged after decoding and retokenization. The accepted token is
+then appended and the process repeats.
+
+\paragraph{Candidate pool.}
+We begin with every token ID shared by the tokenizer and model, then remove all
+IDs listed in \texttt{tokenizer.all\_special\_ids}. This excludes EOS, padding,
+chat markers, and other tokenizer-declared control tokens. The resulting pool
+contains 151,643 IDs for Qwen2.5-0.5B. The notation $G(h)$ in the main paper
+means the members of this pool that have a finite model score and pass the
+exact round-trip check in Algorithm~3 after prefix $h$. MaxSurprisal/Byte also
+requires the token to add at least one decoded byte. Admissibility depends only
+on the current prefix and proposed next token; there is no lookahead.
+
+\begin{center}
+\fbox{\begin{minipage}{0.94\linewidth}
+\textbf{Algorithm 1: MinProb}\hfill\emph{Choose the least likely valid token}
+\smallskip
+
+\textbf{Input:} a nonempty seed prefix $h$ and target length $N$.
+\begin{enumerate}
+  \item Ask the model for the next-token logits.
+  \item Remove candidates with non-finite logits. Sort the rest from lowest
+        logit to highest logit; for equal logits, place the lower token ID first.
+  \item In that order, apply Algorithm~3. Append the first candidate that passes.
+  \item Repeat until the complete sequence, including the seed, has $N$ tokens.
+\end{enumerate}
+\textbf{Output:} the completed token sequence $h$.
+\end{minipage}}
+\end{center}
+
+\begin{center}
+\fbox{\begin{minipage}{0.94\linewidth}
+\textbf{Algorithm 2: MaxSurprisal/Byte}\hfill
+\emph{Choose the most surprising valid token per added byte}
+\smallskip
+
+\textbf{Input:} a nonempty seed prefix $h$ and target length $N$.
+\begin{enumerate}
+  \item Ask the model for the next-token logits and compute float32 log
+        probabilities over the full tokenizer vocabulary.
+  \item For every finite candidate $v$, decode the complete prefixes $h$ and
+        $h\Vert v$ and measure
+        $d_v=|\Dec(h\Vert v)|_{\mathrm{UTF8}}-|\Dec(h)|_{\mathrm{UTF8}}$.
+        Remove candidates for which $d_v\leq0$.
+  \item Rank the remaining candidates by decreasing
+        $-\log_2 p(v\mid h)/d_v$; for equal scores, place the lower token ID first.
+  \item In that order, apply Algorithm~3. Append the first candidate that passes.
+  \item Repeat until the complete sequence, including the seed, has $N$ tokens.
+\end{enumerate}
+\textbf{Output:} the completed token sequence $h$.
+\end{minipage}}
+\end{center}
+
+\begin{center}
+\fbox{\begin{minipage}{0.94\linewidth}
+\textbf{Algorithm 3: Exact round-trip check}\hfill
+\emph{Accept only tokenizations that a source string can reproduce}
+\smallskip
+
+\textbf{Input:} the accepted prefix $h$ and proposed token $v$.
+\begin{enumerate}
+  \item Decode $h\Vert v$ with special-token skipping and tokenizer cleanup
+        disabled.
+  \item Retokenize the decoded text with
+        \texttt{add\_special\_tokens=False}.
+  \item Accept $v$ exactly when the resulting IDs equal $h\Vert v$; otherwise
+        reject it and test the next ranked candidate.
+\end{enumerate}
+\textbf{Output:} accept or reject.
+\end{minipage}}
+\end{center}
+
+\paragraph{What is evaluated at each step.}
+Neither attack round-trip tests all 151,643 candidates. Both rank the candidates
+first and perform Algorithm~3 only until one passes. MinProb tests exactly the leading part of the ranked list, ending with the
+first candidate that passes. MaxSurprisal/Byte does,
+however, decode the prefix with every candidate to obtain all byte increments
+before ranking. Measuring the complete prefix rather than decoding a token by
+itself captures whitespace merging and other tokenizer-boundary effects.
+Candidates that add zero or fewer bytes are discarded by MaxSurprisal/Byte;
+MinProb has no byte-length rule. An invalid UTF-8 byte fragment may decode to a
+replacement character, but it is accepted only if retokenizing that decoded
+text recovers the exact proposed IDs.
+
+\paragraph{Faster round-trip check with an exact fallback.}
+Algorithm~3 states the acceptance rule used by the experiments. The
+implementation avoids repeatedly retokenizing a long prefix when it can prove
+that an earlier part cannot change. It caches raw bytes, decoded text, token and
+character byte offsets, and pre-tokenizer pieces for accepted prefixes. It may
+retokenize only the suffix beginning at the penultimate pre-tokenizer piece when
+all of the following hold: the suffix begins at a token boundary, is at most
+512 bytes long, begins with ASCII, already retokenizes to its recorded IDs, and
+its first pre-tokenizer piece does not change after adding the candidate. If
+any condition fails, including for an invalid UTF-8 fragment, the code performs
+the full-prefix check in Algorithm~3. The shortcut changes runtime but never
+the acceptance decision.
+
+\paragraph{Reproduction settings.}
+\begin{center}
+\begin{tabular}{@{}p{0.27\linewidth}p{0.67\linewidth}@{}}
+\toprule
+\textbf{Setting} & \textbf{Value used in the reported experiments} \\
+\midrule
+Seed prefixes & MinProb: The $=[785]$, A $=[32]$, and In $=[641]$.
+MaxSurprisal/Byte: A $=[32]$. Total length includes the seed. \\
+One-byte ablation & Scan the vocabulary once; retain $v$ exactly when $[v]$
+decodes to one ASCII code point with value 0--127 and that character retokenizes
+to $[v]$. Qwen provides exactly 128 such IDs. \\
+Model scores & Pretrained model without weight quantization, loaded with the
+framework automatic dtype. Logits are converted to float32 for ranking and
+\texttt{logsoftmax}. Arithmetic-coder frequency quantization happens only after
+generation and cannot affect the selected tokens. \\
+Context & KV caching is enabled. At 1,000 context tokens, retain the latest 100
+and rebuild the cache. Byte measurement and round-trip validation still use the
+complete generated prefix. \\
+Length and cost & MinProb: 10,000 tokens for each of three seeds.
+MaxSurprisal/Byte: 1,024 tokens for one seed because it performs 151,643
+context-sensitive decodes per step. \\
+Wall time & The archived runs did not record elapsed time, so no reliable number
+can be reconstructed. The released implementation reports progress per step;
+future result files should record hardware and wall time. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Evaluation Protocol}
+\label{app:experimental-details}
+
+\paragraph{Canonical Inputs.}
+\label{app:canonicality}
+Not every sequence of valid token IDs can arise from tokenizing its own decoded
+bytes. For example, suppose the vocabulary contains tokens for
+\texttt{a}, \texttt{b}, and \texttt{ab}. The token sequence
+$[\texttt{a},\texttt{b}]$ decodes to \texttt{ab}, but the tokenizer may encode
+\texttt{ab} as the single token $[\texttt{ab}]$. Hence, decoding and
+retokenizing changes the token sequence. Since our attacks select token IDs
+directly from the model distribution, allowing such sequences would optimize
+over token histories that cannot occur for the corresponding source input.
+We therefore require every generated partial sequence to be canonical, i.e.,
+$T(\operatorname{decode}(x_{1:t}))=x_{1:t}$. This ensures that final decoding
+recovers exactly the same token IDs and bytes.
+
+\paragraph{Model and Coder.}
+We chose Qwen2.5-0.5B because its small size makes full-vocabulary adversarial scoring tractable while retaining a large vocabulary, and allows the experiments to run locally on a CPU without requiring GPU access. We use 151,643 non-special candidates, a 1,000-token context with 100 tokens retained between coding blocks, and KV caching. Arithmetic coding uses a 32-bit state and frequency total 262,144. The version-1 Qwen+AC stream records the seed, model and coder configuration, token and raw-byte counts, arithmetic payload, any required token dictionary, and framing. Model weights and the shared tokenizer table are shared decoder state and excluded from both Qwen representations.
+
+\paragraph{Inputs and Aggregation.}
+The primary evaluation uses 10,000-token sequences for natural text, random
+canonical input, MinProb ($\vtok$), and the one-byte UTF-8 ablation. MaxSurprisal/Byte ($\vbyte$) is
+reported at the largest feasible budget of 1,024 tokens and is the final
+evaluation for that attack. The reported values for the other adversarial
+conditions are means over three independent canonical seed runs; the
+MaxSurprisal/Byte ($\vbyte$) result is a single run.
+
+\paragraph{Round-Trip Validation and Baselines.}
+All generated prefixes satisfy
+\[
+\Tok(\Dec(x_{1:t}))=x_{1:t}, \qquad t=1,\ldots,N,
+\]
+and every complete stream is independently decoded back to identical token IDs or UTF-8 bytes, as applicable. FSST is evaluated using the authors' reference implementation~\citep{boncz2020fsst}; Brotli uses quality~11; and the Qwen token IDs baseline stores each ID in a fixed-width 18-bit representation with a stream header. Exact software revisions are recorded in the accompanying artifacts.
+
+\subsection{Detailed Results and Accounting}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{plots/paper_prediction_difficulty.png}
+  \caption{\textbf{Adversarial prediction difficulty.} Each condition is
+  compared with the same natural-text prediction cost of $5.11$ bits/token.
+  Labels inside the plot report the ratio to text8. Error bars show sample
+  standard deviation across three canonical seeds where available;
+  $^\dagger$ marks the final 1,024-token MaxSurprisal/Byte ($\vbyte$) single run.}
+  \label{fig:paper-prediction-difficulty}
+\end{figure}
+
+\paragraph{Effect of the Shorter MaxSurprisal/Byte ($\vbyte$) Sequence.}
+\label{app:maxsurprisal-length}
+The shorter sequence affects the magnitude but not the qualitative conclusion.
+Under the same replay configuration, the arithmetic-payload ratio is $136.4\%$,
+$133.2\%$, $131.7\%$, and $122.4\%$ at $N=32$, $64$, $128$, and $1{,}024$,
+respectively; even the longest evaluated prefix remains larger than raw UTF-8.
+The complete 1,024-token Qwen+AC stream is $144.3\%$ of its 1,508 source bytes.
+Moreover, all bars in the MaxSurprisal/Byte group use those same source bytes,
+so their comparison is size matched. Fixed codec overhead is relatively larger
+on short inputs, which disadvantages rather than favors the conventional codecs.
+
+\paragraph{Codec Comparison.}
+Figure~\ref{fig:layered_compression_robustness} and
+Table~\ref{tab:codec-comparison} compare codecs on identical source bytes. The
+four non-Max groups contain 9,996--13,087 bytes; the 1,024-token
+MaxSurprisal/Byte output contains 1,508 bytes. All plotted results are complete, round-trip-verified streams.
+
+\paragraph{Stream Accounting.}
+\label{app:stream-accounting}
+The auxiliary comparison reports both the Qwen+AC payload and complete stream,
+whose difference is 331--334 bytes across the four non-Max serialized inputs.
+For text8, this overhead raises the size ratio from a $14.3\%$ arithmetic-coder
+payload to a $17.6\%$ complete stream. The
+complete size is $S_{\mathrm{total}}=S_{\mathrm{payload}}+S_{\mathrm{dict}}+
+S_{\mathrm{frame}}$. Finite frequencies clip extremely small probabilities, so
+realized arithmetic length can be below unquantized NLL for MinProb; we report
+this as quantization, not improved prediction.
+
+\subsection{Arithmetic-Coder Quantization Sensitivity}
+\label{app:quantization-sensitivity}
+The coder cannot consume arbitrary real-valued probabilities. For a coding
+alphabet of size $K$ and frequency total $T$, it constructs
+\[
+ f_i = 1 + \lfloor (T-K)p_i\rfloor + r_i, \qquad q_i=f_i/T,
+\]
+where $r_i\in\{0,1\}$ distributes the counts left after flooring in
+descending model-probability order. The leading one makes every token
+decodable, but also imposes $T\ge K$ and a probability floor
+$p_{\min}=1/T$. Thus $2^{14}$ is infeasible for the full $K=151{,}665$
+coder alphabet. The coder alphabet includes the 22 tokenizer IDs excluded from attack selection, hence 151{,}665 rather than 151{,}643. Our reported setting, $T=2^{18}$, leaves only $T-K=110{,}479$
+counts to represent differences after reserving one count per token. We define a
+selected token as \emph{clipped} when it receives only that mandatory count.
+
+Table~\ref{tab:quantization-sensitivity} replays the fixed adversarial token
+sequences at $T\in\{2^{18},2^{22},2^{26},2^{30}\}$; $2^{30}$ is the
+largest power of two admitted by the unchanged 32-bit coder. The model, token
+sequences, decoded bytes, context policy, and arithmetic-coder state size are
+held fixed. We distinguish two unquantized references. The model ideal rate in
+Table~\ref{tab:decisive} normalizes over the model's 151{,}936-logit padded output support.
+The lossless stream can emit only the $K$ tokenizer IDs, so the coder first
+restricts to that support and renormalizes. For MinProb this support restriction
+reduces the ideal rate from 4.10 to 3.79 bits/byte; integer-frequency
+quantization then reduces it to 2.534 bits/byte at $T=2^{18}$. This decomposition
+prevents the whole model-ideal--AC gap from being attributed to integer rounding.
+
+At $T=2^{18}$, 99.0\% of selected MinProb tokens are clipped, and the
+quantized ideal and realized AC rates agree to the reported precision. Raising
+precision monotonically moves both toward the support-restricted ideal: at the
+maximum $T=2^{30}$, clipping falls to 13.8\% and realized AC rises to 3.735
+bits/byte (46.7\% of raw UTF-8), compared with 2.534 bits/byte (31.7\%) at
+$2^{18}$. Quantization therefore materially affects the numerical MinProb rate,
+but does not overturn the tokenization result: even the maximum-precision
+payload remains less than half of raw size because MinProb has high fertility.
+For MaxSurprisal/Byte, realized AC changes from 9.790 to 10.481 bits/byte
+(122.4\% to 131.0\% of raw); it remains decisively expansive. Across every
+row, realized AC differs from quantized ideal by at most 0.002 bits/byte. The
+reported surprisal error is $\Delta s=-\log_2q_i+\log_2p_i$ after
+restricting $p_i$ to coder support; Table~\ref{tab:quantization-sensitivity}
+reports its per-token mean and maximum absolute value.
+
+\input{tables/quantization_sensitivity}
+
+\input{tables/codec_results_table}
+
+\paragraph{Tokenizer Fertility.}
+Table~\ref{tab:tokenizer-fertility} provides a natural-text reference point for
+the fertility metric. While NLP convention often reports tokens per word, our
+compression analysis uses bytes per token: a larger value means that each model
+prediction covers more source bytes and can therefore absorb more surprisal
+before the encoded stream expands. Fertility depends on both the tokenizer and
+the input, which is why adversarial token sequences can differ substantially
+from the text8 values reported here.
+
+\input{tables/tokenizer_fertility}
+
+\subsection{Beam Search Experiments}
+\label{app:beam-search}
+
+\paragraph{Search Setup.}
+A realized-size beam search approximately maximizes Eq.~\ref{eq:size-ratios}
+by cloning the codec state for candidate continuations. Unlike the greedy
+objectives, it captures arithmetic-coder, metadata, and framing effects during
+generation. Because the search considers only a bounded beam and candidate set,
+its result is an approximation to the sequence-level optimum.
+
+\paragraph{Results.}
+\todo{Report the beam width, branch factor, token and byte budgets, search
+runtime, and realized-size results; compare against the greedy MinProb and
+MaxSurprisal/Byte attacks and the conventional-codec baselines.}

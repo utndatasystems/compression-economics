@@ -1,10 +1,12 @@
-\begin{table}[!htbp]
+\begin{table}[h] %!htbp
 
 \centering
 
 \caption{
-\textbf{Source-normalized predictive coding under increasingly adverse inputs.} Token-level surprisal  alone is not predictive of
-compression failure. $\downarrow$ lower is better, $\uparrow$ higher is better for compression. AC size $R_{\mathrm{AC}}$ reports the arithmetic-coder payload relative to raw UTF-8. $^\dagger$ Final 1,024-token evaluation (one run).
+\textbf{Source-normalized predictive coding under increasingly adverse inputs.}
+Token-level surprisal alone is not predictive of compression failure.
+$\downarrow$ lower is better, $\uparrow$ higher is better for compression.
+$^\dagger$ Final 1,024-token evaluation (one run).
 }
 
 \label{tab:decisive}
@@ -12,66 +14,64 @@ compression failure. $\downarrow$ lower is better, $\uparrow$ higher is better f
 \footnotesize
 \setlength{\tabcolsep}{1.5pt}
 
-\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lrrrrr@{}}
+\begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}llrrrr@{}}
 
 \toprule
 
+\multicolumn{1}{l}{Category} &
 \multicolumn{1}{l}{Input / condition} &
 \multicolumn{1}{c}{\shortstack{Pred. cost $\downarrow$\\(bits/token)}} &
 \multicolumn{1}{c}{\shortstack{Fertility $\uparrow$\\(bytes/token)}} &
 \multicolumn{1}{c}{\shortstack{Ideal rate $\downarrow$\\(bits/byte)}} &
-\multicolumn{1}{c}{\shortstack{AC rate $\downarrow$\\(bits/byte)}} &
-\multicolumn{1}{c}{\shortstack{AC size $\downarrow$\\(\% raw)}} \\
+\multicolumn{1}{c}{\shortstack{AC rate $\downarrow$\\(bits/byte)}} \\
 
 \midrule
 
-\multicolumn{6}{l}{\textit{Baselines}} \\
+\multirow{2}{*}{Baselines}
+& Natural text (text8)
+& 5.11
+& 5.59
+& 0.92
+& 1.13 \\
 
-Natural text (text8)
-    & 5.11
-    & 5.59
-    & 0.92
-    & 1.13
-    & $14.1\%$ \\
-
-Random canonical
-    &  8.78
-    & 1.31
-    & 6.71
-    & 7.58
-    & $94.8\%$ \\
+& Random canonical
+& 8.78
+& 1.31
+& 6.71
+& 7.58 \\
 
 \midrule
 
-\multicolumn{6}{l}{\textit{Adversaries}} \\
+\multirow{2}{*}{Adversaries}
+& MinProb ($\vtok$)
+& 29.04
+& 7.09
+& 4.10
+& $2.53^{\ddagger}$ \\
 
-MinProb ($\vtok$)
-    & $29.04 \pm 0.04$
-    & $7.09 \pm 0.04$
-    & $4.10 \pm 0.02$
-    & $2.53 \pm 0.01$
-    & $31.7 \pm 0.2\%$ \\
-
-MaxSurprisal/Byte ($\vbyte$)$^\dagger$
-    & $15.52$
-    & $1.47$
-    & $10.53$
-    & $9.79$
-    & $122.4\%$ \\
+& MaxSurprisal/Byte ($\vbyte$)$^\dagger$
+& 15.52
+& 1.47
+& 10.53
+& 9.79 \\
 
 \midrule
 
-\multicolumn{6}{l}{\textit{Tokenizer ablation}} \\
-
-One-byte UTF-8
-    & $8.33 \pm 0.00$
-    & $1.00 \pm 0.00$
-    & $8.33 \pm 0.00$
-    & $9.57 \pm 0.00$
-    & $119.6 \pm 0.0\%$ \\
+Ablation
+& One-byte UTF-8
+& 8.33
+& 1.00
+& 8.33
+& 9.57 \\
 
 \bottomrule
 
 \end{tabular*}
+
+\parbox{\linewidth}{\scriptsize
+$^\ddagger$ The unexpectedly low realized AC rate reflects finite-frequency
+quantization in the practical arithmetic coder, together with coder-support
+restriction and renormalization; it does not indicate improved prediction.
+}
 
 \end{table}

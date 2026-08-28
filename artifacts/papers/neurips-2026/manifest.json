@@ -35,7 +35,8 @@
   },
   "studies": {
     "tokenizer-fertility": "studies/tokenizer-fertility/results.json",
-    "max-surprisal-length": "studies/max-surprisal-length"
+    "max-surprisal-length": "studies/max-surprisal-length",
+    "arithmetic-quantization-sensitivity": "ablations/arithmetic-quantization/results.json"
   },
   "derived": {
     "compressor-robustness-audit": "derived/audit-tables/compressor_robustness_audit.csv",

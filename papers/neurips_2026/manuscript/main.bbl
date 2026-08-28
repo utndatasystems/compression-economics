@@ -25,12 +25,6 @@ Tobias Schmidt et~al.
 \newblock Accelerating string-heavy queries with {LLM} token tables.
 \newblock \emph{PVLDB}, 19, 2026.
 
-\bibitem[Alakuijala et~al.(2016)]{alakuijala2016brotli}
-Jyrki Alakuijala et~al.
-\newblock Brotli compressed data format.
-\newblock RFC 7932, Internet Engineering Task Force, July 2016.
-\newblock URL \url{https://www.rfc-editor.org/info/rfc7932}.
-
 \bibitem[Witten et~al.(1987)]{witten1987arithmetic}
 Ian~H. Witten et~al.
 \newblock Arithmetic coding for data compression.
@@ -64,6 +58,12 @@ Matthias Gall{\'e}.
 \newblock In \emph{EMNLP-IJCNLP}, pages 1375--1381, Hong Kong, China, 2019.
   Association for Computational Linguistics.
 \newblock \doi{10.18653/v1/D19-1141}.
+
+\bibitem[Alakuijala et~al.(2016)]{alakuijala2016brotli}
+Jyrki Alakuijala et~al.
+\newblock Brotli compressed data format.
+\newblock RFC 7932, Internet Engineering Task Force, July 2016.
+\newblock URL \url{https://www.rfc-editor.org/info/rfc7932}.
 
 \bibitem[Boncz et~al.(2020)]{boncz2020fsst}
 Peter Boncz et~al.

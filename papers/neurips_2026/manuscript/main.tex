@@ -16,6 +16,8 @@
 
 \usepackage{hyperref}
 
+\usepackage{multirow}
+
 \usepackage{url}
 
 \usepackage{booktabs}
@@ -79,64 +81,23 @@
 
 \section{Who Is Actually Doing the Heavy Lifting in LLM-Based Compression?}
 
-Strings are a core data type in production databases: in an Amazon Redshift
-fleet study, variable-length strings account for 52.1\% of stored columns and
-53.8\% of predicate columns~\citep{vanrenen2024tpc}. General-purpose systems
-must therefore deal with arbitrary inputs rather than only text that matches a
-model's training distribution. As data accumulates, compression becomes
-especially important for cold storage, where space savings must be weighed
-against encoding cost and access latency~\citep{kipf2026waiting}. An LLM
-codec therefore poses system's challenges: it must preserve queryability (e.g. equality checks, joins, aggregations before decoding), handle
-any/arbitrary/unexpected input, and fail gracefully even when prediction is poor.
+Strings are a core data type in production databases: in an Amazon Redshift fleet study, variable-length strings account for 52.1\% of stored columns and 53.8\% of predicate columns~\citep{vanrenen2024tpc}. Production text data, however, is heterogeneous and may not match an LLM’s training distribution, which is something general-purpose systems must therefore be able to cope with. As data accumulates, compression becomes especially important for cold storage, where space savings can be weighed favorably against access latency and encoding cost ~\citep{kipf2026waiting}. Yet favorable storage economics are not enough: a practical LLM codec must also meet broader systems requirement. Such a  Such a codec must preserve queryability, for example, supporting equality checks or joins without full decoding, while remaining robust to arbitrary inputs and degrading gracefully when model predictions are poor.
 
-We study a layered architecture for this setting. The tokenizer maps strings to
-stable token IDs that act as a global dictionary and support operations over
-encoded data without model inference~\citep{schmidt2026accelerating}; these IDs
-form the lossless, queryable representation. For cold storage or transport, an
-LLM predicts the IDs and an arithmetic coder compresses them. This predictive
-layer is optional: a block-level guard can store the smaller of Qwen+AC and a
-conventional codec such as Brotli~\citep{alakuijala2016brotli}, bounding learned-codec expansion by the
-fallback size.
+To this end, we study a layered architecture designed around the separation from tokenization and predictive compression. The tokenizer first maps strings to stable token IDs that act as a global dictionary and support operations over encoded data without model inference~\citep{schmidt2026accelerating}; these IDs form the lossless, queryable representation.  For cold storage or transport, an LLM predicts the token IDs and an arithmetic coder compresses them. Because tokenization already constitutes a lossless pre-compression, this predictive layer is optional. When it is used tough, arithmetic coding assigns shorter descriptions to more probable tokens ~\citep{witten1987arithmetic,steinruecken2015lossless}.
 
-Arithmetic coding assigns shorter lossless descriptions to more probable
-outcomes~\citep{witten1987arithmetic,steinruecken2015lossless}. Prior LLM codecs combine next-token
-probabilities with arithmetic coding or another lossless coding scheme~\citep{valmeekam2023llmzip}; tokenization itself can also
-act as lossless precompression~\citep{deletang2024language}, with byte-pair
-encoding (BPE) originating as a compression algorithm~\citep{gage1994new} and
-its effectiveness linked to shorter token sequences~\citep{galle2019investigating}.
-From a systems perspective, an LLM codec competes with traditional hand-engineered
-compression algorithms such as Brotli~\citep{alakuijala2016brotli} and FSST~\citep{boncz2020fsst}.
+Prior LLM codecs do already combine next-token probabilities with arithmetic coding or other lossless coding schemes~\citep{valmeekam2023llmzip}. Prediction, however, is only once source of compression. Tokenization itself can also act as lossless pre-compression~\citep{deletang2024language}. The popular tokenization strategy BPE (Byte-Pair Encoding) even originated as a compression algorithm~\citep{gage1994new} in the first place, and its effectiveness has been linked to shorter token sequences~\citep{galle2019investigating}. From a systems perspective however, these gains ultimately only matter insofar as the complete codec improves on conventional alternatives such as Brotli~\citep{alakuijala2016brotli} and FSST~\citep{boncz2020fsst}.
 
-What remains unclear is how much of an LLM codec's behavior comes from its token
-representation and how much comes from prediction. Delétang et al. compare ASCII
-and BPE ~\citep{sennrich2016bpe} on natural enwik9, but the two effects have not
-been isolated under inputs chosen against realized end-to-end size. This matters
-because prediction loss is measured in bits/token while compression is measured in
-bits/source byte: a poor probability model may still sit inside a pipeline that
-compresses when its tokens represent many bytes, whereas low-fertility tokenization
-can expose expansion. We therefore study the tokenizer--predictor--coder pipeline
-as a two-layer system.
+What remains unclear is how much of an LLM codec's behavior comes from tokenization versus prediction. \citet{deletang2024language} compare ASCII and BPE~\citep{sennrich2016bpe} on natural text, but do not isolate these effects under inputs targeting realized end-to-end size. This distinction matters because prediction cost is measured in bits/token, whereas compression depends on bits/source byte: a poor probability model can still compress when tokens represent many bytes. We therefore isolate tokenization and prediction under adversarial inputs to determine when prediction failure becomes compression failure and when tokenization absorbs the cost.
 
 \paragraph{Contributions.}
-
-We (i) factor end-to-end compression rate into tokenizer fertility and
-predictive coding under natural, random, and worst-case inputs; (ii) formalize
-token- and byte-level objectives with realized-code accounting that reveal when tokenization
-absorbs predictive surprise and when the final stream expands; and (iii) derive
-a layered database design that preserves a queryable token representation while
-guarding optional predictive coding with a conventional block-level fallback.
-
-%We construct losslessly decodable adversarial inputs and separate the resulting file size into tokenizer, model, arithmetic-coder, and metadata costs.
+We make two contributions: (1) we factor end-to-end compression into tokenizer fertility and predictive coding under natural, random, and adversarial inputs. This decomposition reveals that prediction failure need not imply compression failure: on text8, Qwen2.5-0.5B with arithmetic coding produces a complete stream at $17.6\%$ of raw size, and even when the MinProb adversary raises prediction cost by $5.68\times$, the stream remains compressive at $36.2\%$. (2) we formalize token- and byte-level adversarial objectives with realized-code accounting, showing when tokenization absorbs predictive surprise and when that protection against size expansion breaks down. Directly maximizing decoded-byte-normalized surprisal removes this buffer and expands the complete stream to $144.3\%$ of raw size.
 
 
-\section{Compression Objectives and How to Construct Worst-Case Inputs}
+\section{Compression Objectives and How to Construct Adversarial Inputs}
 \label{sec:attacks}
 
-%TODO: shorten this paragraph, maybe put the example with hello in the appendix
-Our central distinction is between prediction difficulty and end-to-end compression failure. A token can be extremely unlikely under the language model while decoding to few source bytes. We use one notation throughout: let $x=(x_1,\ldots,x_N)$ be the generated token sequence, let $h_t=x_{<t}$ be its token history, let $\Dec = \operatorname{decode}$ denote the decoder, and let $p_\theta(v\mid h)$ be the language model probability of token $v$ after history $h$. For a sequence of $N$ tokens, let $\bytes{\operatorname{decode}(x)}$ denote the number of source bytes obtained after decoding the token sequence $x$. For example, if $\operatorname{decode}(x)=\texttt{hello}$, then $\bytes{\operatorname{decode}(x)}=5$ bytes.
+A token can be extremely unlikely under the language model while decoding to few source bytes. We formalize the central distinction between prediction difficulty and end-to-end compression failure. We use one notation throughout: let $x=(x_1,\ldots,x_N)$ be the generated token sequence, let $h_t=x_{<t}$ be its token history, let $\Dec = \operatorname{decode}$ denote the decoder, and let $p_\theta(v\mid h)$ be the language model probability of token $v$ after history $h$. Let $\bytes{\operatorname{decode}(x)}$ denote the number of source bytes obtained after decoding the token sequence $x$. For example, if $\operatorname{decode}(x)=\texttt{hello}$, then $\bytes{\operatorname{decode}(x)}=5$ bytes.
 Let $B(x)$ be shorthand for the decoded source size in bytes: $B(x) = \bytes{\operatorname{decode}(x)}.$
-
-%, so maximizing token surprisal need not maximize compressed size/input byte.
 
 The token-level objective, MinProb, selects the least-probable admissible continuation $\vtok \in G(h)$:
 \begin{equation}
@@ -147,7 +108,7 @@ The token-level objective, MinProb, selects the least-probable admissible contin
   \label{eq:minprob}
 \end{equation}
 
-This is the LLM-centric token-level worst case. It maximizes model surprisal, ideal coded bits/token, but not necessarily bits/source byte. To account for variable-length tokenization, define the incremental decoded byte length contributed by the token $v$,
+This is the LLM-centric token-level adversarial objective, which maximizes model surprisal and ideal coded bits/token equivalently, but not necessarily bits/source byte. To account for variable-length tokenization, define the incremental decoded byte length contributed by the token $v$,
 \begin{equation}
   \Delta b(v;h)=
   \bytes{\operatorname{decode}(h\mathbin\Vert v)}-
@@ -186,8 +147,6 @@ captures arithmetic-coder, metadata, and framing effects.
 \subsection{Prediction Loss Is Not Compression Loss}
 \label{sec:objective-mismatch}
 
-%TODO: find a catchy title, something that conveys that "no, prediction is not the best proxy for compression - do not forget about the tokenizer!"
-
 We define tokenizer fertility as the average decoded source-byte count:
 %\todo{compare fertility accross different tokenizers }
 \begin{equation} f(x)=\frac{\bytes{\operatorname{decode}(x)}}{N} \qquad [\mathrm{bytes/token}].,
@@ -202,79 +161,34 @@ Using the sequence NLL $L_\theta(x)$, the ideal predictive rate is
   \frac{100}{8}.
   \label{eq:factorization}
 \end{equation}
-Thus high bits/token can be offset by high bytes/token. Tokenization can buffer
-severe prediction failure when adversarial tokens represent many source bytes.
-Hence, there is a compression boundary (ignoring finite coder state, metadata overhead, etc.)
-that occurs at $\frac{L_\theta(x)}{N} < 8\,\frac{\bytes{\operatorname{decode}(x)}}{N} = 8 f(x)$.
- A token representing $f$ source bytes can tolerate up to $8f$ bits of
-surprisal before the predictive layer expands the source.
-
-%Thus, a tokenizer with fertility f bytes/token can absorb up to 8f bits/token of prediction cost.
-
-%(This is the robustness mechanism we test:)
-
+Thus high bits/token can be offset by high bytes/token. Tokenization can buffer severe prediction failure when adversarial tokens represent many source bytes. Looking at \ref{eq:factorization}, hence, there is a compression boundary for $R_{ideal}$ that occurs at $\frac{L_\theta(x)}{N} < 8\,\frac{\bytes{\operatorname{decode}(x)}}{N} = 8 f(x)$. A token representing $f$ source bytes can tolerate up to $8f$ bits of surprisal before the predictive layer expands the source.
 
 \subsection{Token- and Byte-Level Attacks}
-% Adversarial model and generation policies
 
 \paragraph{Threat Model.}
-We assume white-box access to the compression pipeline: the adversary can
-inspect the tokenizer and model logits when constructing
-an input and construct length-$N$ adversarial inputs by autoregressive search
-over a candidate alphabet $G$ using different scoring functions. To ensure that
-generated token sequences survive decoding and retokenization, every prefix
-must satisfy $T(\operatorname{decode}(x_{1:t}))=x_{1:t}$; see
-Appendix~\ref{app:canonicality}.
+We assume white-box access to the compression pipeline: the adversary can inspect the tokenizer and model logits and constructs length-$N$ adversarial inputs by autoregressive search over a candidate alphabet $G$. To ensure that generated token sequences survive decoding and re-tokenization, every prefix must satisfy $T(\operatorname{decode}(x_{1:t}))=x_{1:t}$; see Appendix~\ref{app:canonicality}.
 
 \paragraph{Adversarial Input Generation.}
-We benchmark two adversarial generation policies for against natural text from Wikipedia and random strings:
-\emph{Minimum probability} ($\vtok$) greedily maximizes Eq.~\ref{eq:minprob}, while \emph{maximum surprisal/byte} ($\vbyte$)
-greedily maximizes Eq.~\ref{eq:spb}. In addition, we provide a \emph{one-byte UTF-8 ablation} restricting the candidate alphabet $G$ to
-canonical tokens representing exactly one decoded byte, thereby removing variation in token fertility.
-Under this constraint, the multi-byte buffering is removed and the $\vtok$ and $\vbyte$ objectives induce
-the same greedy ranking. %collapses to.
-
-\paragraph{Practical Relevance (should be rewritten and the paragraph renamed).}
-Together, these inputs model worst-case blocks caused by either benign model mismatch or malicious
-users. Among predictive objectives, MaxSurprisal/Byte ($\vbyte$) captures the relevant
-failure mode for end-to-end size; guards should therefore monitor realized bytes/source byte, not token-level loss alone.
-Together, these inputs model adverse blocks arising from either benign model mismatch or
-malicious users. Because token-level loss alone does not determine serialized
-size, a practical guard should monitor realized bytes per source byte.
-
-%\emph{Natural text} is the non-adversarial corpus baseline. %\emph{Random canonical} uniformly samples valid canonical extensions and controls for unusual token sequences without optimizing against the model.
-
-
-%TODO: I do not yet know how to include this / where to best put it.
+We benchmark natural Wikipedia text and random strings against two adversarial generation policies: \emph{Minimum probability} ($\vtok$) greedily maximizes Eq.~\ref{eq:minprob}, while \emph{maximum surprisal/byte} ($\vbyte$) greedily maximizes Eq.~\ref{eq:spb}. In addition, we provide a \emph{one-byte UTF-8 ablation} restricting the candidate alphabet $G$ to canonical tokens representing exactly one decoded byte, thereby removing variation in token fertility.
+Under this constraint, the multi-byte buffering is removed and the $\vtok$ and $\vbyte$ objectives induce the same greedy ranking.  These inputs model adverse blocks arising from either benign data-model misalignment or malicious users. Among predictive objectives, MaxSurprisal/Byte ($\vbyte$) captures the relevant failure mode for end-to-end size because token-level loss alone does not determine serialized size.
 
 %The \emph{one-byte UTF-8 ablation} is not a separate attack objective. It is an ablation of the candidate alphabet in which $G$ contains only canonical tokens contributing one decoded byte. This fixes fertility near one byte/token and removes the multi-byte-token buffering mechanism. Under an exact one-byte constraint, MinProb and SurprisalPerByte induce the same greedy ranking.
-
-%TODO: think about if this can be shorted or removed. If it stays, call the masking + rescoring an optimization of LLM-based compression.
-%\paragraph{(Global mask re-scoring as an optimization}
-%When evaluating occurring-token dictionaries, we construct each adversarial sequence once under the full distribution and replay identical IDs and histories under the post-hoc occurring-token mask. This isolates probability renormalization; it is not a mask-adaptive attack.) - tbd if I will include it
 
 \section{Evaluation}
 \label{sec:evaluation}
 
 \subsection{Experimental Setup}
 We evaluate Qwen2.5-0.5B~\citep{qwen2024qwen25} on natural text, random text input, full-vocabulary adversarial
-sequences, and a one-byte UTF-8 ablation. Each input in the primary attack evaluation
-contains 10,000 tokens, except for the full-vocabulary MaxSurprisal/Byte ($\vbyte$)
-evaluation, which contains 1,024 tokens due to computational constraints.
+sequences, and a one-byte UTF-8 ablation. Each input in the attack evaluation contains 10,000 tokens, except for the full-vocabulary MaxSurprisal/Byte ($\vbyte$) evaluation, which contains 1,024 tokens due to computational constraints.
 \footnote{This shorter evaluation does not change the qualitative conclusion; see Appendix~\ref{app:maxsurprisal-length}.}
-All attacks use the same model, context, and arithmetic-coding configuration, and
-generated prefixes must round-trip through tokenizer decoding and re-encoding.
-% For every input, we report prediction cost $L_\theta(x)/N$,
-% tokenizer fertility $B(x)/N$, ideal model cost,  AC payload cost , and $R_{\mathrm{AC}}(x)=100\,S_{\mathrm{AC}}(x)/(8B(x))$
-% and exclude Qwen+AC container metadata. Figure~\ref{fig:layered_compression_robustness}
-% reports complete-stream ratios.
+All attacks use the same model, context, and arithmetic-coding configuration, and generated prefixes must round-trip through tokenizer decoding and re-encoding.
 
 \subsection{Results}
 \label{sec:results}
 
 \input{tables/attack_results_table}
 
-\begin{figure}[t] %[!b]
+\begin{figure}[t] %[!b] t
     \centering
     \includegraphics[width=\linewidth]{plots/end_to_end_compressor_robustness.png}
     \caption{\textbf{End-to-end compression across natural vs. adversarial inputs.}
@@ -286,34 +200,24 @@ generated prefixes must round-trip through tokenizer decoding and re-encoding.
 
 
 \paragraph{Natural-to-Random Shift Removes the Predictive Advantage.}
-As was to be expected, Qwen+AC strongly compresses natural text, but on random printable text its
-size ratio rises to $97.4\%$, compared with $83.0\%$ for Brotli. Prediction
-still repairs much of the Qwen token IDs baseline's inefficiency, but
-under this distribution shift it no longer beats a conventional codec. It is worth noting
-that random input alone is still not able to break the $100\%$ compression barrier for Qwen+AC.
+As was to be expected, Qwen+AC is the best performing compressor on natural text ($17.6\%$), all algorithms have acceptable performance. Interestingly, tokenization only is already a strong baseline, better than FSST even - this is explained by the fast that the Qwen tokenizer is trained on text (learned).
+On random text, tokenization ... whereas prediction still repairs much of the Qwen token IDs baseline's inefficiency, but under this distribution shift it no longer beats a conventional codec. It is worth noting that random input alone is still not able to break the $100\%$ compression barrier for Qwen+AC.
 
 %Thus prediction can substantially repair an inefficient token representation without necessarily yielding a competitive compressor.
 
 \paragraph{Prediction Failure Does Not Imply Compression Failure.}
-The MinProb ($\vtok$) attack increases prediction difficulty for the LLM $5.68\times$, yet remains
-compressive because fertility is high at $7.09$ source bytes/token. The Qwen token IDs baseline is slightly smaller than Qwen+AC on the same bytes, confirming that
-robustness comes from the multi-byte token representation rather than an
-additional predictive-coding gain. For Qwen token IDs, random input is larger
-than MinProb input, underscoring that tokenization alone provides substantial precompression.
+The MinProb ($\vtok$) attack increases prediction difficulty for the LLM $5.68\times$, yet remains compressive because tokenizer fertility is high at $7.09$ source bytes/token. This is because MinProb simultaneously affects tokenization: by selecting unlikely continuations directly in token space, it selects vocabulary items that frequently decode to long, multi-byte inputs, as reflected by the increase in fertility in Table~\ref{tab:decisive} (from 5.59 to 7.09). The Qwen token IDs baseline is slightly smaller than Qwen+AC on the same bytes, confirming that robustness comes from the multi-byte token representation rather than an additional predictive-coding gain. For Qwen token IDs, random input is in fact more difficult than MinProb input, underscoring that tokenization alone provides substantial pre-compression.
 
 \paragraph{Attacking Fertility-Adjusted Cost Causes Expansion.}
-Restricting MinProb to a one-byte token vocabulary is one way of removing the fertility buffer and makes
-the complete Qwen+AC stream expand to $122.8\%$. MaxSurprisal/Byte ($\vbyte$)
-attacks the same buffer directly over the full vocabulary and likewise causes
-expansion and is the most effective joint attack on prediction + tokenization. MaxSurprisal/Byte ($\vbyte$)
-is the most effective attack on the complete Qwen + AC codec.
+Restricting MinProb to a one-byte token vocabulary is one way of removing the fertility buffer and makes the complete Qwen+AC stream expand to $122.8\%$. MaxSurprisal/Byte ($\vbyte$)
+attacks the same buffer directly over the full vocabulary and likewise causes expansion and is the most effective joint attack on prediction + tokenization. MaxSurprisal/Byte ($\vbyte$) is the most effective attack on the complete Qwen + AC codec.
 
 
 
-\section{Implications and Conclusion }
+\section{Implications and Conclusion}
 \label{sec:limitations}
 
-\paragraph{LLM-based compression survives model errors.}LLM compression is an end-to-end systems property, not merely a property of the language model: tokenization, prediction,
+\paragraph{LLM-Based Compression Survives Model Errors.} LLM compression is an end-to-end systems property, not merely a property of the language model: tokenization, prediction,
 coding, and serialization jointly determine final size. On natural text (text8), the complete Qwen+AC reaches $17.6\%$ of raw size. MinProb ($\vtok$) raises
 prediction cost to $5.68\times$ its text8 level, yet its payload remains at
 $31.7\%$ because multi-byte tokens absorb the surprise; the Qwen token IDs baseline
@@ -322,18 +226,11 @@ candidates to one-byte tokens removes the tokenization-buffer and makes the comp
 expand to $122.8\%$. Compression therefore survives poor prediction because of
 tokenizer fertility, not necessarily because the model predicts well.
 
-\paragraph{Queryable token representation as the foundation.} Token IDs provide a stable, queryable
+\paragraph{Queryable Token Representation as the Foundation.} Token IDs provide a stable, queryable
 representation for hot data, while predictive coding can be reserved for sufficiently cold blocks.
 This separation matters because LLM compression trades storage savings for inference cost and
 access latency, making access frequency and retention time central to whether it is worthwhile ~\citep{kipf2026waiting}. A conventional codec such as Brotli can serve as a fallback, ensuring that predictive
 compression remains an optional optimization rather than a required representation.
-
-\paragraph{Block-level guard.} On eviction of cold data, the system can encode eligible blocks with Qwen+AC
-and Brotli and store the smaller complete stream with a one-bit codec tag. Selection should use
-realized bytes per source byte rather than token loss to bound storage expansion by the Brotli fallback.
-On access, Qwen+AC restores token IDs directly, while Brotli output must be retokenized before
-token-table execution (Figure~\ref{fig:block-guard-pipeline}).
-
 
 \begin{ack}
 
@@ -346,45 +243,7 @@ token-table execution (Figure~\ref{fig:block-guard-pipeline}).
 \bibliography{references}
 }
 
-
 \newpage
-\input{appendix}
-
-% Supplementary planning notes (do not count toward the four-page narrative):
-
-% - Prove the token/byte objective mismatch and give attack pseudocode.
-
-% - Record configurations, revisions, commands, seeds, hardware, compute, and
-
-%   licenses; report full per-run tables and search-budget ablations.
-
-% - Document exact seed-token, quantization, bitmap, payload, and header costs.
-
-% - Repository map: reusable code lives in src/ and scripts/; paper-specific
-
-%   experiments and evaluation live in papers/neurips_2026/; paper artifacts
-
-%   are indexed in artifacts/papers/neurips-2026/manifest.json.
-
-% - Confirm whether references and the NeurIPS checklist are outside the
-
-%   organizers four-page limit. Keep the checklist unless organizers explicitly
-
-%   say their workshop does not require it.
-
-
-%TODOS:
-
-% put idea in there that tokenization is base-compression and then llm based compression can be used on top of that. This ensures that we can still query some of the content (please read tokenization compression paper again).
-
-% include classical baselines such as brotli, llmzip
-
-% include Qwen token IDs as baseline and report for different tokenizers (Qwen’s large vocabulary;, a smaller BPE tokenizer; ideally a byte-level or byte-fallback baseline)
-
-% mention FSST and include it as baseline
-
-% cite the econimics of LLM based compression from Andreas Kipf
-
-
+\input{appendix_neurips}
 
 \end{document}
