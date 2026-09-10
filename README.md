@@ -21,7 +21,7 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - `experiments/`: version-controlled sweep definitions and run configurations.
 - `evaluation/`: result loaders, baselines, plots, notebooks, and reference data.
 - `tests/`: automated tests for maintained reusable code.
-- `papers/neurips_2026/`: manuscript, experiments, evaluation, and tests for the current paper.
+- `papers/neurips_2026/`: manuscript, supplementary artifact metadata, experiments, evaluation, and tests for the current paper.
 - `data/`: local datasets (ignored).
 - `artifacts/`: generated runs, figures, model weights, and logs. Paper runs are indexed under `artifacts/papers/neurips-2026/`.
 

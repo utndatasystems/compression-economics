@@ -54,10 +54,10 @@ for relative_path in \
   copy_file "$relative_path"
 done
 
-cp -- "$REPO_ROOT/supplementary/ARTIFACT_CARD.md" "$ARCHIVE_ROOT/README.md"
-cp -- "$REPO_ROOT/supplementary/LICENSE" "$ARCHIVE_ROOT/LICENSE"
-cp -- "$REPO_ROOT/supplementary/pyproject.toml" "$ARCHIVE_ROOT/pyproject.toml"
-cp -- "$REPO_ROOT/supplementary/uv.lock" "$ARCHIVE_ROOT/uv.lock"
+cp -- "$REPO_ROOT/papers/neurips_2026/supplementary/ARTIFACT_CARD.md" "$ARCHIVE_ROOT/README.md"
+cp -- "$REPO_ROOT/papers/neurips_2026/supplementary/LICENSE" "$ARCHIVE_ROOT/LICENSE"
+cp -- "$REPO_ROOT/papers/neurips_2026/supplementary/pyproject.toml" "$ARCHIVE_ROOT/pyproject.toml"
+cp -- "$REPO_ROOT/papers/neurips_2026/supplementary/uv.lock" "$ARCHIVE_ROOT/uv.lock"
 
 # Source-tree caches are generated locally and are never part of the research
 # artifact. Removal is confined to the freshly created temporary staging tree.
