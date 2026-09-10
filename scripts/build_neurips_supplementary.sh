@@ -7,7 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
-OUTPUT_PATH="${1:-$REPO_ROOT/dist/neurips-2026-supplementary.zip}"
+OUTPUT_PATH="${1:-$REPO_ROOT/papers/neurips_2026/supplementary/neurips-2026-supplementary.zip}"
 ARCHIVE_ROOT_NAME="compression-economics-artifact"
 MAX_BYTES=100000000
 

@@ -7,7 +7,7 @@ tools remain in `scripts/`.
 ## Layout
 
 - `manuscript/`: LaTeX sources, included tables, and included figures.
-- `supplementary/`: metadata and locked environment for the anonymous code artifact.
+- `supplementary/`: metadata and locked environment for the anonymous code artifact; the ignored generated ZIP is written here.
 - `experiments/`: reproducible entry points for every paper experiment.
 - `evaluation/`: audited loaders, plotting code, notebook, and focused tests.
 - `../../artifacts/papers/neurips-2026/`: raw runs, finalized streams, studies,

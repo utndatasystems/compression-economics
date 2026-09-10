@@ -37,6 +37,7 @@ logs/*
 *.synctex.gz
 *.toc
 /papers/neurips_2026/manuscript/main.pdf
+/papers/neurips_2026/supplementary/neurips-2026-supplementary.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
