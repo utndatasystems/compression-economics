@@ -3,10 +3,9 @@
 \centering
 
 \caption{
-\textbf{Source-normalized predictive coding under increasingly adverse inputs.}
+\textbf{Source-normalized predictive coding under adverse inputs.}
 Token-level surprisal alone is not predictive of compression failure.
 $\downarrow$ lower is better, $\uparrow$ higher is better for compression.
-$^\dagger$ Final 1,024-token evaluation (one run).
 }
 
 \label{tab:decisive}
@@ -20,16 +19,16 @@ $^\dagger$ Final 1,024-token evaluation (one run).
 
 \multicolumn{1}{l}{Category} &
 \multicolumn{1}{l}{Input / condition} &
-\multicolumn{1}{c}{\shortstack{Pred. cost $\downarrow$\\(bits/token)}} &
-\multicolumn{1}{c}{\shortstack{Fertility $\uparrow$\\(bytes/token)}} &
-\multicolumn{1}{c}{\shortstack{Ideal rate $\downarrow$\\(bits/byte)}} &
-\multicolumn{1}{c}{\shortstack{AC rate $\downarrow$\\(bits/byte)}} \\
+\multicolumn{1}{c}{\shortstack{Pred. cost $\downarrow$\\ {[bits/token]}}} &
+\multicolumn{1}{c}{\shortstack{Fertility $\uparrow$\\{[bytes/token]}}} &
+\multicolumn{1}{c}{\shortstack{Ideal rate $\downarrow$\\{[bits/byte]}}} &
+\multicolumn{1}{c}{\shortstack{AC rate $\downarrow$\\{[bits/byte]}}} \\
 
 \midrule
 
 \multirow{2}{*}{Baselines}
 & Natural text (text8)
-& 5.11
+& \tikzmarknode{pred-natural}{5.11}
 & 5.59
 & 0.92
 & 1.13 \\
@@ -43,13 +42,13 @@ $^\dagger$ Final 1,024-token evaluation (one run).
 \midrule
 
 \multirow{2}{*}{Adversaries}
-& MinProb ($\vtok$)
-& 29.04
+& \MinProb{} ($\vtok$)
+& \tikzmarknode{pred-minprob}{29.04}
 & 7.09
 & 4.10
 & $2.53^{\ddagger}$ \\
 
-& MaxSurprisal/Byte ($\vbyte$)$^\dagger$
+& \MaxSurprisal{} ($\vbyte$)$^\dagger$
 & 15.52
 & 1.47
 & 10.53
@@ -67,11 +66,25 @@ Ablation
 \bottomrule
 
 \end{tabular*}
+\begin{tikzpicture}[remember picture,overlay]
+    \draw[
+        -{Stealth[length=1.5mm]},
+        line width=0.5pt,
+        shorten <=1pt,
+        shorten >=1pt
+    ]
+    (pred-natural.east)
+    .. controls +(5mm,0) and +(5mm,0) ..
+    node[
+        midway,
+        right=2pt,
+        font=\scriptsize
+    ]{$5.68\times$}
+    (pred-minprob.east);
+\end{tikzpicture}
 
 \parbox{\linewidth}{\scriptsize
-$^\ddagger$ The unexpectedly low realized AC rate reflects finite-frequency
-quantization in the practical arithmetic coder, together with coder-support
-restriction and renormalization; it does not indicate improved prediction.
+$^\ddagger$ The unexpectedly low realized AC rate is caused by the inability of a practical coder to represent the model’s extremely small probabilities exactly, coder-support restriction, and induced re-normalization due to padded output positions. An ablation on this effect can be found in Appendix \ref{app:quantization-sensitivity}. Lossless decoding is unaffected. $^\dagger$ Final 1,024-token evaluation (single run).
 }
 
 \end{table}

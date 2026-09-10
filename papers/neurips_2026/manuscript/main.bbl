@@ -10,26 +10,33 @@
 Alexander van Renen, Dominik Horn, Pascal Pfeil, Kapil Vaidya, Wenjian Dong,
   Murali Narayanaswamy, Zhengchun Liu, Gaurav Saxena, Andreas Kipf, and Tim
   Kraska.
-\newblock Why {TPC} is not enough: An analysis of the amazon redshift fleet.
+\newblock Why {TPC} is not enough: An analysis of the {Amazon Redshift} fleet.
 \newblock \emph{Proceedings of the VLDB Endowment}, 17\penalty0 (11):\penalty0
   3694--3706, 2024.
 \newblock \doi{10.14778/3681954.3682031}.
 
-\bibitem[Kipf et~al.(2026)]{kipf2026waiting}
-Andreas Kipf et~al.
-\newblock Waiting to decompress: The economics of llm-based compression.
-\newblock In \emph{CIDR}, 2026.
+\bibitem[Kipf et~al.(2026)Kipf, Schmidt, Kuo, Krid, Rengert, Heller, Zimmerer,
+  Stoian, Pandey, and van Renen]{kipf2026waiting}
+Andreas Kipf, Tobias Schmidt, Ping{-}Lin Kuo, Skander Krid, Moritz Rengert,
+  Luca Heller, Andreas Zimmerer, Mihail Stoian, Varun Pandey, and Alexander van
+  Renen.
+\newblock {Waiting to Decompress: The Economics of LLM-Based Compression}.
+\newblock In \emph{16th Conference on Innovative Data Systems Research, {CIDR}
+  2026, Chaminade, CA, USA, January 18-21, 2026}. www.cidrdb.org, 2026.
+\newblock URL
+  \url{https://vldb.org/cidrdb/2026/waiting-to-decompress-the-economics-of-llm-based-compression.html}.
 
 \bibitem[Schmidt et~al.(2026)]{schmidt2026accelerating}
 Tobias Schmidt et~al.
 \newblock Accelerating string-heavy queries with {LLM} token tables.
 \newblock \emph{PVLDB}, 19, 2026.
 
-\bibitem[Witten et~al.(1987)]{witten1987arithmetic}
-Ian~H. Witten et~al.
+\bibitem[Witten et~al.(1987)Witten, Neal, and Cleary]{witten1987arithmetic}
+Ian~H. Witten, Radford~M. Neal, and John~G. Cleary.
 \newblock Arithmetic coding for data compression.
-\newblock \emph{Commun. ACM}, 30\penalty0 (6):\penalty0 520--540, June 1987.
+\newblock \emph{Commun. {ACM}}, 30\penalty0 (6):\penalty0 520--540, 1987.
 \newblock \doi{10.1145/214762.214771}.
+\newblock URL \url{https://doi.org/10.1145/214762.214771}.
 
 \bibitem[Steinruecken(2015)]{steinruecken2015lossless}
 Christian Steinruecken.
@@ -41,10 +48,22 @@ Chandra Shekhara~Kaushik Valmeekam et~al.
 \newblock {LLMZip}: Lossless text compression using large language models.
 \newblock \emph{arXiv preprint arXiv:2306.04050}, 2023.
 
-\bibitem[Del{\'e}tang et~al.(2024)]{deletang2024language}
-Gr{\'e}goire Del{\'e}tang et~al.
+\bibitem[Del{\'e}tang et~al.(2024)Del{\'e}tang, Ruoss, Duquenne, Catt,
+  Genewein, Mattern, Grau-Moya, Wenliang, Aitchison, Orseau,
+  et~al.]{deletang2024language}
+Gr{\'e}goire Del{\'e}tang, Anian Ruoss, Paul-Ambroise Duquenne, Elliot Catt,
+  Tim Genewein, Christopher Mattern, Jordi Grau-Moya, Li~Kevin Wenliang,
+  Matthew Aitchison, Laurent Orseau, et~al.
 \newblock Language modeling is compression.
-\newblock In \emph{ICLR}, 2024.
+\newblock In \emph{International Conference on Learning Representations},
+  volume 2024, pages 14165--14181, 2024.
+
+\bibitem[Sennrich et~al.(2016)]{sennrich2016bpe}
+Rico Sennrich et~al.
+\newblock Neural machine translation of rare words with subword units.
+\newblock In \emph{ACL}, pages 1715--1725, Berlin, Germany, 2016. Association
+  for Computational Linguistics.
+\newblock \doi{10.18653/v1/P16-1162}.
 
 \bibitem[Gage(1994)]{gage1994new}
 Philip Gage.
@@ -71,13 +90,6 @@ Peter Boncz et~al.
 \newblock \emph{Proceedings of the VLDB Endowment}, 13\penalty0 (11):\penalty0
   2649--2661, 2020.
 \newblock \doi{10.14778/3407790.3407851}.
-
-\bibitem[Sennrich et~al.(2016)]{sennrich2016bpe}
-Rico Sennrich et~al.
-\newblock Neural machine translation of rare words with subword units.
-\newblock In \emph{ACL}, pages 1715--1725, Berlin, Germany, 2016. Association
-  for Computational Linguistics.
-\newblock \doi{10.18653/v1/P16-1162}.
 
 \bibitem[Qwen et~al.(2024)]{qwen2024qwen25}
 Qwen et~al.
