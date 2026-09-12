@@ -104,11 +104,27 @@ python scripts/train_adapter.py \
 
 ## CIDR 2027 relational benchmark
 
-The CPU smoke sweep compares canonical row-major and column-major table bytes
-with identity framing and zstd:
+The CPU smoke sweep compares canonical row-major and column-major layouts as raw
+bytes and fixed-width Qwen token IDs, stored directly and through zstd. Prepare
+the pinned tokenizer explicitly when it is not cached:
+
+```bash
+.venv/bin/python -m scripts.prepare_cidr_tokenizer
+```
+
+Then run the sweep:
 
 ```bash
 .venv/bin/python -m scripts.run_cidr_benchmark
+```
+
+For the real-world IMDb variant, prepare the official non-commercial dataset
+explicitly and select its smoke configuration:
+
+```bash
+.venv/bin/python -m scripts.prepare_cidr_imdb
+.venv/bin/python -m scripts.run_cidr_benchmark \
+  --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
 ```
 
 See `src/benchmark/README.md` for the byte and accounting contracts and

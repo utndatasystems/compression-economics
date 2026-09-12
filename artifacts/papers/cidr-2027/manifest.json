@@ -7,6 +7,16 @@
       "canonical_row_major_sha256": "321839eb993abf064e998cab2ce4c5a5d246710f451898dc575c0ee9c11d7738",
       "rows": 8192,
       "columns": 6
+    },
+    "imdb-title-basics-evaluation-smoke": {
+      "config": "papers/cidr_2027/experiments/configs/imdb_smoke.toml",
+      "source_url": "https://datasets.imdbws.com/title.basics.tsv.gz",
+      "source_run_date": "2026-09-11",
+      "compressed_source_sha256": "df623f5c88a4f19a13954302acd9c477409219f46b6c9473e47d875fa5cb96b9",
+      "sampling_version": "sha256-split-reservoir-v1",
+      "canonical_row_major_sha256": "3e46c74144917e5825084ac0d3f3d0b6843a1593518ae5790ac2f1fb20b491f7",
+      "rows": 8192,
+      "columns": 9
     }
   },
   "runs": {
@@ -17,8 +27,19 @@
       "resolved_config": "artifacts/papers/cidr-2027/runs/row-column-smoke/resolved_config.json",
       "dataset_manifest": "artifacts/papers/cidr-2027/runs/row-column-smoke/dataset_manifest.json",
       "streams": "artifacts/papers/cidr-2027/runs/row-column-smoke/streams/",
-      "aggregate_rows": 24,
-      "block_rows": 132,
+      "aggregate_rows": 48,
+      "block_rows": 264,
+      "roundtrip_valid": true
+    },
+    "imdb-smoke": {
+      "config": "papers/cidr_2027/experiments/configs/imdb_smoke.toml",
+      "aggregate_results": "artifacts/papers/cidr-2027/runs/imdb-smoke/results.jsonl",
+      "block_results": "artifacts/papers/cidr-2027/runs/imdb-smoke/blocks.jsonl",
+      "resolved_config": "artifacts/papers/cidr-2027/runs/imdb-smoke/resolved_config.json",
+      "dataset_manifest": "artifacts/papers/cidr-2027/runs/imdb-smoke/dataset_manifest.json",
+      "streams": "artifacts/papers/cidr-2027/runs/imdb-smoke/streams/",
+      "aggregate_rows": 48,
+      "block_rows": 336,
       "roundtrip_valid": true
     }
   },

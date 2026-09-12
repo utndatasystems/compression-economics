@@ -29,23 +29,26 @@ The repository already provides:
 
 ## CPU foundation and remaining work
 
-The implemented CPU raw-byte slice now provides:
+The implemented CPU foundation now provides:
 
 - Typed relational tables and byte-exact reversible row-major and column-major
   serializers, including schema, nulls, types, and lengths.
-- A deterministic synthetic relational generator and dataset manifests.
+- A deterministic synthetic relational generator plus a checksum-pinned IMDb
+  `title.basics` loader with stable, disjoint tuning/evaluation samples.
 - A strict declarative runner with stable condition and run identifiers.
 - Identity and zstd pipelines using independently checksummed blocks and a
   validated persisted index.
+- Plain fixed-width token IDs and token IDs followed by zstd, using a pinned
+  locally loaded Qwen tokenizer and a reversible byte mapping.
 - Exact component accounting, shared-model and self-contained-archive labels,
   mandatory round trips, aggregate records, and per-block records.
 
 The broader sweep still needs:
 
-- Adapters for tokenization, token-ID packing, prediction, probability
-  quantization, arithmetic coding, and restart state.
+- Adapters for prediction, probability quantization, arithmetic coding, and
+  restart state.
 - LZ4 in the common runner; it is not currently a project dependency.
-- Versioned real-table loaders with tuning/evaluation splits and checksums.
+- Additional versioned real-table loaders beyond IMDb.
 - Random-access measurements, memory instrumentation, and tail latency.
 - Reproducible analysis commands for confidence intervals, ECDFs, Pareto plots,
   overhead breakdowns, and generated findings.
@@ -91,27 +94,34 @@ only after decoding and byte-for-byte comparison with the source.
 2. **Contracts (raw-byte slice complete).** Typed configuration, explicit
    pipelines, result records, canonical IDs, environment capture, and exact
    component accounting are implemented for identity and zstd.
-3. **Relational bytes (complete).** A deterministic synthetic table generator
-   and reversible row/column serialization include schema, types, nulls, and
-   variable-length values.
+3. **Relational bytes (complete).** A deterministic synthetic table generator,
+   checksum-pinned IMDb loader, stable tuning/evaluation splits, and reversible
+   row/column serialization include schema, types, nulls, and variable-length
+   values.
 4. **Block runner (raw-byte slice complete).** Independent checksummed blocks,
    a validated persisted index, identity/zstd codecs, mandatory round trips,
    and aggregate/block JSONL are runnable on CPU.
-5. **Predictive adapters.** Reuse the smallest local causal model and arithmetic
-   coder through explicit tokenizer/predictor/CDF interfaces; keep encoder and
-   decoder timings separate.
-6. **Analysis.** Produce aggregate statistics, bootstrap intervals, plots, and
+5. **Tokenizer baselines (complete).** Pinned tokenizer metadata, reversible
+   byte tokenization, fixed-width token IDs, token-ID zstd, phase timings, and
+   tokenizer storage charges are integrated into the CPU runner.
+6. **Predictive adapters.** Reuse the smallest local causal model and arithmetic
+   coder through explicit predictor/CDF interfaces; keep encoder and decoder
+   timings separate.
+7. **Analysis.** Produce aggregate statistics, bootstrap intervals, plots, and
    a generated Markdown findings report solely from raw results.
-7. **Scale-out.** Add representative real tables, LZ4 if available, GPU runs,
-   tail latency, random access, and lifecycle-cost experiments.
+8. **Scale-out.** Add more representative real tables, LZ4 if available, GPU
+   runs, tail latency, random access, and lifecycle-cost experiments.
 
 ## First pilot
 
 The first runnable pilot uses a deterministic synthetic mixed-type table. Its
 smoke configuration compares both layouts with identity framing and zstd level 3
-at approximately 64 KiB per block on CPU. The full raw-byte configuration adds
-approximately 1 MiB blocks and more rows. Token-ID and predictive pipelines are
-the next stage; they are not represented as runnable conditions prematurely.
+at approximately 64 KiB per block on CPU. It now includes raw bytes, plain Qwen
+token IDs, and both representations followed by zstd. The full configuration
+adds approximately 1 MiB blocks and more rows. Predictive pipelines remain a
+later stage. A parallel IMDb pilot uses the same matrix over a pinned official
+`title.basics` snapshot, preserving source order after deterministic split
+selection.
 
 Committed sweep definitions live in
 `papers/cidr_2027/experiments/configs/`. Generated data and results live below

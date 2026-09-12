@@ -24,16 +24,38 @@ From the repository root:
 .venv/bin/python -m scripts.run_cidr_benchmark
 ```
 
-The default smoke sweep uses explicit raw-byte identity and zstd pipelines. It
-writes aggregate and per-block JSONL records plus every validated archive under
-`artifacts/papers/cidr-2027/runs/row-column-smoke/`. The larger raw-byte pilot
-uses the same runner with:
+The default smoke sweep uses explicit raw-byte and Qwen token-ID representations,
+each stored directly and through zstd. It writes aggregate and per-block JSONL
+records plus every validated archive under
+`artifacts/papers/cidr-2027/runs/row-column-smoke/`. If the pinned tokenizer is
+not cached, prepare it through an explicit network-enabled command:
+
+```bash
+.venv/bin/python -m scripts.prepare_cidr_tokenizer
+```
+
+The larger pilot uses the same runner with:
 
 ```bash
 .venv/bin/python -m scripts.run_cidr_benchmark \
   --config papers/cidr_2027/experiments/configs/row_column_full.toml
 ```
 
-Predictive/tokenized pipelines are deliberately not listed yet: they will be
-added as explicit valid pipelines after their format and accounting adapters
-exist.
+## Run the IMDb slice
+
+Download the official, non-commercial `title.basics` source and then run its
+checksum-pinned smoke configuration:
+
+```bash
+.venv/bin/python -m scripts.prepare_cidr_imdb
+.venv/bin/python -m scripts.run_cidr_benchmark \
+  --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
+```
+
+Use `imdb_full.toml` for the 100,000-row, two-block-size pilot. The source file
+and generated run remain ignored; the tracked configuration records the exact
+source checksum and deterministic split policy.
+
+Predictive Qwen and arithmetic-coding pipelines remain deliberately absent.
+They will be added after their probability, restart-state, and decoder-side
+causality contracts are implemented.
