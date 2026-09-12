@@ -106,6 +106,11 @@ def _tiny_sweep() -> SweepConfig:
 
 
 def test_runner_writes_valid_long_form_results(tmp_path):
+    streams = tmp_path / "runs/streams"
+    streams.mkdir(parents=True)
+    stale_stream = streams / "obsolete.ceb"
+    stale_stream.write_bytes(b"obsolete")
+
     aggregate, blocks = run_sweep(_tiny_sweep(), output_root=tmp_path)
 
     assert len(aggregate) == 8
@@ -120,4 +125,5 @@ def test_runner_writes_valid_long_form_results(tmp_path):
     )
     assert (tmp_path / "runs/results.jsonl").is_file()
     assert (tmp_path / "runs/blocks.jsonl").is_file()
-    assert len(tuple((tmp_path / "runs/streams").glob("*.ceb"))) == 4
+    assert len(tuple(streams.glob("*.ceb"))) == 4
+    assert not stale_stream.exists()

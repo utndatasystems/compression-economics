@@ -50,18 +50,20 @@ def main() -> None:
     print(f"Aggregate rows: {len(aggregate_rows)}; block rows: {len(block_rows)}")
     print()
     print(
-        f"{'layout':<14} {'codec':<10} {'mode':<24} {'factor':>8} "
+        f"{'layout':<14} {'representation':<15} {'codec':<10} "
+        f"{'mode':<24} {'factor':>8} "
         f"{'comp MiB/s':>12} {'decomp MiB/s':>14} {'blocks':>7} {'reps':>5}"
     )
     groups = {}
     for row in aggregate_rows:
         key = (
             row["condition"]["layout"],
+            row["condition"]["representation"],
             row["condition"]["codec"],
             row["accounting_mode"],
         )
         groups.setdefault(key, []).append(row)
-    for (layout, codec, accounting_mode), rows in groups.items():
+    for (layout, representation, codec, accounting_mode), rows in groups.items():
         factor = statistics.median(
             row["accounting"]["compression_factor"] for row in rows
         )
@@ -72,7 +74,8 @@ def main() -> None:
             row["timings"]["decompression_mib_per_second"] for row in rows
         )
         print(
-            f"{layout:<14} {codec:<10} {accounting_mode:<24} "
+            f"{layout:<14} {representation:<15} {codec:<10} "
+            f"{accounting_mode:<24} "
             f"{factor:>8.3f} {compression_speed:>12.2f} "
             f"{decompression_speed:>14.2f} "
             f"{rows[0]['block_compression_factor_summary']['count']:>7} "

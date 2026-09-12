@@ -1,12 +1,13 @@
 """Independent block framing, codecs, indexes, and exact size accounting.
 
-Archives store a fixed prefix, the canonical table header, checksummed block
-frames and payloads, then a persisted index describing every block.
+Archives store a fixed prefix, optional representation metadata, the canonical
+table header, checksummed block frames and payloads, then a persisted index.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import json
 import struct
 import time
 import zlib
@@ -14,21 +15,31 @@ import zlib
 import zstandard
 
 from src.benchmark.serialization import SerializedTable, parse_source_header
+from src.benchmark.tokenization import (
+    TokenizerAdapter,
+    pack_token_ids,
+    unpack_token_ids,
+)
 
 
 ARCHIVE_MAGIC = b"CEB1"
-ARCHIVE_VERSION = 1
+ARCHIVE_VERSION = 2
 BLOCK_MAGIC = b"BLK1"
 INDEX_MAGIC = b"IDX1"
 
 _ARCHIVE_PREFIX = struct.Struct(">4sBBHIIQ")
-_BLOCK_FRAME = struct.Struct(">4sQIIII")
+_BLOCK_FRAME = struct.Struct(">4sQIIIII")
 BLOCK_FRAME_BYTES = _BLOCK_FRAME.size
 _INDEX_PREFIX = struct.Struct(">4sI")
 _INDEX_ENTRY = struct.Struct(">QIQI")
 
-_CODEC_IDS = {"identity": 0, "zstd": 1}
-_CODEC_NAMES = {value: key for key, value in _CODEC_IDS.items()}
+_PIPELINE_IDS = {
+    ("raw_bytes", "identity"): 0,
+    ("raw_bytes", "zstd"): 1,
+    ("token_ids", "identity"): 2,
+    ("token_ids", "zstd"): 3,
+}
+_PIPELINE_NAMES = {value: key for key, value in _PIPELINE_IDS.items()}
 
 
 @dataclass(frozen=True)
@@ -86,7 +97,7 @@ class Accounting:
 
 @dataclass(frozen=True)
 class BlockMetric:
-    """Sizes and codec timings for one independently decodable block."""
+    """Sizes and phase timings for one independently decodable block."""
 
     block_index: int
     first_cell: int
@@ -97,6 +108,11 @@ class BlockMetric:
     index_bytes: int
     compression_seconds: float
     decompression_seconds: float = 0.0
+    token_count: int = 0
+    tokenization_seconds: float = 0.0
+    token_packing_seconds: float = 0.0
+    token_unpacking_seconds: float = 0.0
+    detokenization_seconds: float = 0.0
 
     @property
     def stored_bytes(self) -> int:
@@ -118,6 +134,7 @@ class EncodedArchive:
     blocks: tuple[BlockMetric, ...]
     codec_seconds: float
     archive_seconds: float
+    representation: str
 
 
 @dataclass(frozen=True)
@@ -128,6 +145,7 @@ class DecodedArchive:
     blocks: tuple[BlockMetric, ...]
     codec_seconds: float
     archive_seconds: float
+    representation: str
 
 
 def _plan_blocks(
@@ -159,10 +177,26 @@ def encode_archive(
     target_block_bytes: int,
     codec: str,
     compression_level: int | None = None,
+    representation: str = "raw_bytes",
+    tokenizer: TokenizerAdapter | None = None,
 ) -> EncodedArchive:
-    """Compress and frame a canonical serialization with an explicit index."""
-    if codec not in _CODEC_IDS:
-        raise ValueError(f"Unsupported codec {codec!r}")
+    """Transform, compress, and frame canonical cells with an explicit index."""
+    pipeline = (representation, codec)
+    if pipeline not in _PIPELINE_IDS:
+        raise ValueError(f"Unsupported representation/codec pair {pipeline!r}")
+    if representation == "token_ids":
+        if tokenizer is None:
+            raise ValueError("token_ids representation requires a tokenizer")
+        metadata = json.dumps(
+            tokenizer.descriptor, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    else:
+        if tokenizer is not None:
+            raise ValueError("raw_bytes representation cannot use a tokenizer")
+        metadata = b""
+    if len(metadata) > 65_535:
+        raise ValueError("archive metadata exceeds its 16-bit length field")
+
     if codec == "zstd":
         if compression_level is None:
             raise ValueError("zstd requires a compression level")
@@ -174,15 +208,37 @@ def encode_archive(
     block_parts: list[bytes] = []
     block_metrics: list[BlockMetric] = []
     index_rows: list[tuple[int, int, int, int]] = []
-    offset = _ARCHIVE_PREFIX.size + len(serialized.source_header)
+    offset = (
+        _ARCHIVE_PREFIX.size
+        + len(metadata)
+        + len(serialized.source_header)
+    )
     codec_seconds = 0.0
 
     for block_index, (first_cell, cells) in enumerate(
         _plan_blocks(serialized.cells, target_block_bytes)
     ):
         raw = b"".join(cells)
+        token_count = 0
+        tokenization_seconds = 0.0
+        token_packing_seconds = 0.0
+        codec_input = raw
+        if tokenizer is not None:
+            phase_started = time.perf_counter()
+            token_ids = tokenizer.encode_bytes(raw)
+            tokenization_seconds = time.perf_counter() - phase_started
+            token_count = len(token_ids)
+
+            phase_started = time.perf_counter()
+            codec_input = pack_token_ids(token_ids, tokenizer.id_width)
+            token_packing_seconds = time.perf_counter() - phase_started
+
         codec_started = time.perf_counter()
-        payload = raw if compressor is None else compressor.compress(raw)
+        payload = (
+            codec_input
+            if compressor is None
+            else compressor.compress(codec_input)
+        )
         elapsed = time.perf_counter() - codec_started
         codec_seconds += elapsed
         frame = _BLOCK_FRAME.pack(
@@ -190,6 +246,7 @@ def encode_archive(
             first_cell,
             len(cells),
             len(raw),
+            token_count,
             len(payload),
             zlib.crc32(raw),
         )
@@ -207,6 +264,9 @@ def encode_archive(
                 framing_bytes=len(frame),
                 index_bytes=_INDEX_ENTRY.size,
                 compression_seconds=elapsed,
+                token_count=token_count,
+                tokenization_seconds=tokenization_seconds,
+                token_packing_seconds=token_packing_seconds,
             )
         )
 
@@ -216,18 +276,25 @@ def encode_archive(
     prefix = _ARCHIVE_PREFIX.pack(
         ARCHIVE_MAGIC,
         ARCHIVE_VERSION,
-        _CODEC_IDS[codec],
-        0,
+        _PIPELINE_IDS[pipeline],
+        len(metadata),
         len(serialized.source_header),
         len(block_parts),
         offset,
     )
-    archive = prefix + serialized.source_header + b"".join(block_parts) + bytes(index)
+    archive = (
+        prefix
+        + metadata
+        + serialized.source_header
+        + b"".join(block_parts)
+        + bytes(index)
+    )
     accounting = Accounting(
         source_bytes=len(serialized.source_bytes),
         payload_bytes=sum(metric.payload_bytes for metric in block_metrics),
         framing_bytes=(
             _ARCHIVE_PREFIX.size
+            + len(metadata)
             + len(serialized.source_header)
             + len(block_metrics) * _BLOCK_FRAME.size
         ),
@@ -241,34 +308,55 @@ def encode_archive(
         blocks=tuple(block_metrics),
         codec_seconds=codec_seconds,
         archive_seconds=time.perf_counter() - started,
+        representation=representation,
     )
 
 
-def decode_archive(data: bytes) -> DecodedArchive:
-    """Decode an archive, validating its index, block order, sizes, and CRCs."""
+def decode_archive(
+    data: bytes, *, tokenizer: TokenizerAdapter | None = None
+) -> DecodedArchive:
+    """Decode an archive, validating metadata, index, order, sizes, and CRCs."""
     started = time.perf_counter()
     if len(data) < _ARCHIVE_PREFIX.size:
         raise ValueError("Truncated archive header")
     (
         magic,
         version,
-        codec_id,
-        reserved,
+        pipeline_id,
+        metadata_length,
         source_header_length,
         block_count,
         index_offset,
     ) = _ARCHIVE_PREFIX.unpack_from(data)
-    if magic != ARCHIVE_MAGIC or version != ARCHIVE_VERSION or reserved != 0:
+    if magic != ARCHIVE_MAGIC or version != ARCHIVE_VERSION:
         raise ValueError("Unsupported archive format")
     try:
-        codec = _CODEC_NAMES[codec_id]
+        representation, codec = _PIPELINE_NAMES[pipeline_id]
     except KeyError as error:
-        raise ValueError(f"Unknown codec ID {codec_id}") from error
+        raise ValueError(f"Unknown pipeline ID {pipeline_id}") from error
+
+    metadata_start = _ARCHIVE_PREFIX.size
+    metadata_end = metadata_start + metadata_length
+    if metadata_end > len(data):
+        raise ValueError("Invalid archive metadata length")
+    metadata_bytes = data[metadata_start:metadata_end]
+    if representation == "token_ids":
+        if tokenizer is None:
+            raise ValueError("token archive decoding requires a tokenizer")
+        try:
+            descriptor = json.loads(metadata_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("Invalid tokenizer metadata") from error
+        if not isinstance(descriptor, dict):
+            raise ValueError("Tokenizer metadata must be an object")
+        tokenizer.validate_descriptor(descriptor)
+    elif metadata_bytes:
+        raise ValueError("Raw-byte archives cannot contain tokenizer metadata")
+
     decompressor = (
         zstandard.ZstdDecompressor() if codec == "zstd" else None
     )
-
-    source_header_start = _ARCHIVE_PREFIX.size
+    source_header_start = metadata_end
     source_header_end = source_header_start + source_header_length
     if source_header_end > len(data) or not source_header_length:
         raise ValueError("Invalid source header length")
@@ -296,32 +384,69 @@ def decode_archive(data: bytes) -> DecodedArchive:
             first_cell,
             cell_count,
             raw_length,
+            token_count,
             payload_length,
             checksum,
         ) = _BLOCK_FRAME.unpack_from(data, cursor)
         if block_magic != BLOCK_MAGIC or first_cell != expected_first_cell:
             raise ValueError("Invalid block order or magic")
+        if representation == "raw_bytes" and token_count:
+            raise ValueError("Raw-byte block declares token IDs")
         payload_end = frame_end + payload_length
         if payload_end > index_offset:
             raise ValueError("Truncated block payload")
         payload = data[frame_end:payload_end]
+        packed_length = (
+            raw_length
+            if tokenizer is None
+            else token_count * tokenizer.id_width
+        )
+
         codec_started = time.perf_counter()
-        raw = (
+        codec_output = (
             payload
             if decompressor is None
-            else decompressor.decompress(payload, max_output_size=raw_length)
+            else decompressor.decompress(
+                payload, max_output_size=packed_length
+            )
         )
         elapsed = time.perf_counter() - codec_started
-        if len(raw) != raw_length:
+        if len(codec_output) != packed_length:
             raise ValueError(
-                f"Decoded block has {len(raw)} bytes; expected {raw_length}"
+                f"Decoded block has {len(codec_output)} bytes; "
+                f"expected {packed_length}"
             )
         codec_seconds += elapsed
+
+        token_unpacking_seconds = 0.0
+        detokenization_seconds = 0.0
+        raw = codec_output
+        if tokenizer is not None:
+            phase_started = time.perf_counter()
+            token_ids = unpack_token_ids(codec_output, tokenizer.id_width)
+            token_unpacking_seconds = time.perf_counter() - phase_started
+            if len(token_ids) != token_count:
+                raise ValueError("Decoded token count does not match block frame")
+
+            phase_started = time.perf_counter()
+            raw = tokenizer.decode_bytes(token_ids)
+            detokenization_seconds = time.perf_counter() - phase_started
+
+        if len(raw) != raw_length:
+            raise ValueError(
+                f"Reconstructed source block has {len(raw)} bytes; "
+                f"expected {raw_length}"
+            )
         if zlib.crc32(raw) != checksum:
             raise ValueError("Block checksum mismatch")
         raw_blocks.append(raw)
         observed_index.append(
-            (frame_offset, _BLOCK_FRAME.size + payload_length, first_cell, cell_count)
+            (
+                frame_offset,
+                _BLOCK_FRAME.size + payload_length,
+                first_cell,
+                cell_count,
+            )
         )
         metrics.append(
             BlockMetric(
@@ -334,6 +459,9 @@ def decode_archive(data: bytes) -> DecodedArchive:
                 index_bytes=_INDEX_ENTRY.size,
                 compression_seconds=0.0,
                 decompression_seconds=elapsed,
+                token_count=token_count,
+                token_unpacking_seconds=token_unpacking_seconds,
+                detokenization_seconds=detokenization_seconds,
             )
         )
         expected_first_cell += cell_count
@@ -358,14 +486,13 @@ def decode_archive(data: bytes) -> DecodedArchive:
     if cursor != len(data) or stored_index != observed_index:
         raise ValueError("Archive index does not match block frames")
 
-    elapsed_total = time.perf_counter() - started
     return DecodedArchive(
         source_bytes=source_header + b"".join(raw_blocks),
         blocks=tuple(metrics),
         codec_seconds=codec_seconds,
-        archive_seconds=elapsed_total,
+        archive_seconds=time.perf_counter() - started,
+        representation=representation,
     )
-
 
 def attach_decompression_times(
     encoded: tuple[BlockMetric, ...], decoded: tuple[BlockMetric, ...]
@@ -381,15 +508,22 @@ def attach_decompression_times(
             left.cell_count,
             left.source_bytes,
             left.payload_bytes,
+            left.token_count,
         ) != (
             right.block_index,
             right.first_cell,
             right.cell_count,
             right.source_bytes,
             right.payload_bytes,
+            right.token_count,
         ):
             raise ValueError("Encoder and decoder block metadata differ")
         output.append(
-            replace(left, decompression_seconds=right.decompression_seconds)
+            replace(
+                left,
+                decompression_seconds=right.decompression_seconds,
+                token_unpacking_seconds=right.token_unpacking_seconds,
+                detokenization_seconds=right.detokenization_seconds,
+            )
         )
     return tuple(output)

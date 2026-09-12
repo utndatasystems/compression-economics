@@ -38,6 +38,21 @@ representation = "raw_bytes"
 codec = "zstd"
 compression_level = 3
 
+[[pipelines]]
+name = "qwen-token-ids"
+representation = "token_ids"
+codec = "identity"
+tokenizer_name = "Qwen/Qwen2.5-0.5B"
+tokenizer_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+
+[[pipelines]]
+name = "qwen-token-ids-zstd-3"
+representation = "token_ids"
+codec = "zstd"
+compression_level = 3
+tokenizer_name = "Qwen/Qwen2.5-0.5B"
+tokenizer_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
+
 [artifacts]
 root = "artifacts/papers/cidr-2027"
 aggregate_results = "runs/row-column-smoke/results.jsonl"

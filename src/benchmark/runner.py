@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 import hashlib
 import importlib.metadata
@@ -22,13 +22,20 @@ from src.benchmark.archive import (
     decode_archive,
     encode_archive,
 )
-from src.benchmark.config import PipelineConfig, SweepConfig
+from src.benchmark.config import (
+    DatasetConfig,
+    ImdbDatasetConfig,
+    PipelineConfig,
+    SweepConfig,
+)
+from src.benchmark.datasets import IMDB_SAMPLING_VERSION, load_dataset
 from src.benchmark.serialization import (
     SerializedTable,
     deserialize_table,
     serialize_table,
 )
-from src.benchmark.table import Table, generate_synthetic_table
+from src.benchmark.table import Table
+from src.benchmark.tokenization import TokenizerAdapter, load_tokenizer
 
 
 METRIC_DEFINITIONS = {
@@ -39,6 +46,9 @@ METRIC_DEFINITIONS = {
     "total_stored_bytes": "Sum of every charged stored-size component.",
     "compression_factor": "source_bytes / total_stored_bytes; larger is better.",
     "bits_per_source_byte": "8 * total_stored_bytes / source_bytes.",
+    "source_bytes_per_token": (
+        "Canonical cell bytes presented to the tokenizer divided by token count."
+    ),
     "compression_mib_per_second": (
         "Source MiB divided by serialization plus archive-encoding wall time; "
         "file I/O excluded and reported separately."
@@ -112,7 +122,7 @@ def _config_snapshot(config: SweepConfig) -> dict[str, Any]:
         "schema_version": config.schema_version,
         "experiment_id": config.experiment_id,
         "execution": asdict(config.execution),
-        "dataset": asdict(config.dataset),
+        "dataset": _dataset_snapshot(config.dataset),
         "matrix": {
             "layouts": list(config.layouts),
             "blocks_bytes": list(config.blocks_bytes),
@@ -128,6 +138,16 @@ def _config_snapshot(config: SweepConfig) -> dict[str, Any]:
     }
 
 
+def _dataset_snapshot(dataset: DatasetConfig) -> dict[str, Any]:
+    """Convert a typed dataset configuration to JSON-compatible metadata."""
+    snapshot = asdict(dataset)
+    if isinstance(snapshot.get("path"), Path):
+        snapshot["path"] = str(snapshot["path"])
+    if isinstance(dataset, ImdbDatasetConfig):
+        snapshot["sampling_version"] = IMDB_SAMPLING_VERSION
+    return snapshot
+
+
 def _condition(
     config: SweepConfig,
     pipeline: PipelineConfig,
@@ -136,9 +156,9 @@ def _condition(
     repetition: int,
 ) -> dict[str, Any]:
     """Build the immutable inputs that identify one measured run."""
-    return {
+    condition = {
         "experiment_id": config.experiment_id,
-        "dataset": asdict(config.dataset),
+        "dataset": _dataset_snapshot(config.dataset),
         "layout": layout,
         "representation": pipeline.representation,
         "pipeline": pipeline.name,
@@ -149,6 +169,12 @@ def _condition(
         "repetition": repetition,
         "seed": config.execution.seed,
     }
+    if pipeline.representation == "token_ids":
+        condition.update(
+            tokenizer_name=pipeline.tokenizer_name,
+            tokenizer_revision=pipeline.tokenizer_revision,
+        )
+    return condition
 
 
 def _identifier(value: Any, length: int = 16) -> str:
@@ -242,12 +268,22 @@ def _read_bytes(path: Path) -> tuple[bytes, float]:
     return data, time.perf_counter() - started
 
 
+def _prune_stale_streams(directory: Path, retained: set[Path]) -> None:
+    """Remove obsolete benchmark streams from one configured output directory."""
+    if not directory.is_dir():
+        return
+    for path in directory.glob("*.ceb"):
+        if path not in retained:
+            path.unlink()
+
+
 def _run_once(
     *,
     table: Table,
     layout: str,
     target_block_bytes: int,
     pipeline: PipelineConfig,
+    tokenizer: TokenizerAdapter | None,
     stream_path: Path | None,
 ) -> MeasuredRun:
     """Execute and validate one in-memory or persisted archive round trip."""
@@ -260,6 +296,8 @@ def _run_once(
         target_block_bytes=target_block_bytes,
         codec=pipeline.codec,
         compression_level=pipeline.compression_level,
+        representation=pipeline.representation,
+        tokenizer=tokenizer,
     )
     if stream_path is None:
         stored_data = encoded.data
@@ -268,7 +306,7 @@ def _run_once(
         io_write_seconds = _write_bytes(stream_path, encoded.data)
         stored_data, io_read_seconds = _read_bytes(stream_path)
 
-    decoded = decode_archive(stored_data)
+    decoded = decode_archive(stored_data, tokenizer=tokenizer)
     deserialization_started = time.perf_counter()
     reconstructed = deserialize_table(decoded.source_bytes)
     deserialization_seconds = time.perf_counter() - deserialization_started
@@ -279,6 +317,10 @@ def _run_once(
         raise RuntimeError("Round-trip validation failed; result is invalid")
 
     blocks = attach_decompression_times(encoded.blocks, decoded.blocks)
+    tokenization_seconds = sum(block.tokenization_seconds for block in blocks)
+    token_packing_seconds = sum(block.token_packing_seconds for block in blocks)
+    token_unpacking_seconds = sum(block.token_unpacking_seconds for block in blocks)
+    detokenization_seconds = sum(block.detokenization_seconds for block in blocks)
     source_mib = encoded.accounting.source_bytes / (1024**2)
     compression_seconds = serialization_seconds + encoded.archive_seconds
     decompression_seconds = decoded.archive_seconds + deserialization_seconds
@@ -288,15 +330,25 @@ def _run_once(
         blocks=blocks,
         timings={
             "serialization_seconds": serialization_seconds,
+            "tokenization_seconds": tokenization_seconds,
+            "token_packing_seconds": token_packing_seconds,
             "codec_compression_seconds": encoded.codec_seconds,
             "framing_compression_seconds": (
-                encoded.archive_seconds - encoded.codec_seconds
+                encoded.archive_seconds
+                - tokenization_seconds
+                - token_packing_seconds
+                - encoded.codec_seconds
             ),
             "io_write_seconds": io_write_seconds,
             "io_read_seconds": io_read_seconds,
             "codec_decompression_seconds": decoded.codec_seconds,
+            "token_unpacking_seconds": token_unpacking_seconds,
+            "detokenization_seconds": detokenization_seconds,
             "framing_decompression_seconds": (
-                decoded.archive_seconds - decoded.codec_seconds
+                decoded.archive_seconds
+                - decoded.codec_seconds
+                - token_unpacking_seconds
+                - detokenization_seconds
             ),
             "deserialization_seconds": deserialization_seconds,
             "compression_seconds": compression_seconds,
@@ -315,7 +367,18 @@ def run_sweep(
     aggregate_path = root / config.aggregate_results
     block_path = root / config.block_results
     streams_path = root / config.streams
-    table = generate_synthetic_table(config.dataset)
+    table = load_dataset(config.dataset)
+    tokenizer_cache: dict[tuple[str, str], TokenizerAdapter] = {}
+    for pipeline in config.pipelines:
+        if pipeline.representation != "token_ids":
+            continue
+        key = (
+            pipeline.tokenizer_name or "",
+            pipeline.tokenizer_revision or "",
+        )
+        if key not in tokenizer_cache:
+            tokenizer_cache[key] = load_tokenizer(*key)
+
     software, hardware = _environment()
     config_snapshot = _config_snapshot(config)
     recorded_at = datetime.now(timezone.utc).isoformat()
@@ -332,15 +395,26 @@ def run_sweep(
             "split": config.dataset.split,
             "rows": len(table.rows),
             "columns": len(table.columns),
-            "generation_seed": config.dataset.generation_seed,
+            "source": _dataset_snapshot(config.dataset),
             "canonical_row_major_sha256": dataset_sha256,
         },
     )
 
     aggregate_rows: list[dict[str, Any]] = []
     block_rows: list[dict[str, Any]] = []
+    retained_streams: set[Path] = set()
     for layout in config.layouts:
         for pipeline in config.pipelines:
+            tokenizer = (
+                tokenizer_cache[
+                    (
+                        pipeline.tokenizer_name or "",
+                        pipeline.tokenizer_revision or "",
+                    )
+                ]
+                if pipeline.representation == "token_ids"
+                else None
+            )
             for target_block_bytes in config.blocks_bytes:
                 for _ in range(config.execution.warmups):
                     _run_once(
@@ -348,6 +422,7 @@ def run_sweep(
                         layout=layout,
                         target_block_bytes=target_block_bytes,
                         pipeline=pipeline,
+                        tokenizer=tokenizer,
                         stream_path=None,
                     )
                 for repetition in range(config.execution.repetitions):
@@ -360,11 +435,13 @@ def run_sweep(
                     )
                     condition_id = _identifier(condition)
                     stream_path = streams_path / f"{condition_id}.ceb"
+                    retained_streams.add(stream_path)
                     run = _run_once(
                         table=table,
                         layout=layout,
                         target_block_bytes=target_block_bytes,
                         pipeline=pipeline,
+                        tokenizer=tokenizer,
                         stream_path=stream_path,
                     )
                     encoded = run.encoded
@@ -372,6 +449,18 @@ def run_sweep(
                     source_sha256 = hashlib.sha256(
                         run.serialized.source_bytes
                     ).hexdigest()
+                    token_count = sum(block.token_count for block in blocks)
+                    tokenized_source_bytes = sum(
+                        block.source_bytes for block in blocks
+                    )
+                    tokenizer_metadata = (
+                        {
+                            **tokenizer.descriptor,
+                            "asset_bytes": tokenizer.asset_bytes,
+                        }
+                        if tokenizer is not None
+                        else None
+                    )
                     common = {
                         "schema_version": 1,
                         "condition_id": condition_id,
@@ -384,6 +473,13 @@ def run_sweep(
                         "source_sha256": source_sha256,
                         "stream": str(stream_path),
                         "roundtrip_valid": True,
+                        "tokenizer": tokenizer_metadata,
+                        "token_count": token_count,
+                        "source_bytes_per_token": (
+                            tokenized_source_bytes / token_count
+                            if token_count
+                            else None
+                        ),
                         "metric_definitions": METRIC_DEFINITIONS,
                     }
                     block_summary = _block_summary(
@@ -391,6 +487,14 @@ def run_sweep(
                         seed=config.execution.seed + int(condition_id[:8], 16),
                     )
                     for accounting_mode in config.accounting_modes:
+                        accounting = encoded.accounting
+                        if (
+                            accounting_mode == "self_contained_archive"
+                            and tokenizer is not None
+                        ):
+                            accounting = replace(
+                                accounting, tokenizer_bytes=tokenizer.asset_bytes
+                            )
                         aggregate_rows.append(
                             {
                                 **common,
@@ -399,7 +503,7 @@ def run_sweep(
                                     {**condition, "accounting_mode": accounting_mode}
                                 ),
                                 "accounting_mode": accounting_mode,
-                                "accounting": encoded.accounting.as_dict(),
+                                "accounting": accounting.as_dict(),
                                 "timings": run.timings,
                                 "peak_host_memory_bytes": None,
                                 "peak_device_memory_bytes": None,
@@ -423,10 +527,16 @@ def run_sweep(
                                 "compression_factor": block.compression_factor,
                                 "compression_seconds": block.compression_seconds,
                                 "decompression_seconds": block.decompression_seconds,
+                                "token_count": block.token_count,
+                                "tokenization_seconds": block.tokenization_seconds,
+                                "token_packing_seconds": block.token_packing_seconds,
+                                "token_unpacking_seconds": block.token_unpacking_seconds,
+                                "detokenization_seconds": block.detokenization_seconds,
                                 "accounting_modes": list(config.accounting_modes),
                             }
                         )
 
+    _prune_stale_streams(streams_path, retained_streams)
     _write_jsonl(aggregate_path, aggregate_rows)
     _write_jsonl(block_path, block_rows)
     return aggregate_rows, block_rows

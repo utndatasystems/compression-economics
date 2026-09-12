@@ -1,5 +1,5 @@
 schema_version = 1
-experiment_id = "cidr2027-row-column-pilot"
+experiment_id = "cidr2027-imdb-pilot"
 
 [execution]
 seed = 20270301
@@ -10,17 +10,13 @@ verify_roundtrip = true
 result_format = "jsonl"
 
 [dataset]
-kind = "synthetic_relational"
+kind = "imdb_title_basics"
 split = "evaluation"
 rows = 100000
-columns = 8
-generation_seed = 20270302
-cross_column_correlation = 0.75
-within_column_repetition = 0.70
-cardinality = 1000
-null_rate = 0.05
-mean_string_length = 24
-column_kinds = ["natural_language", "identifier", "integer"]
+path = "data/cidr_2027/imdb/title.basics.tsv.gz"
+sha256 = "df623f5c88a4f19a13954302acd9c477409219f46b6c9473e47d875fa5cb96b9"
+split_seed = 20270303
+evaluation_fraction = 0.2
 
 [matrix]
 layouts = ["row_major", "column_major"]
@@ -55,6 +51,6 @@ tokenizer_revision = "060db6499f32faf8b98477b0a26969ef7d8b9987"
 
 [artifacts]
 root = "artifacts/papers/cidr-2027"
-aggregate_results = "runs/row-column-pilot/results.jsonl"
-block_results = "runs/row-column-pilot/blocks.jsonl"
-streams = "runs/row-column-pilot/streams"
+aggregate_results = "runs/imdb-pilot/results.jsonl"
+block_results = "runs/imdb-pilot/blocks.jsonl"
+streams = "runs/imdb-pilot/streams"
