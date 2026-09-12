@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "paper": "cidr-2027",
+  "datasets": {
+    "synthetic-evaluation-smoke": {
+      "config": "papers/cidr_2027/experiments/configs/row_column_smoke.toml",
+      "canonical_row_major_sha256": "321839eb993abf064e998cab2ce4c5a5d246710f451898dc575c0ee9c11d7738",
+      "rows": 8192,
+      "columns": 6
+    }
+  },
+  "runs": {
+    "row-column-smoke": {
+      "config": "papers/cidr_2027/experiments/configs/row_column_smoke.toml",
+      "aggregate_results": "artifacts/papers/cidr-2027/runs/row-column-smoke/results.jsonl",
+      "block_results": "artifacts/papers/cidr-2027/runs/row-column-smoke/blocks.jsonl",
+      "resolved_config": "artifacts/papers/cidr-2027/runs/row-column-smoke/resolved_config.json",
+      "dataset_manifest": "artifacts/papers/cidr-2027/runs/row-column-smoke/dataset_manifest.json",
+      "streams": "artifacts/papers/cidr-2027/runs/row-column-smoke/streams/",
+      "aggregate_rows": 24,
+      "block_rows": 132,
+      "roundtrip_valid": true
+    }
+  },
+  "derived": {}
+}

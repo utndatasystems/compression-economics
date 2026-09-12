@@ -22,8 +22,13 @@ next-token probabilities are encoded using arithmetic coding or rank-based schem
 - `evaluation/`: result loaders, baselines, plots, notebooks, and reference data.
 - `tests/`: automated tests for maintained reusable code.
 - `papers/neurips_2026/`: manuscript, supplementary artifact metadata, experiments, evaluation, and tests for the current paper.
+- `papers/cidr_2027/`: configurations, evaluation code, and manuscript outputs
+  for the row-versus-column benchmark program.
+- `docs/cidr_2027_experiment_plan.md`: inventory, remaining work, accounting
+  contract, and staged CIDR 2027 roadmap.
 - `data/`: local datasets (ignored).
-- `artifacts/`: generated runs, figures, model weights, and logs. Paper runs are indexed under `artifacts/papers/neurips-2026/`.
+- `artifacts/`: generated runs, figures, model weights, and logs. Paper runs
+  are indexed under `artifacts/papers/<paper>/`.
 
 See `experiments/README.md` and `evaluation/README.md` for the boundary between
 running experiments and analyzing their output.
@@ -96,6 +101,18 @@ python scripts/train_adapter.py \
 - `artifacts/runs/current/compression_results.json`: aggregated experiment metrics.
 - `artifacts/runs/current/compression_data.bin`: binary bitstream artifact.
 - `artifacts/runs/current/text_results.txt`: reconstructed text.
+
+## CIDR 2027 relational benchmark
+
+The CPU smoke sweep compares canonical row-major and column-major table bytes
+with identity framing and zstd:
+
+```bash
+.venv/bin/python -m scripts.run_cidr_benchmark
+```
+
+See `src/benchmark/README.md` for the byte and accounting contracts and
+`papers/cidr_2027/README.md` for configurations and artifact locations.
 
 ## Adversarial worst-case inputs
 

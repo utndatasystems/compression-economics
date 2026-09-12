@@ -1,0 +1,45 @@
+schema_version = 1
+experiment_id = "cidr2027-row-column-smoke"
+
+[execution]
+seed = 20270301
+repetitions = 3
+warmups = 1
+backend = "cpu"
+verify_roundtrip = true
+result_format = "jsonl"
+
+[dataset]
+kind = "synthetic_relational"
+split = "evaluation"
+rows = 8192
+columns = 6
+generation_seed = 20270302
+cross_column_correlation = 0.75
+within_column_repetition = 0.70
+cardinality = 32
+null_rate = 0.05
+mean_string_length = 16
+column_kinds = ["natural_language", "identifier", "integer"]
+
+[matrix]
+layouts = ["row_major", "column_major"]
+blocks_bytes = [65536]
+accounting_modes = ["shared_model", "self_contained_archive"]
+
+[[pipelines]]
+name = "raw-identity"
+representation = "raw_bytes"
+codec = "identity"
+
+[[pipelines]]
+name = "raw-zstd-3"
+representation = "raw_bytes"
+codec = "zstd"
+compression_level = 3
+
+[artifacts]
+root = "artifacts/papers/cidr-2027"
+aggregate_results = "runs/row-column-smoke/results.jsonl"
+block_results = "runs/row-column-smoke/blocks.jsonl"
+streams = "runs/row-column-smoke/streams"

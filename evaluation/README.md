@@ -18,3 +18,7 @@ paper and may need their data path set explicitly when opened interactively.
 The current NeurIPS evaluation lives in `papers/neurips_2026/evaluation/`. Its
 raw and finalized inputs are indexed by
 `artifacts/papers/neurips-2026/manifest.json`.
+
+The CIDR 2027 evaluation scaffold lives in `papers/cidr_2027/evaluation/` and
+uses `artifacts/papers/cidr-2027/manifest.json` as the stable index for raw and
+derived outputs.
