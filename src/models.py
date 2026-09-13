@@ -1,4 +1,4 @@
-"""Small local next-symbol model definitions for the CIDR model survey.
+"""Small local next-symbol model definitions for the model survey.
 
 This module contains model interfaces and implementations only. Training and
 scoring helpers live in :mod:`src.predictors`.

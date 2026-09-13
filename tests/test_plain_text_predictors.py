@@ -14,10 +14,10 @@ from src.predictors import (
 )
 
 
-def test_survey_has_requested_byte_and_token_ngrams_and_windows():
+def test_global_mask_survey_has_requested_token_models_and_windows():
     specs = {spec.name: spec for spec in survey_model_specs()}
 
-    assert {"byte-bigram", "byte-trigram", "token-bigram", "token-trigram"} <= specs.keys()
+    assert {"token-bigram", "token-trigram"} <= specs.keys()
     assert {specs[f"token-nplm-w{window}"].context_length for window in (8, 32, 128)} == {8, 32, 128}
     assert specs["token-tiny-transformer-w128"].family == "transformer"
     assert specs["token-tiny-gru-w128"].family == "recurrent"
@@ -57,8 +57,3 @@ def test_neural_training_is_teacher_forced_and_returns_epoch_losses():
     assert len(losses) == 2
     assert all(math.isfinite(loss) for loss in losses)
     assert bits_per_symbol(model, [0, 1, 2, 0]) > 0
-
-
-def test_byte_models_are_pinned_to_the_byte_vocabulary():
-    with pytest.raises(ValueError, match="vocabulary_size=256"):
-        build_predictor(survey_model_specs()[0], vocabulary_size=7)
