@@ -174,8 +174,8 @@ class NGramTokenPredictor:
     """Token bigram adapter implementing the legacy predictor interface."""
 
     def __init__(self, args, bitmap_data):
-        if args.encoding != "AC":
-            raise ValueError("the ngram engine supports arithmetic coding (AC) only")
+        if args.encoding not in {"AC", "ANS"}:
+            raise ValueError("the ngram engine supports AC or ANS coding")
         if bitmap_data is None:
             raise ValueError("the ngram engine requires a global token bitmap")
         self.args = args
@@ -396,7 +396,7 @@ class TokenPredictor:
             logits = logits.index_select(1, self.index_tensor.to(logits.device))
 
         softmax_time = 0.0
-        if self.args.encoding in {"AC", "PMATIC"}:
+        if self.args.encoding in {"AC", "ANS", "PMATIC"}:
             t0_softmax = time.perf_counter()
             probs = torch.softmax(logits, dim=-1)
             softmax_time = time.perf_counter() - t0_softmax
@@ -429,7 +429,7 @@ class TokenPredictor:
         - tokens_list: list of token IDs corresponding to the score columns in the returned tensor.
         - scores: tensor of shape (batch_size, vocab_size_or_reduced_vocab_size)
         - data_copy_time: approximate time spent moving tensors between host and device during this call.
-        - softmax_time: time spent computing the softmax (only non-zero when encoding == "AC" / "PMATIC").
+        - softmax_time: time spent computing the softmax (only non-zero when encoding in {"AC", "ANS"} / "ANS" / "PMATIC").
         """
         data_copy_time = 0.0
 
@@ -533,7 +533,7 @@ class TokenPredictor:
                 tensor. This is the reduced token list when token reduction is
                 enabled, otherwise the full vocabulary index range.
                 - ``scores``:
-                If ``self.args.encoding == "AC" or "PMATIC"``, a probability tensor on CPU.
+                If ``self.args.encoding in {"AC", "ANS", "PMATIC"}``, a probability tensor on CPU.
                 If ``self.args.encoding in {"bitpacked", "huffman"}``, a logits
                 tensor on the active device.
                 - ``data_copy_time``:
@@ -541,7 +541,7 @@ class TokenPredictor:
                 during this call.
                 - ``softmax_time``:
                 Time spent computing the softmax. This is only non-zero when
-                ``encoding == "AC"``.
+                ``encoding in {"AC", "ANS"}``.
 
         Raises:
             ValueError:
@@ -550,7 +550,7 @@ class TokenPredictor:
                 If ``self.args.encoding`` is not one of the implemented modes.
 
         Notes:
-            - For arithmetic coding (``encoding="AC"``), probabilities are returned
+            - For arithmetic coding (``encoding="AC"`` or ``encoding="ANS"``), probabilities are returned
             on CPU because downstream compression code consumes probabilities.
             - For rank-based encodings (``"bitpacked"`` and ``"huffman"``), raw
             logits are returned so the caller can rank tokens directly.

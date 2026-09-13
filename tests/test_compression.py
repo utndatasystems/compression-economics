@@ -105,11 +105,11 @@ def random_code(rng, random_input, compressor_cls):
     return code
 
 
-@pytest.mark.parametrize("compressor_cls,decompressor_cls", [(LLMCompressor, LLMDecompressor),])
+@pytest.mark.parametrize("algorithm", ["AC", "ANS"])
 def test_compress_decompress_roundtrip(
     random_input,
-    compressor_cls,
-    decompressor_cls,):
+    algorithm,
+):
     """
     Verify lossless roundtrip compression and decompression.
 
@@ -123,13 +123,13 @@ def test_compress_decompress_roundtrip(
     """
     text, prob_tables = random_input
 
-    compressor = compressor_cls()
+    compressor = LLMCompressor(algorithm=algorithm)
     for token, probs in zip(text, prob_tables):
         compressor.next_token(token, probs)
 
     code = compressor.compress()
 
-    decompressor = decompressor_cls(code)
+    decompressor = LLMDecompressor(code, algorithm=algorithm)
     for i, probs in enumerate(prob_tables):
         decoded = decompressor.decompress(probs)
         assert decoded == text[i]

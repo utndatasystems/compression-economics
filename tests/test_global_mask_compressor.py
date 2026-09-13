@@ -192,7 +192,8 @@ class _CharacterTokenizer:
         return bytes(token_ids).decode("utf-8")
 
 
-def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch):
+@pytest.mark.parametrize("encoding", ["AC", "ANS"])
+def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch, encoding):
     import src.prediction as prediction_module
 
     monkeypatch.setattr(
@@ -214,7 +215,7 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
         is_mamba=False,
         is_seq2seq=False,
         engine="ngram",
-        encoding="AC",
+        encoding=encoding,
         reduce_tokens=True,
         first_n_tokens=8,
         batch_size=2,

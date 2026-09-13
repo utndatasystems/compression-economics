@@ -3,14 +3,15 @@ LLM-guided text compression experiments with global token masks.
 
 This repo explores how a language model can act as a probabilistic oracle to compress
 text. A single bitmap (global mask) reduces the effective vocabulary, and the model's
-next-token probabilities are encoded using arithmetic coding or rank-based schemes.
+next-token probabilities are encoded using arithmetic coding, range asymmetric numeral systems (ANS), or rank-based schemes.
 
 ## How it works (high level)
 - Tokenize input text with the chosen LLM tokenizer.
 - Optionally reduce the vocabulary to only tokens seen in the input (global mask).
 - Run batched, one-step LLM inference to predict next-token distributions.
 - Encode each next token via:
-  - `AC` (arithmetic coding), or
+  - `AC` (arithmetic coding),
+  - `ANS` (blocked range asymmetric numeral systems), or
   - `bitpacked` / `huffman` (rank-based coding).
 
 ## Project layout
@@ -92,10 +93,30 @@ python scripts/train_adapter.py \
 - `--batch_size`: Number of parallel sequences per step. Default: 1.
 - `--use_kv_cache`: Enable KV cache for faster incremental inference. Default: enabled.
 - `--reduce_tokens/--no_reduce_tokens`: Toggle global vocabulary reduction. Default: enabled.
-- `--encoding`: `AC`, `bitpacked`, or `huffman`. Default: `AC`.
+- `--encoding`: `AC`, `ANS`, `bitpacked`, `huffman`, or `PMATIC`. Default: `AC`.
 - `--print_results`: Print detailed stats to stdout. Default: disabled.
 
 [ToDo: update key options with new training arguments]
+
+## ANS coding
+`ANS` is an optimized byte-renormalized range asymmetric numeral systems (rANS)
+alternative to arithmetic coding. It uses exactly the same deterministic
+probability-to-frequency quantization as `AC` (a total of 2^18), so it has the
+same model and decoder requirements.
+
+Because rANS encodes symbols in reverse order, the implementation writes
+independently decodable blocks of 16 symbols. This bounds encoder memory while
+allowing the autoregressive decoder to consume blocks in normal token order.
+The byte-aligned block framing adds a small overhead, so `ANS` is most useful
+for longer streams or when byte-oriented entropy-coder throughput matters.
+
+Use it with:
+```
+python main.py --mode compress --encoding ANS
+```
+
+The encoding name and all model settings are stored in the stream header;
+decompression therefore continues to need only the compressed-file path.
 
 ## Outputs
 - `artifacts/runs/current/compression_results.json`: aggregated experiment metrics.

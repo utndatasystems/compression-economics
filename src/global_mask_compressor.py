@@ -49,8 +49,8 @@ def _get_pmatic_params(args):
 
 
 def _make_arithmetic_decompressor(args, bit_string, alphabet_size):
-    if args.encoding == "AC":
-        return LLMDecompressor(bit_string, algorithm="AC")
+    if args.encoding in {"AC", "ANS"}:
+        return LLMDecompressor(bit_string, algorithm=args.encoding)
 
     if args.encoding == "PMATIC":
         delta, r = _get_pmatic_params(args)
@@ -135,8 +135,8 @@ def run_global_mask_compression(args):
         
     token_predictor = _make_token_predictor(args, bitmask_data)
 
-    if args.encoding in {"AC"}:
-        llm_compressor = LLMCompressor()
+    if args.encoding in {"AC", "ANS"}:
+        llm_compressor = LLMCompressor(algorithm=args.encoding)
     elif args.encoding == "PMATIC":
         delta, r = _get_pmatic_params(args)
         print(f"Using PMATIC compressor with delta={delta}, r={r}")
@@ -193,7 +193,7 @@ def run_global_mask_compression(args):
                 valid_mask.append(False)
 
         if args.engine in {"transformer", "ngram"}:
-            if args.encoding == "AC":
+            if args.encoding in {"AC", "ANS"}:
                 t0_ac = time.perf_counter()
                 probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
 
@@ -250,8 +250,8 @@ def run_global_mask_compression(args):
             raise ValueError(f"Unsupported engine: {args.engine}")
 
     if args.engine in {"transformer", "ngram"}:
-        if args.encoding == "AC":
-            bit_string = llm_compressor.compress(encoding="AC")
+        if args.encoding in {"AC", "ANS"}:
+            bit_string = llm_compressor.compress(encoding=args.encoding)
         elif args.encoding == "PMATIC": 
             bit_string = llm_compressor.compress(encoding="PMATIC")
         elif args.encoding == "bitpacked":

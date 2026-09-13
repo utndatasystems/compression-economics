@@ -2,6 +2,7 @@ import numpy as np
 import math
 from collections import Counter
 import heapq
+import struct
 from dataclasses import dataclass
 from typing import Optional, Dict, Any, List, Sequence 
 import zstandard as zstd
@@ -367,7 +368,96 @@ class ArithmeticDecoder(ArithmeticCoderBase):
         if temp == -1:
             temp = 0
         return temp
-    
+
+# =============================================================================
+# Range asymmetric numeral systems (rANS)
+# =============================================================================
+
+class RansBlockEncoder:
+    """Byte-renormalized rANS encoder for one independently decodable block."""
+
+    RANS_L = 1 << 31
+    _HEADER = struct.Struct(">HIQ")
+
+    @classmethod
+    def encode(cls, entries, total: int) -> bytes:
+        if total <= 0 or total & (total - 1):
+            raise ValueError("rANS requires a positive power-of-two frequency total")
+        if len(entries) > 0xFFFF:
+            raise ValueError("rANS block contains too many symbols")
+        scale_bits = total.bit_length() - 1
+        state = cls.RANS_L
+        emitted = bytearray()
+        for symbol, cumul in reversed(entries):
+            start = int(cumul[symbol])
+            freq = int(cumul[symbol + 1]) - start
+            if freq <= 0:
+                raise ValueError("rANS cannot encode a zero-frequency symbol")
+            x_max = ((cls.RANS_L >> scale_bits) << 8) * freq
+            while state >= x_max:
+                emitted.append(state & 0xFF)
+                state >>= 8
+            state = ((state // freq) << scale_bits) + (state % freq) + start
+        payload = bytes(reversed(emitted))
+        return cls._HEADER.pack(len(entries), len(payload), state) + payload
+
+
+class RansBlockDecoder:
+    """Decode byte-aligned blocks produced by :class:`RansBlockEncoder`."""
+
+    RANS_L = RansBlockEncoder.RANS_L
+    _HEADER = RansBlockEncoder._HEADER
+
+    def __init__(self, code: Sequence[int], total: int) -> None:
+        if total <= 0 or total & (total - 1):
+            raise ValueError("rANS requires a positive power-of-two frequency total")
+        if len(code) % 8:
+            raise ValueError("rANS input must be byte aligned")
+        self._data = bytes(
+            sum((int(code[offset + bit]) & 1) << (7 - bit) for bit in range(8))
+            for offset in range(0, len(code), 8)
+        )
+        self._offset = 0
+        self._scale_bits = total.bit_length() - 1
+        self._mask = total - 1
+        self._remaining = 0
+        self._state = 0
+        self._payload = b""
+        self._payload_offset = 0
+
+    def _start_block(self) -> None:
+        end = self._offset + self._HEADER.size
+        if end > len(self._data):
+            raise ValueError("truncated rANS block header")
+        count, payload_size, self._state = self._HEADER.unpack(self._data[self._offset:end])
+        self._offset = end
+        payload_end = self._offset + payload_size
+        if count == 0 or payload_end > len(self._data):
+            raise ValueError("invalid or truncated rANS block")
+        self._payload = self._data[self._offset:payload_end]
+        self._offset = payload_end
+        self._payload_offset = 0
+        self._remaining = count
+
+    def read(self, cumulative: np.ndarray) -> int:
+        if self._remaining == 0:
+            self._start_block()
+        value = self._state & self._mask
+        symbol = int(np.searchsorted(cumulative, value, side="right") - 1)
+        start = int(cumulative[symbol])
+        freq = int(cumulative[symbol + 1]) - start
+        if freq <= 0:
+            raise ValueError("invalid rANS frequency table")
+        self._state = freq * (self._state >> self._scale_bits) + value - start
+        while self._state < self.RANS_L:
+            if self._payload_offset >= len(self._payload):
+                raise ValueError("truncated rANS block payload")
+            self._state = (self._state << 8) | self._payload[self._payload_offset]
+            self._payload_offset += 1
+        self._remaining -= 1
+        if self._remaining == 0 and self._payload_offset != len(self._payload):
+            raise ValueError("rANS block has unused payload bytes")
+        return symbol
 
 # =============================================================================
 # LLM-facing compressor/decompressor
@@ -382,7 +472,8 @@ class LLMCompressor:
         delta: float = 1e-3,
         r: Optional[float] = None,
         statesize: int = 32,
-        total: int = 262144):
+        total: int = 262144,
+        ans_block_size: int = 16):
 
         self.bitout = BitOutputStream()
         self.encoder = ArithmeticEncoder(statesize, self.bitout)
@@ -394,6 +485,9 @@ class LLMCompressor:
 
         self.helper_ones = 0
         self.helper_count = 0
+        self.ans_block_size = ans_block_size
+        self._ans_entries = []
+        self._ans_frames = bytearray()
 
         if self.algorithm == "PMATIC":
             if alphabet_size is None:
@@ -406,19 +500,23 @@ class LLMCompressor:
             self.delta = delta
             self.r = choose_pmatic_r(delta) if r is None else r
 
-        elif self.algorithm == "AC":
+        elif self.algorithm in {"AC", "ANS"}:
             self.alphabet_size = alphabet_size
             self.delta = delta
             self.r = r
+            if self.algorithm == "ANS" and ans_block_size < 1:
+                raise ValueError("ans_block_size must be positive")
 
         else:
-            raise ValueError("algorithm must be one of: AC, PMATIC")
+            raise ValueError("algorithm must be one of: AC, ANS, PMATIC")
 
 
     def next_token(self, correct_token_idx: int, probs: np.ndarray):
         # Switch between different encoding algorithms
         if self.algorithm == "AC":
             self._next_token_ac(correct_token_idx, probs)
+        elif self.algorithm == "ANS":
+            self._next_token_ans(correct_token_idx, probs)
         elif self.algorithm == "PMATIC":
             self._next_token_pmatic(correct_token_idx, probs)
 
@@ -429,6 +527,20 @@ class LLMCompressor:
         self.token_count += 1
 
         self.encoder.write(build_cumul(probs, total=self.total), correct_token_idx)
+
+    def _next_token_ans(self, correct_token_idx: int, probs: np.ndarray):
+        """Buffer a symbol using the same quantizer as arithmetic coding."""
+        prob = probs[correct_token_idx]
+        self.cross_entropy_sum += -math.log2(max(prob, 1e-300))
+        self.token_count += 1
+        self._ans_entries.append((correct_token_idx, build_cumul(probs, total=self.total)))
+        if len(self._ans_entries) == self.ans_block_size:
+            self._flush_ans_block()
+
+    def _flush_ans_block(self):
+        if self._ans_entries:
+            self._ans_frames.extend(RansBlockEncoder.encode(self._ans_entries, self.total))
+            self._ans_entries.clear()
 
     def _next_token_pmatic(self, correct_token_idx: int, probs: np.ndarray):
         # PMATIC next token prediction
@@ -469,6 +581,12 @@ class LLMCompressor:
         
     def compress(self, encoding: Optional[str] = None, rank_list=None):
         encoding_name = self.algorithm if encoding is None else encoding.upper()
+
+        if encoding_name == "ANS":
+            if self.algorithm != "ANS":
+                raise ValueError("compress encoding does not match compressor algorithm")
+            self._flush_ans_block()
+            return [(byte >> shift) & 1 for byte in self._ans_frames for shift in range(7, -1, -1)]
 
         if encoding_name in {"AC", "PMATIC"}:
             if encoding_name != self.algorithm:
@@ -524,7 +642,8 @@ class LLMDecompressor:
         self.algorithm = algorithm.upper()
         self.total = total
 
-        self.decoder = ArithmeticDecoder(statesize, BitInputStream(code))
+        self.decoder = (RansBlockDecoder(code, total) if self.algorithm == "ANS"
+                        else ArithmeticDecoder(statesize, BitInputStream(code)))
 
         if self.algorithm == "PMATIC":
             if alphabet_size is None:
@@ -537,17 +656,19 @@ class LLMDecompressor:
             self.delta = delta
             self.r = choose_pmatic_r(delta) if r is None else r
 
-        elif self.algorithm == "AC":
+        elif self.algorithm in {"AC", "ANS"}:
             self.alphabet_size = alphabet_size
             self.delta = delta
             self.r = r
 
         else:
-            raise ValueError("algorithm must be one of: AC, PMATIC")
+            raise ValueError("algorithm must be one of: AC, ANS, PMATIC")
 
     def decompress(self, probs: np.ndarray) -> int:
         if self.algorithm == "AC":
             return self._decompress_ac(probs)
+        elif self.algorithm == "ANS":
+            return self._decompress_ans(probs)
         elif self.algorithm == "PMATIC":
             return self._decompress_pmatic(probs)
 
@@ -556,6 +677,9 @@ class LLMDecompressor:
     def _decompress_ac(self, probs: np.ndarray) -> int:
         cumul = build_cumul(probs, total=self.total)
         return self.decoder.read(cumul, len(probs))
+
+    def _decompress_ans(self, probs: np.ndarray) -> int:
+        return self.decoder.read(build_cumul(probs, total=self.total))
 
     def _decompress_pmatic(self, probs: np.ndarray) -> int:
         probs = pad_probs_to_power_of_two(probs, self.alphabet_size)
