@@ -8,7 +8,7 @@ This package implements the reusable, CPU-only foundation for the CIDR sweep:
 - `serialization.py`: canonical row-major and column-major bytes.
 - `tokenization.py`: pinned local tokenizers, a reversible byte bridge, and
   fixed-width token-ID packing.
-- `archive.py`: independent checksummed blocks, raw/token representations,
+- `block_storage_format.py`: independent checksummed blocks, raw/token representations,
   zstd/identity codecs, persisted indexes, and exact byte accounting.
 - `runner.py`: round-trip enforcement, timings, environment capture, block
   summaries, bootstrap intervals, and JSONL output.

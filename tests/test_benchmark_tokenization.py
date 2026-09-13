@@ -1,6 +1,6 @@
 import pytest
 
-from src.relational_compression_benchmark.archive import decode_archive, encode_archive
+from src.relational_compression_benchmark.block_storage_format import decode_archive, encode_archive
 from src.relational_compression_benchmark.serialization import deserialize_table, serialize_table
 from src.relational_compression_benchmark.table import Column, LogicalType, Table
 from src.relational_compression_benchmark.tokenization import (

@@ -15,7 +15,7 @@ import subprocess
 import time
 from typing import Any, Iterable
 
-from src.relational_compression_benchmark.archive import (
+from src.relational_compression_benchmark.block_storage_format import (
     BlockMetric,
     EncodedArchive,
     attach_decompression_times,

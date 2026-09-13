@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.relational_compression_benchmark.archive import (
+from src.relational_compression_benchmark.block_storage_format import (
     BLOCK_FRAME_BYTES,
     decode_archive,
     encode_archive,
