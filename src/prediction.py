@@ -55,10 +55,20 @@ class TokenDataPreparer:
         print("Starting tokenization...")
         start_time = time.time()
 
-        self.data_tokens = self.tokenizer.encode(
-            self.data, add_special_tokens=False, truncation=False
-        )
+        encode_kwargs = {"add_special_tokens": False, "truncation": False}
+        # Tokenize only the requested prefix. Encoding the entire input and
+        # slicing afterwards is needlessly expensive for large corpora and can
+        # emit a model-context warning even though the model never sees that
+        # full sequence.
         if args.first_n_tokens is not None:
+            encode_kwargs.update(
+                truncation=True,
+                max_length=args.first_n_tokens,
+            )
+        self.data_tokens = self.tokenizer.encode(self.data, **encode_kwargs)
+        if args.first_n_tokens is not None:
+            # Keep the limit authoritative for tokenizers that do not implement
+            # the optional truncation keyword (including lightweight test ones).
             self.data_tokens = self.data_tokens[:args.first_n_tokens]
             if len(self.data_tokens) < args.first_n_tokens:
                 self.args.first_n_tokens = len(self.data_tokens)
@@ -957,8 +967,4 @@ class TokenPredictor:
             if p.requires_grad:
                 trainable_bytes += bytes_
         return total_bytes / (1024 ** 2), trainable_bytes / (1024 ** 2)
-    
-
-
-
     

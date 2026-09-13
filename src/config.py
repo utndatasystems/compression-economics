@@ -1,4 +1,5 @@
 import argparse
+from pathlib import Path
 
 from src.utils import load_model_list
 
@@ -156,6 +157,16 @@ def get_main_args() -> argparse.Namespace:
             parser.error("--engine ngram does not support speculative decompression")
         if not args.ngram_model_path:
             parser.error("--ngram-model-path is required with --engine ngram")
+        if args.mode == "compress":
+            if not args.ngram_training_path:
+                parser.error(
+                    "--ngram-training-path is required when compressing with --engine ngram"
+                )
+            training_path = Path(args.ngram_training_path)
+            if not training_path.is_file():
+                parser.error(
+                    f"--ngram-training-path must name a readable file: {training_path}"
+                )
         args.use_kv_cache = False
 
     # Detect seq2seq models (T5)
