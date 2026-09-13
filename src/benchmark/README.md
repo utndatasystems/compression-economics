@@ -33,13 +33,13 @@ and packing width. Tests and benchmark runs load tokenizer assets locally only.
 Prepare the pinned tokenizer explicitly if it is not already cached:
 
 ```bash
-.venv/bin/python -m scripts.prepare_cidr_tokenizer
+.venv/bin/python main.py cidr prepare-tokenizer
 ```
 
 Prepare the official IMDb `title.basics` snapshot explicitly:
 
 ```bash
-.venv/bin/python -m scripts.prepare_cidr_imdb
+.venv/bin/python main.py cidr prepare-imdb
 ```
 
 The download remains under ignored `data/`. Its exact SHA-256 is pinned in the
@@ -50,12 +50,12 @@ and non-commercial use; consult the URL printed in the download manifest.
 Run the smoke sweep from the repository root:
 
 ```bash
-.venv/bin/python -m scripts.run_cidr_benchmark
+.venv/bin/python main.py cidr benchmark
 ```
 
 Select the real-world smoke sweep with:
 
 ```bash
-.venv/bin/python -m scripts.run_cidr_benchmark \
+.venv/bin/python main.py cidr benchmark \
   --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
 ```

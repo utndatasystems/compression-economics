@@ -109,21 +109,21 @@ bytes and fixed-width Qwen token IDs, stored directly and through zstd. Prepare
 the pinned tokenizer explicitly when it is not cached:
 
 ```bash
-.venv/bin/python -m scripts.prepare_cidr_tokenizer
+.venv/bin/python main.py cidr prepare-tokenizer
 ```
 
 Then run the sweep:
 
 ```bash
-.venv/bin/python -m scripts.run_cidr_benchmark
+.venv/bin/python main.py cidr benchmark
 ```
 
 For the real-world IMDb variant, prepare the official non-commercial dataset
 explicitly and select its smoke configuration:
 
 ```bash
-.venv/bin/python -m scripts.prepare_cidr_imdb
-.venv/bin/python -m scripts.run_cidr_benchmark \
+.venv/bin/python main.py cidr prepare-imdb
+.venv/bin/python main.py cidr benchmark \
   --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
 ```
 
@@ -188,7 +188,7 @@ total length includes the starting token or starting text.
 ### Compression-oriented attacks
 
 The minimum-probability attack maximizes one token's surprisal, not the compression
-ratio of the decoded source. `src/compression_attacks.py` implements the corresponding
+ratio of the decoded source. `src/adversarial/compression.py` implements the corresponding
 byte-level objective,
 
 ```text
@@ -201,7 +201,7 @@ extension. This matters for tokenizers whose standalone token decoding is
 context-dependent. Candidates that add no source bytes are not valid for a
 byte-normalized objective.
 
-`scripts/run_compression_attacks.py` runs a matched experiment containing:
+`scripts/neurips_2026/run_compression_attacks.py` runs a matched experiment containing:
 
 - a seeded uniform random-token control;
 - the original minimum-probability attack;
@@ -213,7 +213,7 @@ byte-normalized objective.
   byte sequence.
 
 ```bash
-python scripts/run_compression_attacks.py \
+python scripts/neurips_2026/run_compression_attacks.py \
   --model-name Qwen/Qwen2.5-0.5B \
   --start-text "A" \
   --total-length 1000 \

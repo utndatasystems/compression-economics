@@ -124,7 +124,7 @@ def load_imdb_title_basics(config: ImdbDatasetConfig) -> Table:
     path = _REPOSITORY_ROOT / config.path
     if not path.is_file():
         raise FileNotFoundError(
-            f"IMDb source not found at {path}; run scripts/prepare_cidr_imdb.py"
+            f"IMDb source not found at {path}; run main.py cidr prepare-imdb"
         )
     actual_sha256 = file_sha256(path)
     if actual_sha256 != config.sha256:

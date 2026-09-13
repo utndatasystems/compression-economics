@@ -21,7 +21,7 @@ import torch
 import zstandard
 from tqdm.auto import tqdm
 
-from src.adversarial import AdversarialGeneration, normalize_candidate_ids
+from src.adversarial.generation import AdversarialGeneration, normalize_candidate_ids
 from src.encoding import LLMCompressor, LLMDecompressor
 
 

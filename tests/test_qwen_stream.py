@@ -1,6 +1,6 @@
 import pytest
 
-from src.qwen_stream import (
+from src.adversarial.qwen_stream import (
     parse_qwen_stream,
     serialize_qwen_stream,
     verify_decoded_bytes,

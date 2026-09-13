@@ -15,13 +15,13 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.generate_adversarial import make_predictor_args, token_ids_round_trip
-from src.compression_attacks import (
+from scripts.neurips_2026.generate_adversarial import make_predictor_args, token_ids_round_trip
+from src.adversarial.compression import (
     decode_arithmetic_payloads,
     encode_arithmetic_payloads,
 )
 from src.prediction import TokenPredictor
-from src.qwen_stream import (
+from src.adversarial.qwen_stream import (
     parse_qwen_stream,
     serialize_qwen_stream,
     verify_decoded_bytes,

@@ -3,14 +3,14 @@ import math
 import pytest
 import torch
 
-from src.adversarial import (
+from src.adversarial.generation import (
     AdversarialGeneration,
     generate_worst_case_sequences,
     rescore_sequences,
     score_target_tokens,
     select_worst_tokens,
 )
-from scripts.generate_adversarial import _combine_generation
+from scripts.neurips_2026.generate_adversarial import _combine_generation
 
 
 class FakePredictor:
@@ -242,7 +242,7 @@ def _local_qwen_tokenizer():
 
 
 def test_qwen_local_round_trip_validator_matches_full_oracle():
-    from scripts.generate_adversarial import (
+    from scripts.neurips_2026.generate_adversarial import (
         ascii_byte_token_ids,
         make_round_trip_validator,
         token_ids_round_trip,
@@ -281,7 +281,7 @@ def test_qwen_local_round_trip_validator_matches_full_oracle():
 
 
 def test_qwen_local_validator_keeps_incremental_state_canonical():
-    from scripts.generate_adversarial import (
+    from scripts.neurips_2026.generate_adversarial import (
         ascii_byte_token_ids,
         make_round_trip_validator,
         token_ids_round_trip,

@@ -21,7 +21,7 @@ and reusable command-line entry points belong in `scripts/`.
 From the repository root:
 
 ```bash
-.venv/bin/python -m scripts.run_cidr_benchmark
+.venv/bin/python main.py cidr benchmark
 ```
 
 The default smoke sweep uses explicit raw-byte and Qwen token-ID representations,
@@ -31,13 +31,13 @@ records plus every validated archive under
 not cached, prepare it through an explicit network-enabled command:
 
 ```bash
-.venv/bin/python -m scripts.prepare_cidr_tokenizer
+.venv/bin/python main.py cidr prepare-tokenizer
 ```
 
 The larger pilot uses the same runner with:
 
 ```bash
-.venv/bin/python -m scripts.run_cidr_benchmark \
+.venv/bin/python main.py cidr benchmark \
   --config papers/cidr_2027/experiments/configs/row_column_full.toml
 ```
 
@@ -47,8 +47,8 @@ Download the official, non-commercial `title.basics` source and then run its
 checksum-pinned smoke configuration:
 
 ```bash
-.venv/bin/python -m scripts.prepare_cidr_imdb
-.venv/bin/python -m scripts.run_cidr_benchmark \
+.venv/bin/python main.py cidr prepare-imdb
+.venv/bin/python main.py cidr benchmark \
   --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
 ```
 

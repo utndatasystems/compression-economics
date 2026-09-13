@@ -14,15 +14,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.generate_adversarial import (
+from scripts.neurips_2026.generate_adversarial import (
     ascii_byte_token_ids,
     encode_starts,
     make_predictor_args,
     make_round_trip_validator,
     token_ids_round_trip,
 )
-from src.adversarial import AdversarialGeneration, rescore_sequences
-from src.compression_attacks import (
+from src.adversarial.generation import AdversarialGeneration, rescore_sequences
+from src.adversarial.compression import (
     AttackObjective,
     classical_compression_baselines,
     decoded_utf8_increment,

@@ -5,7 +5,7 @@ import math
 import pytest
 import torch
 
-from src.compression_attacks import (
+from src.adversarial.compression import (
     AttackObjective,
     decode_arithmetic_payload,
     decode_arithmetic_payloads,
@@ -19,7 +19,7 @@ from src.compression_attacks import (
     score_arithmetic_payloads,
     score_full_vocab_sequences,
 )
-from scripts.run_compression_attacks import (
+from scripts.neurips_2026.run_compression_attacks import (
     _condition_is_complete,
     _load_checkpoint,
 )

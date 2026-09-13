@@ -19,8 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.generate_adversarial import make_predictor_args
-from src.compression_attacks import _full_vocab_logits
+from scripts.neurips_2026.generate_adversarial import make_predictor_args
+from src.adversarial.compression import _full_vocab_logits
 from src.encoding import ArithmeticEncoder, BitOutputStream
 from src.prediction import TokenPredictor
 

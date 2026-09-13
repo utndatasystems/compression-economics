@@ -14,7 +14,7 @@ matrix:
 Run the smoke definition from the repository root:
 
 ```bash
-.venv/bin/python -m scripts.run_cidr_benchmark \
+.venv/bin/python main.py cidr benchmark \
   --config papers/cidr_2027/experiments/configs/row_column_smoke.toml
 ```
 

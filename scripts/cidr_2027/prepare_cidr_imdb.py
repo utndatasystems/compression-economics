@@ -20,7 +20,7 @@ CHUNK_BYTES = 1024 * 1024
 
 def _repository_root() -> Path:
     """Return the repository containing this script."""
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def _resolve_from_repository(path: Path) -> Path:

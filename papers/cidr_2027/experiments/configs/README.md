@@ -14,7 +14,7 @@ table. They pin the compressed source by SHA-256 and select disjoint tuning and
 evaluation partitions by hashing `tconst`; a deterministic streaming reservoir
 samples across the full split, then restores source order.
 Prepare the ignored local snapshot with
-`.venv/bin/python -m scripts.prepare_cidr_imdb`. Because IMDb refreshes its files
+`.venv/bin/python main.py cidr prepare-imdb`. Because IMDb refreshes its files
 daily, pass `--overwrite` only when intentionally updating the pinned snapshot
 and its configuration checksum. The data is limited to personal and
 non-commercial use under IMDb's published terms.

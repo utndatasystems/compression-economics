@@ -21,7 +21,7 @@ The repository already provides:
   support, compression/decompression timing, and a serialized global-mask
   format.
 - Exact token- and text-level round-trip tests for existing compression paths.
-- Matched zstd and Brotli byte baselines in `src/compression_attacks.py`.
+- Matched zstd and Brotli byte baselines in `src/adversarial/compression.py`.
 - Deterministic adversarial generation and fixed-sequence scoring.
 - Text corpora and extracted database text columns under the ignored `data/`
   tree, plus paper-specific experiment/evaluation conventions established by

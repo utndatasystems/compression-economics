@@ -215,7 +215,7 @@ def load_tokenizer(
     except OSError as error:
         raise FileNotFoundError(
             f"Tokenizer {name}@{revision} is not cached. Run "
-            "scripts/prepare_cidr_tokenizer.py explicitly first."
+            "main.py cidr prepare-tokenizer explicitly first."
         ) from error
     return TokenizerAdapter.from_backend(
         backend,
