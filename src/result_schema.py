@@ -79,6 +79,9 @@ class PredictorSpec:
     adapter_parameters: int = 0
     adapter_state_bytes: int = 0
     training_mode: str | None = None
+    training_batch_size: int | None = None
+    training_epochs: int | None = None
+    learning_rate: float | None = None
 
     def __post_init__(self) -> None:
         if not self.name or not self.family:
@@ -96,6 +99,12 @@ class PredictorSpec:
             and self.active_parameters > self.total_parameters
         ):
             raise ValueError("active_parameters cannot exceed total_parameters")
+        if self.training_batch_size is not None and self.training_batch_size <= 0:
+            raise ValueError("training_batch_size must be positive")
+        if self.training_epochs is not None and self.training_epochs <= 0:
+            raise ValueError("training_epochs must be positive")
+        if self.learning_rate is not None and self.learning_rate <= 0:
+            raise ValueError("learning_rate must be positive")
 
 
 @dataclass(frozen=True)
@@ -226,8 +235,13 @@ class PlainTextCompressionResult:
     sizes: SizeBreakdown
     timings: TimingBreakdown
     roundtrip_valid: bool
+    repetition: int = 0
     artifacts: Mapping[str, str] = field(default_factory=dict)
     notes: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.repetition < 0:
+            raise ValueError("repetition must be nonnegative")
 
     @property
     def condition_id(self) -> str:

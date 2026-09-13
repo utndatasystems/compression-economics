@@ -213,6 +213,9 @@ class NGramTokenPredictor:
             contexts = [[self._dense_ids[token] for token in prompt] for prompt in prompts]
         except KeyError as error:
             raise ValueError("prompt contains a token outside the stream bitmap") from error
+        self.last_model_input_tokens = sum(
+            min(len(context), self.model.context_length) for context in contexts
+        )
         logits = self.model.logits(contexts)
         softmax_started = time.perf_counter()
         probabilities = torch.softmax(logits, dim=-1)
@@ -449,6 +452,7 @@ class TokenPredictor:
             # Convert to tensor 
             input_ids = torch.tensor(padded_prompts, device=self.device)
             attention_mask = torch.tensor(attention_mask, device=self.device)
+            self.last_model_input_tokens = int(attention_mask.sum().item())
 
             data_copy_time += time.perf_counter() - t0_data_copy
 
@@ -588,6 +592,7 @@ class TokenPredictor:
 
                             input_ids = torch.tensor(padded_prompts, device=self.device)
                             attention_mask = torch.tensor(attention_mask, device=self.device)
+                            self.last_model_input_tokens = int(attention_mask.sum().item())
 
                             data_copy_time += time.perf_counter() - t0_data_copy
                             outputs = self.model(
@@ -597,6 +602,7 @@ class TokenPredictor:
                         else:
                             # Equal-length prompts can be forwarded directly.
                             input_ids = torch.tensor(prompts, device=self.device)
+                            self.last_model_input_tokens = int(input_ids.numel())
                             data_copy_time += time.perf_counter() - t0_data_copy
                             outputs = self.model(input_ids, use_cache=True)
 
@@ -609,6 +615,7 @@ class TokenPredictor:
 
                         t0_data_copy = time.perf_counter()
                         delta = torch.tensor(delta, device=self.device, dtype=torch.long)
+                        self.last_model_input_tokens = int(delta.numel())
                         data_copy_time += time.perf_counter() - t0_data_copy
 
                         outputs = self.model(

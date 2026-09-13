@@ -161,7 +161,11 @@ def run_global_mask_compression(args):
     probs_list = []
     
     # Process each token in the dataset to compress it.
-    for token_idx in tqdm(range(chunk_length), disable=not use_tqdm):
+    # Only run steps that have at least one next symbol. When all batches have
+    # equal length, the old ``range(chunk_length)`` performed one useless final
+    # model call and inflated the model-work throughput counter.
+    prediction_steps = max(batches_length) - 1
+    for token_idx in tqdm(range(prediction_steps), disable=not use_tqdm):
         # Append the current token from each batch to its prompt context.
         for i in range(args.batch_size):
             prompts[i].append(batches[i][token_idx])
@@ -170,11 +174,14 @@ def run_global_mask_compression(args):
         if len(prompts[0]) >= args.context_length:
             prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
         
-        input_token_cnt += args.batch_size * len(prompts[0])
-
         # Run LLM inference
         t0_inference = time.perf_counter()
         token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
+        input_token_cnt += getattr(
+            token_predictor,
+            "last_model_input_tokens",
+            sum(len(prompt) for prompt in prompts),
+        )
         data_copy_time += _data_copy_time
         softmax_time += _softmax_time
         inference_time += time.perf_counter() - t0_inference
@@ -293,7 +300,12 @@ def run_global_mask_compression(args):
         "final_size_bytes": final_size / 8,
         "pure_compression_factor": original_size_bytes / (total_arithmetic_code_size / 8),
         "compression_factor": original_size_bytes / (final_size / 8),
-        "input_tokens_count": input_token_cnt,
+        # Work counters. ``input_symbols_count`` measures useful source
+        # progress, whereas ``model_input_tokens_count`` includes context
+        # replay and therefore measures predictor work.
+        "input_symbols_count": len(data_tokens),
+        "model_input_tokens_count": input_token_cnt,
+        "input_tokens_count": input_token_cnt,  # Deprecated compatibility alias.
         "entropy": float(entropy),
         # Timings
         "total_compression_time": total_compression_time,
@@ -304,9 +316,13 @@ def run_global_mask_compression(args):
         "data_copy_time": data_copy_time,
         "softmax_time": softmax_time,
         # Throughput
-        "throughput_tokens_per_sec": input_token_cnt / total_compression_time,
+        "throughput_input_symbols_per_sec": len(data_tokens) / total_compression_time,
+        "throughput_model_input_tokens_per_sec": input_token_cnt / total_compression_time,
+        "throughput_tokens_per_sec": input_token_cnt / total_compression_time,  # Deprecated alias.
         "throughput_kibibytes_per_sec": original_size_bytes / 1024 / total_compression_time,
-        "inference_throughput_tokens_per_sec": input_token_cnt / inference_time,
+        "inference_throughput_input_symbols_per_sec": len(data_tokens) / inference_time,
+        "inference_throughput_model_input_tokens_per_sec": input_token_cnt / inference_time,
+        "inference_throughput_tokens_per_sec": input_token_cnt / inference_time,  # Deprecated alias.
         "inference_throughput_kibibytes_per_sec": original_size_bytes / 1024 / inference_time,
     }, args
 
@@ -387,11 +403,14 @@ def run_global_mask_decompression(
         if len(prompts[0]) >= args.context_length:
             prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
 
-        input_tokens_cnt += args.batch_size * len(prompts[0]) 
-
         # Run LLM inference
         t0_inference = time.perf_counter()
         _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, enable_kv_cache=args.use_kv_cache)
+        input_tokens_cnt += getattr(
+            token_predictor,
+            "last_model_input_tokens",
+            sum(len(prompt) for prompt in prompts),
+        )
         data_copy_time += _data_copy_time
         softmax_time += _softmax_time
         inference_time += time.perf_counter() - t0_inference
@@ -423,7 +442,9 @@ def run_global_mask_decompression(
     return reconstructed_tokens, detoken_string, {
         "args": args.__dict__,
         "decompression_time_sec": decompression_time,
-        "input_tokens_cnt": input_tokens_cnt,
+        "input_symbols_count": args.first_n_tokens,
+        "model_input_tokens_count": input_tokens_cnt,
+        "input_tokens_cnt": input_tokens_cnt,  # Deprecated compatibility alias.
         # Timings
         "total_decompression_time": decompression_time,
         "detokenize_time": detokenize_time,
@@ -432,7 +453,11 @@ def run_global_mask_decompression(
         "data_copy_time": data_copy_time,
         "softmax_time": softmax_time,
         # Throughput
+        "throughput_input_symbols_per_sec": args.first_n_tokens / decompression_time,
+        "throughput_model_input_tokens_per_sec": input_tokens_cnt / decompression_time,
         "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
+        "inference_throughput_input_symbols_per_sec": args.first_n_tokens / inference_time,
+        "inference_throughput_model_input_tokens_per_sec": input_tokens_cnt / inference_time,
         "inference_throughput_kibibytes_per_sec": len(detoken_string) / 1024 / inference_time,
     }
 

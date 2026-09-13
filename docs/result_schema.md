@@ -17,6 +17,10 @@ The record is divided into the following non-overlapping sections:
 - `artifacts`: paths to the stream, checkpoint, and related outputs;
 - `notes`: explicitly named experiment-specific metadata.
 
+`repetition` identifies repeated observations but is excluded from
+`condition_id`, so every repetition of one experimental condition groups
+together naturally.
+
 `condition_id` is a stable hash of dataset, tokenizer, predictor, coder, and
 execution settings. It deliberately excludes measurements so repetitions of
 the same condition share an identifier.

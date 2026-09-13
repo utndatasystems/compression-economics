@@ -8,10 +8,12 @@ from src.predictors import (
     ModelSpec,
     bits_per_symbol,
     build_predictor,
+    expand_context_specs,
     survey_model_specs,
     train_ngram_predictor,
     train_neural_predictor,
 )
+from scripts.plain_text_compression.evaluate_global_mask_models import _model_input_tokens
 
 
 def test_global_mask_survey_has_requested_token_models_and_windows():
@@ -21,6 +23,26 @@ def test_global_mask_survey_has_requested_token_models_and_windows():
     assert {specs[f"token-nplm-w{window}"].context_length for window in (8, 32, 128)} == {8, 32, 128}
     assert specs["token-tiny-transformer-w128"].family == "transformer"
     assert specs["token-tiny-gru-w128"].family == "recurrent"
+
+
+def test_context_sweep_expands_each_neural_architecture_without_duplicates():
+    expanded = expand_context_specs(survey_model_specs(), [4, 16])
+    names = [spec.name for spec in expanded]
+
+    assert names[:4] == [
+        "byte-bigram", "byte-trigram", "token-bigram", "token-trigram"
+    ]
+    assert names.count("token-nplm-w4") == 1
+    assert names.count("token-nplm-w16") == 1
+    assert "token-tiny-transformer-w4" in names
+    assert "token-tiny-gru-w16" in names
+    assert len(expanded) == 10
+
+
+@pytest.mark.parametrize("contexts", [[], [0], [8, 8]])
+def test_context_sweep_rejects_invalid_values(contexts):
+    with pytest.raises(ValueError):
+        expand_context_specs(survey_model_specs(), contexts)
 
 
 def test_trigram_backs_off_and_prefers_seen_continuation():
@@ -57,3 +79,14 @@ def test_neural_training_is_teacher_forced_and_returns_epoch_losses():
     assert len(losses) == 2
     assert all(math.isfinite(loss) for loss in losses)
     assert bits_per_symbol(model, [0, 1, 2, 0]) > 0
+
+
+def test_model_work_counter_distinguishes_ngram_and_dense_window_inputs():
+    contexts = [[1], [1, 2, 3]]
+    bigram = NGramPredictor(7, order=2)
+    recurrent = TinyRecurrentLM(
+        7, context_length=8, embedding_dim=4, hidden_dim=8, layers=1
+    )
+
+    assert _model_input_tokens(bigram, contexts) == 2
+    assert _model_input_tokens(recurrent, contexts) == 16

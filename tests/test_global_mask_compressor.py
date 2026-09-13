@@ -227,14 +227,26 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
         ngram_order=2,
     )
 
-    first_tokens, bits, bitmap, _, args = run_global_mask_compression(args)
+    first_tokens, bits, bitmap, compression_stats, args = run_global_mask_compression(args)
     assert checkpoint_path.exists()
     assert len(args.ngram_model_sha256) == 64
+    assert compression_stats["input_symbols_count"] == 8
+    assert compression_stats["model_input_tokens_count"] == 6
+    assert compression_stats["throughput_input_symbols_per_sec"] > 0
+    assert compression_stats["throughput_model_input_tokens_per_sec"] > 0
+    assert (
+        compression_stats["throughput_tokens_per_sec"]
+        == compression_stats["throughput_model_input_tokens_per_sec"]
+    )
 
     args.mode = "decompress"
-    reconstructed, text, _ = run_global_mask_decompression(
+    reconstructed, text, decompression_stats = run_global_mask_decompression(
         args, first_tokens, bits, bitmap
     )
 
     assert reconstructed == list(b"abbaabba")
     assert text == "abbaabba"
+    assert decompression_stats["input_symbols_count"] == 8
+    assert decompression_stats["model_input_tokens_count"] == 6
+    assert decompression_stats["throughput_input_symbols_per_sec"] > 0
+    assert decompression_stats["throughput_model_input_tokens_per_sec"] > 0

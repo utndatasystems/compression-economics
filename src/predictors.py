@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import math
 from pathlib import Path
@@ -71,6 +71,47 @@ def survey_model_specs() -> tuple[ModelSpec, ...]:
         ModelSpec("token-tiny-transformer-w128", "transformer", "token", 128),
         ModelSpec("token-tiny-gru-w128", "recurrent", "token", 128),
     )
+
+
+def expand_context_specs(
+    specs: Sequence[ModelSpec], context_lengths: Sequence[int] | None
+) -> tuple[ModelSpec, ...]:
+    """Expand each distinct neural architecture over requested contexts.
+
+    N-gram context is fixed by its statistical order and is therefore retained
+    exactly once. Existing neural specs that differ only in context are treated
+    as one architecture template, preventing duplicate NPLM conditions.
+    """
+    if context_lengths is None:
+        return tuple(specs)
+    if not context_lengths or any(length < 1 for length in context_lengths):
+        raise ValueError("context lengths must be a non-empty sequence of positive integers")
+    if len(set(context_lengths)) != len(context_lengths):
+        raise ValueError("context lengths must not contain duplicates")
+
+    result: list[ModelSpec] = []
+    seen_neural: set[tuple[object, ...]] = set()
+    for spec in specs:
+        if spec.family == "ngram":
+            result.append(spec)
+            continue
+        architecture = (
+            spec.family,
+            spec.symbol_kind,
+            spec.embedding_dim,
+            spec.hidden_dim,
+            spec.layers,
+            spec.heads,
+        )
+        if architecture in seen_neural:
+            continue
+        seen_neural.add(architecture)
+        base_name = spec.name.rsplit("-w", 1)[0]
+        result.extend(
+            replace(spec, name=f"{base_name}-w{length}", context_length=length)
+            for length in context_lengths
+        )
+    return tuple(result)
 
 
 def build_predictor(spec: ModelSpec, vocabulary_size: int) -> NextSymbolPredictor:
