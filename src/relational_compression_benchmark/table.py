@@ -8,7 +8,7 @@ import math
 import random
 from typing import TypeAlias
 
-from src.benchmark.config import SyntheticDatasetConfig
+from src.relational_compression_benchmark.config import SyntheticDatasetConfig
 
 
 Cell: TypeAlias = None | bool | int | float | str | bytes

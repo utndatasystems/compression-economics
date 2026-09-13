@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from src.benchmark.config import ImdbDatasetConfig
-from src.benchmark.datasets import file_sha256, load_imdb_title_basics
+from src.relational_compression_benchmark.config import ImdbDatasetConfig
+from src.relational_compression_benchmark.datasets import file_sha256, load_imdb_title_basics
 
 
 HEADER = (

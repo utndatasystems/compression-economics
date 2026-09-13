@@ -1,4 +1,4 @@
-from src.benchmark.predictive_codec import compress_and_verify
+from src.relational_compression_benchmark.predictive_codec import compress_and_verify
 from src.models import NGramPredictor
 from src.predictors import train_ngram_predictor
 

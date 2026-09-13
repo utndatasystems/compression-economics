@@ -14,8 +14,8 @@ import zlib
 
 import zstandard
 
-from src.benchmark.serialization import SerializedTable, parse_source_header
-from src.benchmark.tokenization import (
+from src.relational_compression_benchmark.serialization import SerializedTable, parse_source_header
+from src.relational_compression_benchmark.tokenization import (
     TokenizerAdapter,
     pack_token_ids,
     unpack_token_ids,

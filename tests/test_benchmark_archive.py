@@ -2,20 +2,20 @@ from pathlib import Path
 
 import pytest
 
-from src.benchmark.archive import (
+from src.relational_compression_benchmark.archive import (
     BLOCK_FRAME_BYTES,
     decode_archive,
     encode_archive,
 )
-from src.benchmark.config import (
+from src.relational_compression_benchmark.config import (
     ExecutionConfig,
     PipelineConfig,
     SweepConfig,
     SyntheticDatasetConfig,
 )
-from src.benchmark.runner import run_sweep
-from src.benchmark.serialization import deserialize_table, serialize_table
-from src.benchmark.table import Column, LogicalType, Table
+from src.relational_compression_benchmark.runner import run_sweep
+from src.relational_compression_benchmark.serialization import deserialize_table, serialize_table
+from src.relational_compression_benchmark.table import Column, LogicalType, Table
 
 
 def _table() -> Table:

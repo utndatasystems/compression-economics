@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.benchmark.config import ImdbDatasetConfig, load_sweep_config
+from src.relational_compression_benchmark.config import ImdbDatasetConfig, load_sweep_config
 
 
 SMOKE_CONFIG = Path(

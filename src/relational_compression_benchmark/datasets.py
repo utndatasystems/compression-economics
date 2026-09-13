@@ -8,12 +8,12 @@ import hashlib
 import random
 from pathlib import Path
 
-from src.benchmark.config import (
+from src.relational_compression_benchmark.config import (
     DatasetConfig,
     ImdbDatasetConfig,
     SyntheticDatasetConfig,
 )
-from src.benchmark.table import (
+from src.relational_compression_benchmark.table import (
     Cell,
     Column,
     LogicalType,

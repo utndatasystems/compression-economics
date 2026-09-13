@@ -2,9 +2,9 @@ from dataclasses import replace
 
 import pytest
 
-from src.benchmark.config import SyntheticDatasetConfig
-from src.benchmark.serialization import deserialize_table, serialize_table
-from src.benchmark.table import Column, LogicalType, Table, generate_synthetic_table
+from src.relational_compression_benchmark.config import SyntheticDatasetConfig
+from src.relational_compression_benchmark.serialization import deserialize_table, serialize_table
+from src.relational_compression_benchmark.table import Column, LogicalType, Table, generate_synthetic_table
 
 
 def _mixed_table() -> Table:

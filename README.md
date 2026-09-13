@@ -148,7 +148,7 @@ explicitly and select its smoke configuration:
   --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
 ```
 
-See `src/benchmark/README.md` for the byte and accounting contracts and
+See `src/relational_compression_benchmark/README.md` for the byte and accounting contracts and
 `papers/cidr_2027/README.md` for configurations and artifact locations.
 
 ## Legacy global-mask bigram

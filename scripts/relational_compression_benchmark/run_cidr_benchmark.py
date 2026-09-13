@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the CIDR row-versus-column benchmark from a TOML specification."""
+"""Run the row-versus-column benchmark from a TOML specification."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ import argparse
 from pathlib import Path
 import statistics
 
-from src.benchmark.config import load_sweep_config
-from src.benchmark.runner import run_sweep
+from src.relational_compression_benchmark.config import load_sweep_config
+from src.relational_compression_benchmark.runner import run_sweep
 
 
+# Smoke experiment config to test
 DEFAULT_CONFIG = Path(
     "papers/cidr_2027/experiments/configs/row_column_smoke.toml"
 )

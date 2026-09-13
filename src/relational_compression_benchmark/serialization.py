@@ -12,7 +12,7 @@ from enum import IntEnum
 from functools import cached_property
 import struct
 
-from src.benchmark.table import Cell, Column, LogicalType, Table
+from src.relational_compression_benchmark.table import Cell, Column, LogicalType, Table
 
 
 SOURCE_MAGIC = b"CES1"

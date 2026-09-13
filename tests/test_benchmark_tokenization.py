@@ -1,9 +1,9 @@
 import pytest
 
-from src.benchmark.archive import decode_archive, encode_archive
-from src.benchmark.serialization import deserialize_table, serialize_table
-from src.benchmark.table import Column, LogicalType, Table
-from src.benchmark.tokenization import (
+from src.relational_compression_benchmark.archive import decode_archive, encode_archive
+from src.relational_compression_benchmark.serialization import deserialize_table, serialize_table
+from src.relational_compression_benchmark.table import Column, LogicalType, Table
+from src.relational_compression_benchmark.tokenization import (
     TokenizerAdapter,
     pack_token_ids,
     token_id_width,

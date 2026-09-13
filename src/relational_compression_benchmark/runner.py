@@ -15,27 +15,27 @@ import subprocess
 import time
 from typing import Any, Iterable
 
-from src.benchmark.archive import (
+from src.relational_compression_benchmark.archive import (
     BlockMetric,
     EncodedArchive,
     attach_decompression_times,
     decode_archive,
     encode_archive,
 )
-from src.benchmark.config import (
+from src.relational_compression_benchmark.config import (
     DatasetConfig,
     ImdbDatasetConfig,
     PipelineConfig,
     SweepConfig,
 )
-from src.benchmark.datasets import IMDB_SAMPLING_VERSION, load_dataset
-from src.benchmark.serialization import (
+from src.relational_compression_benchmark.datasets import IMDB_SAMPLING_VERSION, load_dataset
+from src.relational_compression_benchmark.serialization import (
     SerializedTable,
     deserialize_table,
     serialize_table,
 )
-from src.benchmark.table import Table
-from src.benchmark.tokenization import TokenizerAdapter, load_tokenizer
+from src.relational_compression_benchmark.table import Table
+from src.relational_compression_benchmark.tokenization import TokenizerAdapter, load_tokenizer
 
 
 METRIC_DEFINITIONS = {
