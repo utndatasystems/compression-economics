@@ -374,21 +374,36 @@ class ArithmeticDecoder(ArithmeticCoderBase):
 # =============================================================================
 
 class RansBlockEncoder:
-    """Byte-renormalized rANS encoder for one independently decodable block."""
+    """Byte-rANS blocks with interleaved 32-bit states.
 
-    RANS_L = 1 << 31
-    _HEADER = struct.Struct(">HIQ")
+    Symbols are assigned round-robin to independent lanes.  This is the layout
+    used by fast rANS implementations: it removes the single-state dependency
+    chain and lets a native backend process several lanes in parallel.
+    """
+
+    # The standard byte-rANS lower bound keeps every normalized state in 32 bits.
+    RANS_L = 1 << 23
+    LANES = 4
+    _HEADER = struct.Struct(">I")  # renormalization bytes; count is stream-global
 
     @classmethod
     def encode(cls, entries, total: int) -> bytes:
         if total <= 0 or total & (total - 1):
             raise ValueError("rANS requires a positive power-of-two frequency total")
-        if len(entries) > 0xFFFF:
-            raise ValueError("rANS block contains too many symbols")
+        count = len(entries)
+        if not 0 < count <= 0xFFFF:
+            raise ValueError("rANS block must contain between 1 and 65535 symbols")
         scale_bits = total.bit_length() - 1
-        state = cls.RANS_L
+        lanes = min(cls.LANES, count)
+        states = [cls.RANS_L] * lanes
         emitted = bytearray()
-        for symbol, cumul in reversed(entries):
+
+        # Reverse encoding is fundamental to rANS.  Round-robin lanes preserve
+        # forward token order at the decoder while exposing independent states.
+        for index in range(count - 1, -1, -1):
+            symbol, cumul = entries[index]
+            lane = index % lanes
+            state = states[lane]
             start = int(cumul[symbol])
             freq = int(cumul[symbol + 1]) - start
             if freq <= 0:
@@ -397,31 +412,43 @@ class RansBlockEncoder:
             while state >= x_max:
                 emitted.append(state & 0xFF)
                 state >>= 8
-            state = ((state // freq) << scale_bits) + (state % freq) + start
+            states[lane] = ((state // freq) << scale_bits) + (state % freq) + start
+
         payload = bytes(reversed(emitted))
-        return cls._HEADER.pack(len(entries), len(payload), state) + payload
+        state_bytes = struct.pack(">" + "I" * lanes, *states)
+        return cls._HEADER.pack(len(payload)) + state_bytes + payload
 
 
 class RansBlockDecoder:
-    """Decode byte-aligned blocks produced by :class:`RansBlockEncoder`."""
+    """Decode compact, interleaved byte-rANS blocks.
+
+    ``lookup`` may be a direct inverse-CDF table when the caller can reuse one;
+    for dynamic LLM distributions, ``searchsorted`` remains cheaper than
+    constructing a fresh 2^18-entry table per token.
+    """
 
     RANS_L = RansBlockEncoder.RANS_L
+    LANES = RansBlockEncoder.LANES
     _HEADER = RansBlockEncoder._HEADER
 
-    def __init__(self, code: Sequence[int], total: int) -> None:
+    def __init__(self, code: Sequence[int], total: int, block_size: int = 256) -> None:
         if total <= 0 or total & (total - 1):
             raise ValueError("rANS requires a positive power-of-two frequency total")
         if len(code) % 8:
             raise ValueError("rANS input must be byte aligned")
-        self._data = bytes(
-            sum((int(code[offset + bit]) & 1) << (7 - bit) for bit in range(8))
-            for offset in range(0, len(code), 8)
-        )
-        self._offset = 0
+        self._data = np.packbits(np.asarray(code, dtype=np.uint8), bitorder="big").tobytes()
+        if len(self._data) < 6:
+            raise ValueError("truncated rANS stream header")
+        self._stream_remaining, self._block_size = struct.unpack(">IH", self._data[:6])
+        if self._stream_remaining == 0 or self._block_size == 0:
+            raise ValueError("invalid rANS stream header")
+        self._offset = 6
         self._scale_bits = total.bit_length() - 1
         self._mask = total - 1
         self._remaining = 0
-        self._state = 0
+        self._decoded = 0
+        self._lanes = 0
+        self._states = []
         self._payload = b""
         self._payload_offset = 0
 
@@ -429,34 +456,54 @@ class RansBlockDecoder:
         end = self._offset + self._HEADER.size
         if end > len(self._data):
             raise ValueError("truncated rANS block header")
-        count, payload_size, self._state = self._HEADER.unpack(self._data[self._offset:end])
+        (payload_size,) = self._HEADER.unpack(self._data[self._offset:end])
         self._offset = end
-        payload_end = self._offset + payload_size
-        if count == 0 or payload_end > len(self._data):
-            raise ValueError("invalid or truncated rANS block")
+        count = min(self._block_size, self._stream_remaining)
+        self._lanes = min(self.LANES, count)
+        state_size = 4 * self._lanes
+        state_end = self._offset + state_size
+        payload_end = state_end + payload_size
+        if payload_end > len(self._data):
+            raise ValueError("truncated rANS block")
+        self._states = list(struct.unpack(">" + "I" * self._lanes, self._data[self._offset:state_end]))
+        self._offset = state_end
         self._payload = self._data[self._offset:payload_end]
         self._offset = payload_end
         self._payload_offset = 0
         self._remaining = count
 
-    def read(self, cumulative: np.ndarray) -> int:
+    @staticmethod
+    def build_lookup(cumulative: np.ndarray) -> np.ndarray:
+        """Build an exact O(1) inverse-CDF table for reusable distributions."""
+        return np.repeat(np.arange(len(cumulative) - 1, dtype=np.uint32), np.diff(cumulative))
+
+    def read(self, cumulative: np.ndarray, lookup: Optional[np.ndarray] = None) -> int:
         if self._remaining == 0:
             self._start_block()
-        value = self._state & self._mask
-        symbol = int(np.searchsorted(cumulative, value, side="right") - 1)
+        # Number already decoded determines the forward round-robin lane.
+        decoded = self._decoded
+        lane = decoded % self._lanes
+        state = self._states[lane]
+        value = state & self._mask
+        symbol = int(lookup[value]) if lookup is not None else int(np.searchsorted(cumulative, value, side="right") - 1)
         start = int(cumulative[symbol])
         freq = int(cumulative[symbol + 1]) - start
         if freq <= 0:
             raise ValueError("invalid rANS frequency table")
-        self._state = freq * (self._state >> self._scale_bits) + value - start
-        while self._state < self.RANS_L:
+        state = freq * (state >> self._scale_bits) + value - start
+        while state < self.RANS_L:
             if self._payload_offset >= len(self._payload):
                 raise ValueError("truncated rANS block payload")
-            self._state = (self._state << 8) | self._payload[self._payload_offset]
+            state = (state << 8) | self._payload[self._payload_offset]
             self._payload_offset += 1
+        self._states[lane] = state
         self._remaining -= 1
-        if self._remaining == 0 and self._payload_offset != len(self._payload):
-            raise ValueError("rANS block has unused payload bytes")
+        self._stream_remaining -= 1
+        self._decoded = decoded + 1
+        if self._remaining == 0:
+            if self._payload_offset != len(self._payload):
+                raise ValueError("rANS block has unused payload bytes")
+            self._decoded = 0
         return symbol
 
 # =============================================================================
@@ -473,7 +520,7 @@ class LLMCompressor:
         r: Optional[float] = None,
         statesize: int = 32,
         total: int = 262144,
-        ans_block_size: int = 16):
+        ans_block_size: int = 256):
 
         self.bitout = BitOutputStream()
         self.encoder = ArithmeticEncoder(statesize, self.bitout)
@@ -586,7 +633,12 @@ class LLMCompressor:
             if self.algorithm != "ANS":
                 raise ValueError("compress encoding does not match compressor algorithm")
             self._flush_ans_block()
-            return [(byte >> shift) & 1 for byte in self._ans_frames for shift in range(7, -1, -1)]
+            if self.token_count > 0xFFFFFFFF:
+                raise ValueError("rANS stream contains too many symbols")
+            if self.ans_block_size > 0xFFFF:
+                raise ValueError("ans_block_size must fit in 16 bits")
+            stream = struct.pack(">IH", self.token_count, self.ans_block_size) + bytes(self._ans_frames)
+            return [(byte >> shift) & 1 for byte in stream for shift in range(7, -1, -1)]
 
         if encoding_name in {"AC", "PMATIC"}:
             if encoding_name != self.algorithm:
@@ -638,9 +690,11 @@ class LLMDecompressor:
         r: Optional[float] = None,
         statesize: int = 32,
         total: int = 262144,
+        ans_decode_lookup: bool = False,
     ):
         self.algorithm = algorithm.upper()
         self.total = total
+        self.ans_decode_lookup = ans_decode_lookup
 
         self.decoder = (RansBlockDecoder(code, total) if self.algorithm == "ANS"
                         else ArithmeticDecoder(statesize, BitInputStream(code)))
@@ -679,7 +733,11 @@ class LLMDecompressor:
         return self.decoder.read(cumul, len(probs))
 
     def _decompress_ans(self, probs: np.ndarray) -> int:
-        return self.decoder.read(build_cumul(probs, total=self.total))
+        cumul = build_cumul(probs, total=self.total)
+        # Dynamic LLM distributions are normally used once, so callers opt in
+        # to the O(1) inverse-CDF table only when tables are reusable.
+        lookup = RansBlockDecoder.build_lookup(cumul) if self.ans_decode_lookup else None
+        return self.decoder.read(cumul, lookup=lookup)
 
     def _decompress_pmatic(self, probs: np.ndarray) -> int:
         probs = pad_probs_to_power_of_two(probs, self.alphabet_size)

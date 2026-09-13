@@ -105,9 +105,9 @@ probability-to-frequency quantization as `AC` (a total of 2^18), so it has the
 same model and decoder requirements.
 
 Because rANS encodes symbols in reverse order, the implementation writes
-independently decodable blocks of 16 symbols. This bounds encoder memory while
+independently decodable blocks of 256 symbols. This bounds encoder memory while
 allowing the autoregressive decoder to consume blocks in normal token order.
-The byte-aligned block framing adds a small overhead, so `ANS` is most useful
+The stream uses four interleaved 32-bit rANS states and compact block framing. The byte-aligned block framing adds a small overhead, so `ANS` is most useful
 for longer streams or when byte-oriented entropy-coder throughput matters.
 
 Use it with:
