@@ -102,6 +102,9 @@ def save_global_mask_file(
         "lora_path": getattr(args, "lora_path", None),
         "pmatic_delta": getattr(args, "pmatic_delta", None),
         "pmatic_r": getattr(args, "pmatic_r", None),
+        "ngram_model_path": getattr(args, "ngram_model_path", None),
+        "ngram_model_sha256": getattr(args, "ngram_model_sha256", None),
+        "ngram_order": getattr(args, "ngram_order", None),
     }
     with open(file_path, "wb") as f:
         # Write header as JSON
@@ -164,6 +167,9 @@ def load_global_mask_file(args):
     args.lora_path = header.get("lora_path", args.lora_path)
     args.pmatic_delta = header.get("pmatic_delta", getattr(args, "pmatic_delta", None))
     args.pmatic_r = header.get("pmatic_r", getattr(args, "pmatic_r", None))
+    args.ngram_model_path = header.get("ngram_model_path", getattr(args, "ngram_model_path", None))
+    args.ngram_model_sha256 = header.get("ngram_model_sha256", getattr(args, "ngram_model_sha256", None))
+    args.ngram_order = header.get("ngram_order", getattr(args, "ngram_order", 2))
     args.input_path = header["input_path"]
 
     return args, first_token, bit_string, bitmask_data

@@ -14,7 +14,7 @@ bitmap to reconstruct tokens from the bitstream.
 import sys
 
 from src.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
-from src.prediction import TokenDataPreparer, TokenPredictor
+from src.prediction import NGramTokenPredictor, TokenDataPreparer, TokenPredictor
 from itertools import chain
 from collections import defaultdict
 
@@ -27,6 +27,13 @@ from itertools import chain
 from copy import copy
 
 PMATIC_DELTA = 1e-3
+
+
+def _make_token_predictor(args, bitmap_data):
+    """Select the legacy Transformer or n-gram predictor adapter."""
+    if args.engine == "ngram":
+        return NGramTokenPredictor(args, bitmap_data)
+    return TokenPredictor(args, bitmap_data)
 
 
 def _get_pmatic_params(args):
@@ -126,7 +133,7 @@ def run_global_mask_compression(args):
     total_bitmap_size = len(bitmask_data) * 8
     tokenize_time = time.perf_counter() - t0_tokenize
         
-    token_predictor = TokenPredictor(args, bitmap_data=bitmask_data)
+    token_predictor = _make_token_predictor(args, bitmask_data)
 
     if args.encoding in {"AC"}:
         llm_compressor = LLMCompressor()
@@ -185,7 +192,7 @@ def run_global_mask_compression(args):
                 actual_next_tokens.append(0)
                 valid_mask.append(False)
 
-        if args.engine == "transformer":
+        if args.engine in {"transformer", "ngram"}:
             if args.encoding == "AC":
                 t0_ac = time.perf_counter()
                 probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
@@ -242,7 +249,7 @@ def run_global_mask_compression(args):
         else:
             raise ValueError(f"Unsupported engine: {args.engine}")
 
-    if args.engine == "transformer":
+    if args.engine in {"transformer", "ngram"}:
         if args.encoding == "AC":
             bit_string = llm_compressor.compress(encoding="AC")
         elif args.encoding == "PMATIC": 
@@ -335,7 +342,7 @@ def run_global_mask_decompression(
     t0_decompress = time.perf_counter()
 
     # Initialize the token predictor.
-    token_predictor = TokenPredictor(args, bitmap_data=bitmap)
+    token_predictor = _make_token_predictor(args, bitmap)
 
     # Get the original tokens to know the starting token and the total length.
     decompressor = _make_arithmetic_decompressor(

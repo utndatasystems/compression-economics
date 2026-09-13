@@ -130,6 +130,29 @@ explicitly and select its smoke configuration:
 See `src/benchmark/README.md` for the byte and accounting contracts and
 `papers/cidr_2027/README.md` for configurations and artifact locations.
 
+## Legacy global-mask bigram
+
+The original `main.py` global-mask interface also supports a token bigram via
+`--engine ngram`. It still uses the selected Hugging Face tokenizer, but does
+not load its Transformer weights. Compression requires a disjoint training text
+and writes a checkpoint; the stream records the checkpoint path and SHA-256,
+which decompression verifies before decoding.
+
+```bash
+.venv/bin/python main.py --mode compress --engine ngram \
+  --input_path data/target.txt --ngram-training-path data/training.txt \
+  --ngram-model-path artifacts/models/target-bigram.pkl \
+  --output_path artifacts/runs/target-bigram.bin --first_n_tokens 10000
+
+.venv/bin/python main.py --mode decompress \
+  --input_path artifacts/runs/target-bigram.bin \
+  --output_path artifacts/runs/target-bigram.txt
+```
+
+Only arithmetic coding (`--encoding AC`) is supported for this engine. Keep
+the checkpoint available and unchanged: it is a shared decoder dependency, not
+part of the current stream payload.
+
 ## Adversarial worst-case inputs
 
 `scripts/generate_adversarial.py` creates several equal-token-length worst-case runs

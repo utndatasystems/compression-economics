@@ -135,7 +135,10 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
-    parser.add_argument("--engine", type=str, choices=["transformer"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--engine", type=str, choices=["transformer", "ngram"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--ngram-model-path", type=str, help="Checkpoint path for --engine ngram")
+    parser.add_argument("--ngram-training-path", type=str, help="Disjoint training text used to create an n-gram checkpoint during compression")
+    parser.add_argument("--ngram-order", type=int, choices=[2], default=2, help="N-gram order; currently bigram only")
     parser.add_argument("--encoding", type=str, choices=["AC", "bitpacked", "huffman", "PMATIC"], default="AC", help="Encoding method for compression")
     parser.add_argument("--spec_k", type=int, default=None, help="Number of speculative tokens to generate for speculative compression/decompression")
     parser.add_argument("--draft_model_name", type=str, choices=model_list, default=None, help="Draft model name for speculative decompression (if different from teacher)")
@@ -145,6 +148,15 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--force", action="store_true", help="Run the experiment even if results already exist.",)
     
     args = parser.parse_args()
+
+    if args.engine == "ngram":
+        if args.encoding != "AC":
+            parser.error("--engine ngram currently supports --encoding AC only")
+        if args.spec_k is not None:
+            parser.error("--engine ngram does not support speculative decompression")
+        if not args.ngram_model_path:
+            parser.error("--ngram-model-path is required with --engine ngram")
+        args.use_kv_cache = False
 
     # Detect seq2seq models (T5)
     args.is_seq2seq = "t5" in args.model_name.lower()

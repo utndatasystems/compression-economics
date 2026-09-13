@@ -99,9 +99,13 @@ def main():
             print(f"  Encoding         : {args.encoding}")
         
             # add parameters to comp_stats for saving in results JSON
-            token_predictor = TokenPredictor(args, bitmap_data=None)
-            base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
-            base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
+            if args.engine == "ngram":
+                base_params = adapter_params = 0
+                base_size_mb = adapter_size_mb = 0.0
+            else:
+                token_predictor = TokenPredictor(args, bitmap_data=None)
+                base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
+                base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
             total_params = base_params + adapter_params
             total_size_mb = base_size_mb + adapter_size_mb
 
@@ -123,7 +127,14 @@ def main():
                 "base_model_params": base_params,
                 "total_size_mb": round(total_size_mb, 2),
                 "adapter_size_mb": round(adapter_size_mb, 2),
-                "base_model_size_mb": round(base_size_mb, 2),}
+                "base_model_size_mb": round(base_size_mb, 2),
+                "ngram_model_path": getattr(args, "ngram_model_path", None),
+                "ngram_model_sha256": getattr(args, "ngram_model_sha256", None),
+                "ngram_model_state_bytes": (
+                    Path(args.ngram_model_path).stat().st_size
+                    if args.engine == "ngram" else 0
+                ),
+            }
             # TODO: add model dtype information
 
             # ========================

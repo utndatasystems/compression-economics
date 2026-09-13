@@ -7,6 +7,7 @@ import torch
 
 from src.encoding import LLMCompressor, choose_pmatic_r
 from src.global_mask_compressor import (
+    run_global_mask_compression,
     run_global_mask_decompression,
     run_global_mask_speculative_decompression,
 )
@@ -179,3 +180,60 @@ def test_run_global_mask_speculative_decompression(monkeypatch):
     )
 
     print("test_run_global_mask_speculative_decompression passed.\n")
+
+
+class _CharacterTokenizer:
+    vocab_size = 256
+
+    def encode(self, text, **_kwargs):
+        return list(text.encode("utf-8"))
+
+    def decode(self, token_ids, **_kwargs):
+        return bytes(token_ids).decode("utf-8")
+
+
+def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch):
+    import src.prediction as prediction_module
+
+    monkeypatch.setattr(
+        prediction_module.AutoTokenizer,
+        "from_pretrained",
+        lambda *_args, **_kwargs: _CharacterTokenizer(),
+    )
+    target_path = tmp_path / "target.txt"
+    training_path = tmp_path / "training.txt"
+    checkpoint_path = tmp_path / "bigram.pkl"
+    target_path.write_text("abbaabba", encoding="utf-8")
+    training_path.write_text("abbaabbaabba", encoding="utf-8")
+    args = SimpleNamespace(
+        mode="compress",
+        input_path=str(target_path),
+        text_input=None,
+        output_path=str(tmp_path / "stream.bin"),
+        model_name="character-tokenizer",
+        is_mamba=False,
+        is_seq2seq=False,
+        engine="ngram",
+        encoding="AC",
+        reduce_tokens=True,
+        first_n_tokens=8,
+        batch_size=2,
+        context_length=8,
+        retain_tokens=2,
+        use_kv_cache=False,
+        ngram_model_path=str(checkpoint_path),
+        ngram_training_path=str(training_path),
+        ngram_order=2,
+    )
+
+    first_tokens, bits, bitmap, _, args = run_global_mask_compression(args)
+    assert checkpoint_path.exists()
+    assert len(args.ngram_model_sha256) == 64
+
+    args.mode = "decompress"
+    reconstructed, text, _ = run_global_mask_decompression(
+        args, first_tokens, bits, bitmap
+    )
+
+    assert reconstructed == list(b"abbaabba")
+    assert text == "abbaabba"

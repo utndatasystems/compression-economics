@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 import math
+from pathlib import Path
+import pickle
 from typing import Literal, Sequence
 
 import torch
@@ -93,6 +96,47 @@ def train_ngram_predictor(model: NGramPredictor, symbols: Sequence[int]) -> NGra
             context = tuple(symbols[index - width:index]) if width else ()
             model._counts[context][target] += 1
     return model
+
+
+def save_ngram_predictor(
+    path: Path, model: NGramPredictor, *, tokenizer_name: str, token_ids: Sequence[int]
+) -> str:
+    """Persist a token n-gram model and return its SHA-256 digest."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "format_version": 1,
+        "kind": "ngram",
+        "order": model.order,
+        "vocabulary_size": model.vocabulary_size,
+        "tokenizer_name": tokenizer_name,
+        "token_ids": list(token_ids),
+        "counts": dict(model._counts),
+    }
+    path.write_bytes(pickle.dumps(payload, protocol=5))
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_ngram_predictor(
+    path: Path, *, tokenizer_name: str, token_ids: Sequence[int], expected_sha256: str | None = None
+) -> NGramPredictor:
+    """Load a checkpoint only when its tokenizer, alphabet, and digest match."""
+    raw = path.read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if expected_sha256 is not None and digest != expected_sha256:
+        raise ValueError("n-gram checkpoint SHA-256 does not match stream metadata")
+    payload = pickle.loads(raw)
+    if payload.get("format_version") != 1 or payload.get("kind") != "ngram":
+        raise ValueError("unsupported n-gram checkpoint format")
+    if payload.get("tokenizer_name") != tokenizer_name:
+        raise ValueError("n-gram checkpoint tokenizer does not match this stream")
+    if payload.get("token_ids") != list(token_ids):
+        raise ValueError("n-gram checkpoint alphabet does not match this stream")
+    model = NGramPredictor(payload["vocabulary_size"], order=payload["order"])
+    if model.vocabulary_size != len(token_ids):
+        raise ValueError("n-gram checkpoint has an invalid vocabulary size")
+    model._counts.update(payload["counts"])
+    return model
+
 
 def train_neural_predictor(model: WindowModel, symbols: Sequence[int], *, epochs: int = 1, batch_size: int = 128, learning_rate: float = 3e-4, seed: int = 0) -> list[float]:
     """Teacher-force a neural predictor and return mean loss for each epoch.

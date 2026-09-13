@@ -9,11 +9,15 @@ This module provides:
 """
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM, MambaForCausalLM
 import os
+from pathlib import Path
 import tarfile
 import torch
 from pyroaring import BitMap
 import time
 from peft import PeftModel
+
+from src.models import NGramPredictor
+from src.predictors import load_ngram_predictor, save_ngram_predictor, train_ngram_predictor
 
 class TokenDataPreparer:
     def __init__(self, args):
@@ -155,6 +159,64 @@ class TokenDataPreparer:
         """
         return self.args
     
+
+class NGramTokenPredictor:
+    """Token bigram adapter implementing the legacy predictor interface."""
+
+    def __init__(self, args, bitmap_data):
+        if args.encoding != "AC":
+            raise ValueError("the ngram engine supports arithmetic coding (AC) only")
+        if bitmap_data is None:
+            raise ValueError("the ngram engine requires a global token bitmap")
+        self.args = args
+        self.tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=".cache")
+        self.tokens_list = list(BitMap.deserialize(bitmap_data))
+        self._dense_ids = {token: index for index, token in enumerate(self.tokens_list)}
+        self.base_params = self.adapter_params = 0
+        self.base_size_mb = self.adapter_size_mb = 0.0
+        checkpoint = Path(args.ngram_model_path)
+        if args.mode == "compress":
+            training_path = getattr(args, "ngram_training_path", None)
+            if not training_path:
+                raise ValueError("--ngram-training-path is required when compressing with --engine ngram")
+            with open(training_path, "r", encoding="utf-8", newline="") as handle:
+                training_text = handle.read()
+            source_ids = self.tokenizer.encode(training_text, add_special_tokens=False)
+            training_ids = [self._dense_ids[token] for token in source_ids if token in self._dense_ids]
+            if len(training_ids) < 2:
+                raise ValueError("n-gram training data has fewer than two tokens in the stream alphabet")
+            self.model = NGramPredictor(len(self.tokens_list), order=args.ngram_order)
+            train_ngram_predictor(self.model, training_ids)
+            args.ngram_model_sha256 = save_ngram_predictor(
+                checkpoint, self.model, tokenizer_name=args.model_name, token_ids=self.tokens_list
+            )
+        else:
+            self.model = load_ngram_predictor(
+                checkpoint, tokenizer_name=args.model_name, token_ids=self.tokens_list,
+                expected_sha256=getattr(args, "ngram_model_sha256", None),
+            )
+
+    def run_batched_inference(self, prompts, enable_kv_cache=True):
+        """Score prompt final tokens in global-bitmap order; no KV cache is used."""
+        started = time.perf_counter()
+        try:
+            contexts = [[self._dense_ids[token] for token in prompt] for prompt in prompts]
+        except KeyError as error:
+            raise ValueError("prompt contains a token outside the stream bitmap") from error
+        logits = self.model.logits(contexts)
+        softmax_started = time.perf_counter()
+        probabilities = torch.softmax(logits, dim=-1)
+        return self.tokens_list, probabilities, time.perf_counter() - started, time.perf_counter() - softmax_started
+
+    def detokenize(self, token_ids):
+        return self.tokenizer.decode(token_ids)
+
+    def get_token_by_id(self, token_id):
+        return self.tokens_list[token_id]
+
+    def reset_kv_cache(self):
+        return None
+
 
 class TokenPredictor:
     def __init__(self, args, bitmap_data):
