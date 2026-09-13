@@ -91,6 +91,10 @@ def save_global_mask_file(
     header = {
         "input_path": os.path.basename(args.input_path),
         "model_name": args.model_name,
+        "model_revision": getattr(args, "model_revision", None),
+        "tokenizer_name": getattr(args, "tokenizer_name", None),
+        "tokenizer_revision": getattr(args, "tokenizer_revision", None),
+        "trust_remote_code": getattr(args, "trust_remote_code", False),
         "context_length": args.context_length,
         "first_n_tokens": args.first_n_tokens,
         "retain_tokens": args.retain_tokens,
@@ -156,6 +160,10 @@ def load_global_mask_file(args):
 
     # Update args with loaded header values (ensures decompression settings match).
     args.model_name = header["model_name"]
+    args.model_revision = header.get("model_revision")
+    args.tokenizer_name = header.get("tokenizer_name")
+    args.tokenizer_revision = header.get("tokenizer_revision")
+    args.trust_remote_code = header.get("trust_remote_code", False)
     args.context_length = header["context_length"]
     args.first_n_tokens = header["first_n_tokens"]
     args.retain_tokens = header["retain_tokens"]
