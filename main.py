@@ -18,30 +18,6 @@ RESULTS_FILE = str(RUN_DIR / "compression_results.json")
 COMPRESSION_FILE = str(RUN_DIR / "compression_data.bin")
 DECOMPRESSION_FILE = str(RUN_DIR / "text_results.txt")
 
-def _run_cidr_command() -> bool:
-    """Dispatch a CIDR-specific command while preserving the legacy CLI."""
-    commands = {
-        "benchmark": "run_cidr_benchmark",
-        "prepare-tokenizer": "prepare_cidr_tokenizer",
-        "prepare-imdb": "prepare_cidr_imdb",
-        "model-survey": "run_cidr_model_survey",
-        "measure-compression": "measure_cidr_predictive_compression",
-        "plot-models": "plot_cidr_model_survey",
-        "evaluate-global-mask": "evaluate_global_mask_models",
-        "plot-global-mask": "plot_global_mask_models",
-    }
-    if len(sys.argv) < 2 or sys.argv[1] != "cidr":
-        return False
-    if len(sys.argv) < 3 or sys.argv[2] not in commands:
-        raise SystemExit(
-            "Usage: main.py cidr {benchmark|prepare-tokenizer|prepare-imdb|"
-            "model-survey|measure-compression|plot-models|evaluate-global-mask|plot-global-mask} [command options]"
-        )
-    module_name = commands[sys.argv[2]]
-    del sys.argv[1:3]
-    importlib.import_module(f"scripts.cidr_2027.{module_name}").main()
-    return True
-
 
 def main():
     """Parse CLI arguments and run global-mask or CIDR workflows."""
