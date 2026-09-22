@@ -159,7 +159,6 @@ def run_global_mask_compression(args):
     entropy = 0.0
     rank_list = []
     probs_list = []
-    
     # Process each token in the dataset to compress it.
     # Only run steps that have at least one next symbol. When all batches have
     # equal length, the old ``range(chunk_length)`` performed one useless final
