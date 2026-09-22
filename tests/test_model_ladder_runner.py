@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from scripts.plain_text_compression.evaluate_model_ladder import common_utf8_prefix, split_contiguous
+from research.papers.cidr_2027.experiments.evaluate_model_ladder import common_utf8_prefix, split_contiguous
 
 
 def test_common_utf8_prefix_never_returns_partial_codepoint(tmp_path: Path):

@@ -1,8 +1,8 @@
 # Evaluation
 
 This directory contains code and notebooks that consume experiment results.
-Launching runs belongs in `experiments/`; generated tables and figures belong in
-the ignored `artifacts/` directory.
+Paper-specific runs live under `research/papers/<paper>/experiments/`;
+generated tables and figures belong in the ignored `artifacts/` directory.
 
 - `loaders.py`: shared result-loading and normalization helpers.
 - `baselines/`: implementations of non-LLM comparison methods.
@@ -15,10 +15,10 @@ paper and may need their data path set explicitly when opened interactively.
 
 ## Paper-specific evaluation
 
-The current NeurIPS evaluation lives in `papers/neurips_2026/evaluation/`. Its
+The current NeurIPS evaluation lives in `research/papers/neurips_2026/evaluation/`. Its
 raw and finalized inputs are indexed by
 `artifacts/papers/neurips-2026/manifest.json`.
 
-The CIDR 2027 evaluation scaffold lives in `papers/cidr_2027/evaluation/` and
+The CIDR 2027 evaluation scaffold lives in `research/papers/cidr_2027/evaluation/` and
 uses `artifacts/papers/cidr-2027/manifest.json` as the stable index for raw and
 derived outputs.

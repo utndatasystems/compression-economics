@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from experiments.tokenizer_fertility import (
+from research.papers.neurips_2026.experiments.tokenizer_fertility import (
     iter_ascii_chunks,
     measure_ascii,
     measure_token_ids,

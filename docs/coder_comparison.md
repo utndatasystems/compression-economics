@@ -20,7 +20,7 @@ charge is measured rather than estimated.
 For a self-contained smoke benchmark:
 
 ```bash
-.venv/bin/python scripts/plain_text_compression/evaluate_coders.py \
+.venv/bin/python research/papers/cidr_2027/experiments/evaluate_coders.py \
   --synthetic-symbols 10000 --alphabet-size 256 \
   --ans-block-size 256 --ans-lanes 4 \
   --perturbation-scale 1e-8 --perturbation-scale 1e-6 \
@@ -33,7 +33,7 @@ For model results, provide an NPZ trace containing exactly:
 - `symbols`: the corresponding integer target IDs shaped `[symbol_count]`.
 
 ```bash
-.venv/bin/python scripts/plain_text_compression/evaluate_coders.py \
+.venv/bin/python research/papers/cidr_2027/experiments/evaluate_coders.py \
   --trace artifacts/traces/qwen-text8.npz
 ```
 

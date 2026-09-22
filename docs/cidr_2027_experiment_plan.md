@@ -25,7 +25,7 @@ The repository already provides:
 - Deterministic adversarial generation and fixed-sequence scoring.
 - Text corpora and extracted database text columns under the ignored `data/`
   tree, plus paper-specific experiment/evaluation conventions established by
-  `papers/neurips_2026/`.
+  `research/papers/neurips_2026/`.
 
 ## CPU foundation and remaining work
 
@@ -124,7 +124,7 @@ later stage. A parallel IMDb pilot uses the same matrix over a pinned official
 selection.
 
 Committed sweep definitions live in
-`papers/cidr_2027/experiments/configs/`. Generated data and results live below
+`research/papers/cidr_2027/experiments/configs/`. Generated data and results live below
 `artifacts/papers/cidr-2027/` and are referenced from its tracked manifest.
 
 ## Correctness and comparability risks

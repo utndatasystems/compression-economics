@@ -6,7 +6,7 @@ from src.relational_compression_benchmark.config import ImdbDatasetConfig, load_
 
 
 SMOKE_CONFIG = Path(
-    "papers/cidr_2027/experiments/configs/row_column_smoke.toml"
+    "research/papers/cidr_2027/experiments/configs/row_column_smoke.toml"
 )
 
 

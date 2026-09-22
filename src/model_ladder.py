@@ -9,7 +9,7 @@ from typing import Any, Iterable
 
 
 CATALOG_VERSION = 1
-DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "experiments" / "model_ladder.json"
+DEFAULT_CATALOG = Path(__file__).resolve().parents[1] / "research" / "papers" / "cidr_2027" / "experiments" / "configs" / "model_ladder.json"
 _FAMILIES = {"transformer", "ssm", "hybrid_moe"}
 _DTYPES = {"float32", "bfloat16", "float16"}
 

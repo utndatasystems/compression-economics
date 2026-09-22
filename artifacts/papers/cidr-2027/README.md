@@ -41,7 +41,7 @@ real-world slice with:
 ```bash
 .venv/bin/python -m scripts.prepare_cidr_imdb
 .venv/bin/python -m scripts.run_cidr_benchmark \
-  --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
+  --config research/papers/cidr_2027/experiments/configs/imdb_smoke.toml
 ```
 
 The 8,192-row evaluation sample produced 14 blocks per condition and validated

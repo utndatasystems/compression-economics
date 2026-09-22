@@ -18,12 +18,12 @@ next-token probabilities are encoded using arithmetic coding, range asymmetric n
 
 - `main.py`: compression and decompression CLI.
 - `src/`: maintained compression, prediction, encoding, and training code.
-- `scripts/`: standalone training, quantization, and data-generation CLIs.
-- `experiments/`: version-controlled sweep definitions and run configurations.
+- `research/exploratory/`: version-controlled experiments without a paper owner.
+- `research/papers/`: paper-specific experiments, evaluations, manuscripts, and supplementary material.
 - `evaluation/`: result loaders, baselines, plots, notebooks, and reference data.
 - `tests/`: automated tests for maintained reusable code.
-- `papers/neurips_2026/`: manuscript, supplementary artifact metadata, experiments, evaluation, and tests for the current paper.
-- `papers/cidr_2027/`: configurations, evaluation code, and manuscript outputs
+- `research/papers/neurips_2026/`: manuscript, supplementary artifact metadata, experiments, evaluation, and tests for the current paper.
+- `research/papers/cidr_2027/`: configurations, evaluation code, and manuscript outputs
   for the row-versus-column benchmark program.
 - `docs/cidr_2027_experiment_plan.md`: inventory, remaining work, accounting
   contract, and staged CIDR 2027 roadmap.
@@ -31,7 +31,7 @@ next-token probabilities are encoded using arithmetic coding, range asymmetric n
 - `artifacts/`: generated runs, figures, model weights, and logs. Paper runs
   are indexed under `artifacts/papers/<paper>/`.
 
-See `experiments/README.md` and `evaluation/README.md` for the boundary between
+See `research/exploratory/README.md` and `evaluation/README.md` for the boundary between
 running experiments and analyzing their output.
 
 ## Setup
@@ -145,11 +145,11 @@ explicitly and select its smoke configuration:
 ```bash
 .venv/bin/python main.py cidr prepare-imdb
 .venv/bin/python main.py cidr benchmark \
-  --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
+  --config research/papers/cidr_2027/experiments/configs/imdb_smoke.toml
 ```
 
 See `src/relational_compression_benchmark/README.md` for the byte and accounting contracts and
-`papers/cidr_2027/README.md` for configurations and artifact locations.
+`research/papers/cidr_2027/README.md` for configurations and artifact locations.
 
 ## Legacy global-mask bigram
 
@@ -176,7 +176,7 @@ part of the current stream payload.
 
 ## Adversarial worst-case inputs
 
-`scripts/generate_adversarial.py` creates several equal-token-length worst-case runs
+`research/papers/neurips_2026/experiments/generate_adversarial.py` creates several equal-token-length worst-case runs
 by repeatedly selecting the full-vocabulary token with the lowest finite next-token
 logit. Since softmax preserves ordering, this is exactly the lowest-probability token
 without numerical underflow from materializing tiny probabilities.
@@ -191,7 +191,7 @@ the completed sequence. This is a post-hoc rescore: the mask never changes how t
 worst-case sequence is constructed.
 
 ```bash
-python scripts/generate_adversarial.py \
+python research/papers/neurips_2026/experiments/generate_adversarial.py \
   --model-name Qwen/Qwen2.5-0.5B \
   --start-text "The" \
   --start-text "A" \
@@ -205,7 +205,7 @@ To construct the lossless expansion stress test, use the canonical one-byte ASCI
 alphabet:
 
 ```bash
-python scripts/generate_adversarial.py \
+python research/papers/neurips_2026/experiments/generate_adversarial.py \
   --model-name Qwen/Qwen2.5-0.5B \
   --start-text "A" \
   --total-length 1000 \
@@ -245,7 +245,7 @@ extension. This matters for tokenizers whose standalone token decoding is
 context-dependent. Candidates that add no source bytes are not valid for a
 byte-normalized objective.
 
-`scripts/neurips_2026/run_compression_attacks.py` runs a matched experiment containing:
+`research/papers/neurips_2026/experiments/run_compression_attacks.py` runs a matched experiment containing:
 
 - a seeded uniform random-token control;
 - the original minimum-probability attack;
@@ -257,7 +257,7 @@ byte-normalized objective.
   byte sequence.
 
 ```bash
-python scripts/neurips_2026/run_compression_attacks.py \
+python research/papers/neurips_2026/experiments/run_compression_attacks.py \
   --model-name Qwen/Qwen2.5-0.5B \
   --start-text "A" \
   --total-length 1000 \
@@ -292,14 +292,14 @@ per step.
 
 ```bash
 # Full suite: fertility, natural text, attacks, and bounded searches.
-bash papers/neurips_2026/experiments/run_all.sh all
+bash research/papers/neurips_2026/experiments/run_all.sh all
 
 # Run only the long greedy/replay experiments.
-bash papers/neurips_2026/experiments/paper_evaluation.sh core
+bash research/papers/neurips_2026/experiments/paper_evaluation.sh core
 
 # Override either budget independently.
 PAPER_LENGTH=20000 PAPER_SEARCH_LENGTH=1000 \
-  bash papers/neurips_2026/experiments/run_all.sh all
+  bash research/papers/neurips_2026/experiments/run_all.sh all
 ```
 
 The long suite includes the full, printable-ASCII, and canonical one-byte ASCII
@@ -315,6 +315,6 @@ To fill only the currently missing arithmetic payloads for an existing generated
 adversarial directory:
 
 ```bash
-python scripts/score_adversarial_payloads.py \
+python research/papers/neurips_2026/experiments/score_adversarial_payloads.py \
   --input-dir artifacts/runs/adversarial/qwen_05b_n1000
 ```

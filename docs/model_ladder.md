@@ -1,6 +1,6 @@
 # Pretrained model ladder
 
-`experiments/model_ladder.json` is the versioned catalog for pretrained causal
+`research/papers/cidr_2027/experiments/configs/model_ladder.json` is the versioned catalog for pretrained causal
 models. It pins model and tokenizer commits and records architecture family,
 checkpoint dtype, and total and active parameter counts. The catalog contains
 dense GPT-2 and Qwen2.5 ladders, an SSM Mamba ladder, and an optional Nemotron 3
@@ -12,7 +12,7 @@ Token counts can differ because tokenization is part of the condition. Schema-v1
 rows report both input-symbol throughput and model-input-token throughput.
 
 ```bash
-.venv/bin/python scripts/plain_text_compression/evaluate_model_ladder.py \
+.venv/bin/python research/papers/cidr_2027/experiments/evaluate_model_ladder.py \
   --model gpt2-124m --model mamba-129m --model qwen2.5-494m \
   --input-bytes 10000 \
   --context-length 32 --context-length 128 \

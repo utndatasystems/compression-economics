@@ -13,7 +13,7 @@ from src.predictors import (
     train_ngram_predictor,
     train_neural_predictor,
 )
-from scripts.plain_text_compression.evaluate_global_mask_models import _model_input_tokens
+from research.papers.cidr_2027.experiments.evaluate_global_mask_models import _model_input_tokens
 
 
 def test_global_mask_survey_has_requested_token_models_and_windows():

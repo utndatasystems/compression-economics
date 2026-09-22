@@ -19,6 +19,25 @@ COMPRESSION_FILE = str(RUN_DIR / "compression_data.bin")
 DECOMPRESSION_FILE = str(RUN_DIR / "text_results.txt")
 
 
+def _run_cidr_command() -> bool:
+    """Dispatch the CIDR commands to their paper-owned entry points."""
+    if len(sys.argv) < 2 or sys.argv[1] != "cidr":
+        return False
+    commands = {
+        "benchmark": "run_cidr_benchmark",
+        "prepare-imdb": "prepare_cidr_imdb",
+        "prepare-tokenizer": "prepare_cidr_tokenizer",
+    }
+    if len(sys.argv) < 3 or sys.argv[2] not in commands:
+        raise SystemExit("Usage: main.py cidr {benchmark|prepare-imdb|prepare-tokenizer} [options]")
+    module = importlib.import_module(
+        f"research.papers.cidr_2027.experiments.{commands[sys.argv[2]]}"
+    )
+    sys.argv = [sys.argv[0], *sys.argv[3:]]
+    module.main()
+    return True
+
+
 def main():
     """Parse CLI arguments and run global-mask or CIDR workflows."""
     if _run_cidr_command():

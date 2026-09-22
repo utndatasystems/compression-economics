@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from src.prediction import TokenDataPreparer
 from src.utils import check_mismatch
-from scripts.neurips_2026.generate_adversarial import ascii_byte_token_ids
+from research.papers.neurips_2026.experiments.generate_adversarial import ascii_byte_token_ids
 
 
 def test_predictor_preserves_text_line_endings(tmp_path):

@@ -19,7 +19,7 @@ from src.adversarial.compression import (
     score_arithmetic_payloads,
     score_full_vocab_sequences,
 )
-from scripts.neurips_2026.run_compression_attacks import (
+from research.papers.neurips_2026.experiments.run_compression_attacks import (
     _condition_is_complete,
     _load_checkpoint,
 )

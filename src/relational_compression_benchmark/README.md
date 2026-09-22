@@ -57,5 +57,5 @@ Select the real-world smoke sweep with:
 
 ```bash
 .venv/bin/python main.py cidr benchmark \
-  --config papers/cidr_2027/experiments/configs/imdb_smoke.toml
+  --config research/papers/cidr_2027/experiments/configs/imdb_smoke.toml
 ```
