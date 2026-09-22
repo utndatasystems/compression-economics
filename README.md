@@ -20,7 +20,7 @@ next-token probabilities are encoded using arithmetic coding, range asymmetric n
 - `src/`: maintained compression, prediction, encoding, and training code.
 - `research/exploratory/`: version-controlled experiments without a paper owner.
 - `research/papers/`: paper-specific experiments, evaluations, manuscripts, and supplementary material.
-- `evaluation/`: result loaders, baselines, plots, notebooks, and reference data.
+- `research/evaluation/`: shared result loaders, plots, notebooks, and reference data.
 - `tests/`: automated tests for maintained reusable code.
 - `research/papers/neurips_2026/`: manuscript, supplementary artifact metadata, experiments, evaluation, and tests for the current paper.
 - `research/papers/cidr_2027/`: configurations, evaluation code, and manuscript outputs
@@ -31,7 +31,7 @@ next-token probabilities are encoded using arithmetic coding, range asymmetric n
 - `artifacts/`: generated runs, figures, model weights, and logs. Paper runs
   are indexed under `artifacts/papers/<paper>/`.
 
-See `research/exploratory/README.md` and `evaluation/README.md` for the boundary between
+See `research/exploratory/README.md` and `research/evaluation/README.md` for the boundary between
 running experiments and analyzing their output.
 
 ## Setup

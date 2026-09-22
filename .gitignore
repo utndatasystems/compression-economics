@@ -26,8 +26,8 @@ logs/*
 *.jpg
 *.jpeg
 *.png
-!papers/neurips_2026/manuscript/plots/end_to_end_compressor_robustness.png
-!papers/neurips_2026/manuscript/plots/paper_prediction_difficulty.png
+!research/papers/neurips_2026/manuscript/plots/end_to_end_compressor_robustness.png
+!research/papers/neurips_2026/manuscript/plots/paper_prediction_difficulty.png
 
 # LaTeX build artifacts
 *.aux
@@ -40,8 +40,8 @@ logs/*
 *.out
 *.synctex.gz
 *.toc
-/papers/neurips_2026/manuscript/main.pdf
-/papers/neurips_2026/supplementary/neurips-2026-supplementary.zip
+/research/papers/neurips_2026/manuscript/main.pdf
+/research/papers/neurips_2026/supplementary/neurips-2026-supplementary.zip
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
