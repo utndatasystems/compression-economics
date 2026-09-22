@@ -75,7 +75,7 @@ compressed file path is required.
 
 ### Adaptor Training
 ```
-python scripts/train_adapter.py \
+python src/train_adapter.py \
     --adapter_type lora \
     --lr 0.0005 \
     --batch_size 64 \
