@@ -124,7 +124,7 @@ def get_main_args() -> argparse.Namespace:
     
     # inference related
     parser.add_argument("--context_length", type=int, default=1000, help="Maximum context length")
-    parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length exceeded (only with KV cache)")
+    parser.add_argument("--retain_tokens", type=int, default=100, help="Tokens retained when context length is reached")
     parser.add_argument("--first_n_tokens", type=int, default=10001, help="Number of tokens to compress")
     parser.add_argument("--use_kv_cache", dest="use_kv_cache", action="store_true", help="Enable KV cache for incremental inference",)
     parser.add_argument("--no_kv_cache", dest="use_kv_cache", action="store_false", help="Disable KV cache for incremental inference",)

@@ -91,7 +91,7 @@ python src/train_adapter.py \
 - `--retain_tokens`: Context tail length when trimming. Default: 100.
 - `--first_n_tokens`: Limit number of tokens processed. Default: 1000.
 - `--batch_size`: Number of parallel sequences per step. Default: 1.
-- `--use_kv_cache`: Enable KV cache for faster incremental inference. Default: enabled.
+- `--use_kv_cache` / `--no_kv_cache`: Enable or disable KV caching. Default: enabled for supported transformer models. Uneven cached batches are scored row by row.
 - `--reduce_tokens/--no_reduce_tokens`: Toggle global vocabulary reduction. Default: enabled.
 - `--encoding`: `AC`, `ANS`, `bitpacked`, `huffman`, or `PMATIC`. Default: `AC`.
 - `--print_results`: Print detailed stats to stdout. Default: disabled.

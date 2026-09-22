@@ -315,6 +315,7 @@ class TokenPredictor:
         # Cache indices for fast vocab reduction via index_select.
         self.index_tensor = torch.tensor(self.tokens_list, dtype=torch.long, device=self.device)
         self.reduce_tokens = args.reduce_tokens
+        self.reset_kv_cache()
 
     def _update_token_mask(self):
         """
@@ -419,8 +420,8 @@ class TokenPredictor:
 
     def run_batched_inference_cachefree(self, prompts):
         """
-        Run a full forward pass for every prompt without reusing KV cache state.
-        Can handle uneven prompt lengths by padding and using attention masks.
+        Run a full forward pass without reusing KV cache state.
+        Uneven prompts are scored independently without padding.
 
         This is intended as a correctness baseline for comparing against the
         cached path in run_batched_inference().
@@ -434,40 +435,33 @@ class TokenPredictor:
         - data_copy_time: approximate time spent moving tensors between host and device during this call.
         - softmax_time: time spent computing the softmax (only non-zero when encoding in {"AC", "ANS"} / "ANS" / "PMATIC").
         """
+        # A cache-free call ends the previous cached sequence.
+        self.reset_kv_cache()
+        if self.args.engine != "transformer":
+            raise ValueError(f"Unsupported engine: {self.args.engine}")
+        if not prompts or any(not row for row in prompts):
+            raise ValueError("prompts must contain non-empty token sequences")
+
         data_copy_time = 0.0
-
+        self.last_model_input_tokens = sum(map(len, prompts))
         with torch.inference_mode():
-            if self.args.engine != "transformer":
-                raise ValueError(f"Unsupported engine: {self.args.engine}")
-
-            t0_data_copy = time.perf_counter()
-            
             if self._check_rectangular(prompts):
-                padded_prompts = prompts
-                attention_mask = [[1] * len(seq) for seq in prompts]
+                started = time.perf_counter()
+                input_ids = torch.tensor(prompts, dtype=torch.long, device=self.device)
+                data_copy_time += time.perf_counter() - started
+                outputs = self.model(input_ids=input_ids, use_cache=False)
+                logits = outputs.logits[:, -1, :]
             else:
-                # Pad only if needed
-                padded_prompts, attention_mask = self._pad_input(prompts)
-
-            # Convert to tensor 
-            input_ids = torch.tensor(padded_prompts, device=self.device)
-            attention_mask = torch.tensor(attention_mask, device=self.device)
-            self.last_model_input_tokens = int(attention_mask.sum().item())
-
-            data_copy_time += time.perf_counter() - t0_data_copy
-
-            outputs = self.model(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                use_cache=False)
-
-            # Compute last valid token index per batch from attention mask to extract the correct logits.
-            last_token_idx = attention_mask.sum(dim=1) - 1 # (batch_size,)
-
-            logits = outputs.logits[
-                torch.arange(input_ids.size(0), device=self.device),
-                last_token_idx,
-                :]
+                # Match the cached path: each uneven row has its own unpadded
+                # positions and its own final-token logits.
+                rows = []
+                for prompt in prompts:
+                    started = time.perf_counter()
+                    input_ids = torch.tensor([prompt], dtype=torch.long, device=self.device)
+                    data_copy_time += time.perf_counter() - started
+                    outputs = self.model(input_ids=input_ids, use_cache=False)
+                    rows.append(outputs.logits[0, -1, :])
+                logits = torch.stack(rows)
 
         assert logits.dim() == 2, f"Expected logits of shape (batch_size, vocab_size), got {logits.shape}"
         assert isinstance(logits, torch.Tensor), f"Expected logits to be a torch.Tensor, got {type(logits)}"
@@ -476,163 +470,83 @@ class TokenPredictor:
     
 
     def run_batched_inference(self, prompts, enable_kv_cache=True):
-        # TODO: correct the caching behaviour and make it work with mixed length prompts
+        """Score prompts, reusing only caches built from their exact prefixes.
+
+        Rectangular batches share a single cache. Uneven batches use independent
+        per-row caches so padding never affects logits or cached positions.
+        Cache-free calls discard all previous cache state.
         """
-        Run a single next-token prediction step for a batch of tokenized prompts.
-
-        The method executes one forward pass and returns the model scores for the
-        next token of each prompt. Depending on the configured encoding, the scores
-        are returned either as probabilities or as raw logits.
-
-        Supported behavior
-        ------------------
-        Currently, only self.args.engine == "transformer" is supported.
-
-        Caching behavior
-        ----------------
-        When enable_kv_cache is disabled, the full prompt batch is passed to the
-        model on every call and any previously stored cache is cleared.
-
-        When enable_kv_cache is enabled, the method maintains an internal
-        key/value cache in self._past_kv:
-
-        - On the first cached call, or after a cache reset, the full prompt batch is
-        forwarded through the model and a new cache is created.
-        - On subsequent cached calls, only the final token of each prompt is passed
-        to the model together with the stored ``past_key_values``.
-        - If the incoming prompt appears shorter than the cached context length, the
-        cache is rebuilt from the full prompt batch.
-
-        Input shape
-        -----------
-        prompts is a list of token-id sequences, one per batch element.
-
-        - If all prompts have equal length, they are converted directly to a tensor.
-        - If prompt lengths differ, they are padded and an attention mask is passed
-        to the model.
-
-        Output format
-        -------------
-        The returned tensor always has shape::
-
-            (batch_size, vocab_size_or_reduced_vocab_size)
-
-        where the second dimension is either the full vocabulary or the reduced
-        vocabulary defined by self.tokens_list.
-
-        Args:
-            prompts (list[list[int]]):
-                Batch of tokenized prompts. Each inner list is one prompt expressed
-                as token IDs.
-            enable_kv_cache (bool, optional):
-                Whether to use the internal KV cache for incremental decoding.
-                Defaults to True.
-
-        Returns:
-            tuple[list[int], torch.Tensor, float, float]:
-                A 4-tuple containing:
-
-                - ``tokens_list``:
-                The token IDs corresponding to the score columns in the returned
-                tensor. This is the reduced token list when token reduction is
-                enabled, otherwise the full vocabulary index range.
-                - ``scores``:
-                If ``self.args.encoding in {"AC", "ANS", "PMATIC"}``, a probability tensor on CPU.
-                If ``self.args.encoding in {"bitpacked", "huffman"}``, a logits
-                tensor on the active device.
-                - ``data_copy_time``:
-                Approximate time spent moving tensors between host and device
-                during this call.
-                - ``softmax_time``:
-                Time spent computing the softmax. This is only non-zero when
-                ``encoding in {"AC", "ANS"}``.
-
-        Raises:
-            ValueError:
-                If ``self.args.engine`` is not supported.
-            NotImplementedError:
-                If ``self.args.encoding`` is not one of the implemented modes.
-
-        Notes:
-            - For arithmetic coding (``encoding="AC"`` or ``encoding="ANS"``), probabilities are returned
-            on CPU because downstream compression code consumes probabilities.
-            - For rank-based encodings (``"bitpacked"`` and ``"huffman"``), raw
-            logits are returned so the caller can rank tokens directly.
-        """
-
-        if enable_kv_cache is False:
-            # run_batched_inference_cachefree instead
+        if not enable_kv_cache:
             return self.run_batched_inference_cachefree(prompts)
-        
-        # Initialize cache state on first use.
-        if not hasattr(self, "_past_kv"):
-            self._past_kv = None
-            self._cached_context_len = 0
+        if self.args.engine != "transformer":
+            raise ValueError(f"Unsupported engine: {self.args.engine}")
+        if not prompts or any(not row for row in prompts):
+            raise ValueError("prompts must contain non-empty token sequences")
 
-        data_copy_time = 0
+        current = [tuple(row) for row in prompts]
+        previous = getattr(self, "_cached_prompts", [])
+        rectangular = len({len(row) for row in current}) == 1
+        data_copy_time = 0.0
+        model_input_tokens = 0
 
-        with torch.inference_mode():
-            if self.args.engine == "transformer":
-                if not enable_kv_cache:
-                    return self.run_batched_inference_cachefree(prompts)
+        def extends(row, prefix):
+            return len(row) > len(prefix) and row[:len(prefix)] == prefix
 
+        try:
+            with torch.inference_mode():
+                if rectangular:
+                    reuse = (
+                        getattr(self, "_past_kv", None) is not None
+                        and len(previous) == len(current)
+                        and all(extends(row, prefix) for row, prefix in zip(current, previous))
+                    )
+                    inputs = (
+                        [row[len(prefix):] for row, prefix in zip(current, previous)]
+                        if reuse else current
+                    )
+                    started = time.perf_counter()
+                    input_ids = torch.tensor(inputs, dtype=torch.long, device=self.device)
+                    data_copy_time += time.perf_counter() - started
+                    model_input_tokens = int(input_ids.numel())
+                    kwargs = {"past_key_values": self._past_kv} if reuse else {}
+                    outputs = self.model(input_ids=input_ids, use_cache=True, **kwargs)
+                    logits = outputs.logits[:, -1, :]
+                    self._past_kv = outputs.past_key_values
+                    self._row_past_kv = None
                 else:
-                    # If the prompt is now shorter than the cached context, the
-                    # previously stored cache can no longer be reused safely.
-                    reset_cache = len(prompts[0]) < self._cached_context_len
-
-                    if self._past_kv is None or reset_cache:
-                        # Build or rebuild the cache from the full prompt batch.
-                        t0_data_copy = time.perf_counter()
-
-                        # Variable-length prompts are padded and accompanied by an
-                        # attention mask so padding tokens are ignored.
-                        if len(set(len(seq) for seq in prompts)) != 1:
-                            padded_prompts, attention_mask = self._pad_input(prompts)
-
-                            input_ids = torch.tensor(padded_prompts, device=self.device)
-                            attention_mask = torch.tensor(attention_mask, device=self.device)
-                            self.last_model_input_tokens = int(attention_mask.sum().item())
-
-                            data_copy_time += time.perf_counter() - t0_data_copy
-                            outputs = self.model(
-                                input_ids,
-                                use_cache=True,
-                                attention_mask=attention_mask,)
-                        else:
-                            # Equal-length prompts can be forwarded directly.
-                            input_ids = torch.tensor(prompts, device=self.device)
-                            self.last_model_input_tokens = int(input_ids.numel())
-                            data_copy_time += time.perf_counter() - t0_data_copy
-                            outputs = self.model(input_ids, use_cache=True)
-
-                        self._past_kv = outputs.past_key_values
-                        self._cached_context_len = input_ids.shape[1]
-                    else:
-                        # Reuse the existing cache by feeding only the newly added
-                        # final token of each prompt.
-                        delta = [row[-1:] for row in prompts]
-
-                        t0_data_copy = time.perf_counter()
-                        delta = torch.tensor(delta, device=self.device, dtype=torch.long)
-                        self.last_model_input_tokens = int(delta.numel())
-                        data_copy_time += time.perf_counter() - t0_data_copy
-
-                        outputs = self.model(
-                            delta,
-                            past_key_values=self._past_kv,
-                            use_cache=True,
+                    # Per-row inference avoids model-specific padding behavior.
+                    old_rows = getattr(self, "_row_past_kv", None)
+                    row_caches = []
+                    row_logits = []
+                    for index, row in enumerate(current):
+                        reuse = (
+                            old_rows is not None
+                            and index < len(old_rows)
+                            and old_rows[index] is not None
+                            and index < len(previous)
+                            and extends(row, previous[index])
                         )
-                        self._past_kv = outputs.past_key_values
-                        self._cached_context_len += delta.shape[1]
+                        input_row = row[len(previous[index]):] if reuse else row
+                        started = time.perf_counter()
+                        input_ids = torch.tensor([input_row], dtype=torch.long, device=self.device)
+                        data_copy_time += time.perf_counter() - started
+                        model_input_tokens += int(input_ids.numel())
+                        kwargs = {"past_key_values": old_rows[index]} if reuse else {}
+                        outputs = self.model(input_ids=input_ids, use_cache=True, **kwargs)
+                        row_caches.append(outputs.past_key_values)
+                        row_logits.append(outputs.logits[0, -1, :])
+                    logits = torch.stack(row_logits)
+                    self._row_past_kv = row_caches
+                    self._past_kv = None
 
-                # Use only the scores for the final position in each sequence.
-                logits = outputs.logits[:, -1, :]
-            else:
-                raise ValueError(f"Unsupported engine: {self.args.engine}")
+            self._cached_prompts = current
+            self._cached_context_len = max(map(len, current))
+            self.last_model_input_tokens = model_input_tokens
+        except Exception:
+            self.reset_kv_cache()
+            raise
 
         return self._finalize_batched_scores(logits, data_copy_time)
-            
 
     def generate_draft(self, prompt, k=None, enable_kv_cache=False, full_draft=False):                 
         #ToDo: later implement kv cashing for repeated calls on iterative prompts
@@ -911,10 +825,11 @@ class TokenPredictor:
 
 
     def reset_kv_cache(self):
-        # Helper method to reset the KV cache state, e.g. when the prompt context is shortened.
+        """Discard batched and per-row caches with their source prefixes."""
         self._past_kv = None
+        self._row_past_kv = None
+        self._cached_prompts = []
         self._cached_context_len = 0
-
 
     def detokenize(self, token_ids):
         """
