@@ -335,3 +335,18 @@ def test_speculative_decode(test_setup, k):
         )
 
     print("test_speculative_decode passed.\n")
+
+@pytest.mark.parametrize("encoding", ["AC", "AC_MULTISTREAM"])
+def test_arithmetic_modes_use_identical_reduced_probabilities(encoding):
+    predictor = TokenPredictor.__new__(TokenPredictor)
+    predictor.args = SimpleNamespace(encoding=encoding)
+    predictor.reduce_tokens = True
+    predictor.tokens_list = [1, 3]
+    predictor.index_tensor = torch.tensor([1, 3])
+
+    token_ids, probabilities, _, _ = predictor._finalize_batched_scores(
+        torch.tensor([[9.0, 1.0, 2.0, 3.0]]), 0.0
+    )
+
+    assert token_ids == [1, 3]
+    assert torch.allclose(probabilities, torch.softmax(torch.tensor([[1.0, 3.0]]), dim=-1))

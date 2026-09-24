@@ -39,7 +39,9 @@ def _validate_settings(stream_count: int, state_bits: int, total: int) -> None:
 
 def _cumulative(probabilities: Sequence[float] | np.ndarray, total: int) -> np.ndarray:
     """Validate one model distribution before applying the shared quantizer."""
-    row = np.asarray(probabilities, dtype=np.float64)
+    row = np.asarray(probabilities)
+    if not np.issubdtype(row.dtype, np.floating):
+        row = row.astype(np.float64)
     if row.ndim != 1 or row.size < 2 or row.size >= total:
         raise ValueError("probabilities must be a 1D alphabet smaller than the total")
     if not np.all(np.isfinite(row)) or np.any(row < 0):

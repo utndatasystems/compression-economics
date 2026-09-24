@@ -67,3 +67,34 @@ def test_corrupt_or_incomplete_archive_is_rejected():
     decoder = MultistreamACDecoder(archive)
     with pytest.raises(ValueError, match="not all"):
         decoder.assert_complete()
+
+def test_float32_probabilities_match_single_stream_ac():
+    from src.encoding_utils import build_cumul
+
+    rng = np.random.default_rng(17)
+    row = None
+    for _ in range(1000):
+        candidate = rng.random(217).astype(np.float32)
+        candidate /= candidate.sum()
+        if not np.array_equal(build_cumul(candidate), build_cumul(candidate.astype(np.float64))):
+            row = candidate
+            break
+    assert row is not None
+    frequencies = np.diff(build_cumul(row))
+    widened_frequencies = np.diff(build_cumul(row.astype(np.float64)))
+    symbol = int(np.flatnonzero(frequencies != widened_frequencies)[0])
+
+    reference = LLMCompressor(algorithm="AC")
+    multistream = MultistreamACEncoder(1)
+    for _ in range(8):
+        reference.next_token(symbol, row)
+        multistream.encode(0, symbol, row)
+    expected = reference.compress()
+    archive = multistream.finish()
+    decoder = MultistreamACDecoder(archive)
+    payload = np.unpackbits(
+        np.frombuffer(archive[decoder.framing_bytes:], dtype=np.uint8), bitorder="big"
+    )
+    assert payload[:len(expected)].tolist() == expected
+    assert [decoder.decode(0, row) for _ in range(8)] == [symbol] * 8
+    decoder.assert_complete()
