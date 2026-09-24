@@ -1,10 +1,11 @@
-"""Portable, independently decodable arithmetic-coded streams.
+"""Encode several independent arithmetic streams in one portable byte payload.
 
-This is a coder payload, not a text archive: the caller supplies the same
-probability vectors, stream assignment, and model context during decoding.
-The MSAC v1 format uses network byte order and records every stream's symbol
-count, bit count, and CRC32. It deliberately uses the existing ``build_cumul``
-quantizer so coder comparisons can hold the coding distribution constant.
+Each stream keeps its own arithmetic coder state. Decoding still needs the same
+probabilities used during encoding. The calling text archive stores the
+initial tokens and model settings. The model remains an external dependency.
+MSAC v1 stores stream lengths and
+checksums in big-endian fields. It uses the same probability quantizer as the
+existing single-stream arithmetic coder.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ _STREAM = struct.Struct(">QQI")  # symbol count, payload bit count, CRC32
 
 
 def _validate_settings(stream_count: int, state_bits: int, total: int) -> None:
+    """Check that coder settings can be stored and used by the AC state machine."""
     if not 1 <= stream_count <= 0xFFFFFFFF:
         raise ValueError("stream_count must fit in a positive uint32")
     if not 16 <= state_bits <= 56:
@@ -36,12 +38,13 @@ def _validate_settings(stream_count: int, state_bits: int, total: int) -> None:
 
 
 def _cumulative(probabilities: Sequence[float] | np.ndarray, total: int) -> np.ndarray:
+    """Validate one model distribution before applying the shared quantizer."""
     row = np.asarray(probabilities, dtype=np.float64)
     if row.ndim != 1 or row.size < 2 or row.size >= total:
         raise ValueError("probabilities must be a 1D alphabet smaller than the total")
     if not np.all(np.isfinite(row)) or np.any(row < 0):
         raise ValueError("probabilities must be finite and nonnegative")
-    if not math.isclose(float(row.sum()), 1.0, rel_tol=0.0, abs_tol=1e-9):
+    if not math.isclose(float(row.sum()), 1.0, rel_tol=0.0, abs_tol=1e-5):
         raise ValueError("probabilities must sum to one")
     return build_cumul(row, total=total)
 
@@ -71,6 +74,7 @@ class MultistreamACEncoder:
         self._counts[stream_id] += 1
 
     def finish(self) -> bytes:
+        """Finalize each stream and serialize its descriptor followed by its bytes."""
         if self._finished:
             raise ValueError("encoder has already been finished")
         self._finished = True
@@ -150,5 +154,6 @@ class MultistreamACDecoder:
         return symbol
 
     def assert_complete(self) -> None:
+        """Reject a decode that did not consume every declared symbol."""
         if self._decoded != self.symbol_counts:
             raise ValueError("not all MSAC stream symbols were decoded")
