@@ -4,8 +4,8 @@ Global-mask LLM compression/decompression.
 This module implements a compression experiment that uses a single global bitmap of
 allowed tokens to reduce the LLM prediction space. Tokens are processed in batches
 to amortize inference, and the resulting probability distributions are encoded via
-arithmetic coding ("AC") or rank-based schemes ("bitpacked", "huffman") for the
-transformer engine. 
+arithmetic coding ("AC" or independent "AC_MULTISTREAM" states) or rank-based
+schemes ("bitpacked", "huffman") for the transformer engine.
 
 Decompression mirrors compression using the same model and
 bitmap to reconstruct tokens from the bitstream.
@@ -14,6 +14,7 @@ bitmap to reconstruct tokens from the bitstream.
 import sys
 
 from src.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
+from src.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 from src.prediction import NGramTokenPredictor, TokenDataPreparer, TokenPredictor
 from itertools import chain
 from collections import defaultdict
@@ -27,6 +28,11 @@ from itertools import chain
 from copy import copy
 
 PMATIC_DELTA = 1e-3
+
+
+def _rate(amount, seconds):
+    """Report zero when no model inference was needed."""
+    return amount / seconds if seconds else 0.0
 
 
 def _make_token_predictor(args, bitmap_data):
@@ -87,12 +93,12 @@ def run_global_mask_compression(args):
             use_kv_cache (bool): Whether to enable KV cache for inference.
             retain_tokens (int): Tokens to retain when truncating context.
             engine (str): "transformer".
-            encoding (str): "AC", "bitpacked", or "huffman".
+            encoding (str): "AC", "AC_MULTISTREAM", "ANS", "PMATIC", or a rank coder.
 
     Returns:
         tuple: (first_tokens, bit_string, bitmask_data, stats, args)
             - first_tokens (list[int]): First token from each batch (seed for decoding).
-            - bit_string (str): The compressed bit string.
+            - bit_string (list[int] | bytes): Coded bits or the MSAC payload.
             - bitmask_data (bytes): Serialized bitmap describing allowed vocabulary.
             - stats (dict): Compression statistics (sizes, timings, throughput).
             - args (argparse.Namespace): Possibly updated args from token preparation.
@@ -110,6 +116,9 @@ def run_global_mask_compression(args):
     if args.first_n_tokens is None:
         args.first_n_tokens = len(data_tokens)
 
+
+    if args.encoding == "AC_MULTISTREAM" and not 1 <= args.batch_size <= len(data_tokens):
+        raise ValueError("AC_MULTISTREAM needs one seed token per nonempty batch")
 
     # Split tokens into contiguous batches of (roughly) equal length.
     # chunk_length is the minimum tokens per batch; extras are distributed one per batch.
@@ -137,6 +146,8 @@ def run_global_mask_compression(args):
 
     if args.encoding in {"AC", "ANS"}:
         llm_compressor = LLMCompressor(algorithm=args.encoding)
+    elif args.encoding == "AC_MULTISTREAM":
+        llm_compressor = MultistreamACEncoder(args.batch_size)
     elif args.encoding == "PMATIC":
         delta, r = _get_pmatic_params(args)
         print(f"Using PMATIC compressor with delta={delta}, r={r}")
@@ -199,7 +210,7 @@ def run_global_mask_compression(args):
                 valid_mask.append(False)
 
         if args.engine in {"transformer", "ngram"}:
-            if args.encoding in {"AC", "ANS"}:
+            if args.encoding in {"AC", "ANS", "AC_MULTISTREAM"}:
                 t0_ac = time.perf_counter()
                 probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
 
@@ -208,7 +219,10 @@ def run_global_mask_compression(args):
                     if not valid_mask[idx]:
                         continue
                     target_idx = actual_next_tokens[idx]
-                    llm_compressor.next_token(target_idx, probs)
+                    if args.encoding == "AC_MULTISTREAM":
+                        llm_compressor.encode(idx, target_idx, probs)
+                    else:
+                        llm_compressor.next_token(target_idx, probs)
                     entropy += -np.log2(probs[target_idx])
                     probs_list.append(probs[target_idx])
 
@@ -258,6 +272,8 @@ def run_global_mask_compression(args):
     if args.engine in {"transformer", "ngram"}:
         if args.encoding in {"AC", "ANS"}:
             bit_string = llm_compressor.compress(encoding=args.encoding)
+        elif args.encoding == "AC_MULTISTREAM":
+            bit_string = llm_compressor.finish()
         elif args.encoding == "PMATIC": 
             bit_string = llm_compressor.compress(encoding="PMATIC")
         elif args.encoding == "bitpacked":
@@ -277,7 +293,7 @@ def run_global_mask_compression(args):
     
     total_compression_time = time.perf_counter() - t0_tokenize
     # Bitstream length (in bits) plus bitmap size yields the final compressed size.
-    total_arithmetic_code_size = len(bit_string)
+    total_arithmetic_code_size = len(bit_string) * (8 if isinstance(bit_string, bytes) else 1)
     if args.encoding == "huffman":
         # Estimate the size of the codebook in bits
         codebook_size = sum(len(code) for code in codebook.values())
@@ -319,10 +335,10 @@ def run_global_mask_compression(args):
         "throughput_model_input_tokens_per_sec": input_token_cnt / total_compression_time,
         "throughput_tokens_per_sec": input_token_cnt / total_compression_time,  # Deprecated alias.
         "throughput_kibibytes_per_sec": original_size_bytes / 1024 / total_compression_time,
-        "inference_throughput_input_symbols_per_sec": len(data_tokens) / inference_time,
-        "inference_throughput_model_input_tokens_per_sec": input_token_cnt / inference_time,
-        "inference_throughput_tokens_per_sec": input_token_cnt / inference_time,  # Deprecated alias.
-        "inference_throughput_kibibytes_per_sec": original_size_bytes / 1024 / inference_time,
+        "inference_throughput_input_symbols_per_sec": _rate(len(data_tokens), inference_time),
+        "inference_throughput_model_input_tokens_per_sec": _rate(input_token_cnt, inference_time),
+        "inference_throughput_tokens_per_sec": _rate(input_token_cnt, inference_time),  # Deprecated alias.
+        "inference_throughput_kibibytes_per_sec": _rate(original_size_bytes / 1024, inference_time),
     }, args
 
 
@@ -342,7 +358,7 @@ def run_global_mask_decompression(
     Args:
         args (argparse.Namespace): Same configuration used for compression.
         first_tokens (list[int]): First token from each batch.
-        bit_string (str): The compressed bit string.
+        bit_string (list[int] | bytes): Coded bits or the MSAC payload.
         bitmap (bytes): Serialized bitmap describing allowed vocabulary.
 
     Returns:
@@ -359,12 +375,18 @@ def run_global_mask_decompression(
     # Initialize the token predictor.
     token_predictor = _make_token_predictor(args, bitmap)
 
-    # Get the original tokens to know the starting token and the total length.
-    decompressor = _make_arithmetic_decompressor(
-        args,
-        bit_string,
-        alphabet_size=len(token_predictor.tokens_list),
-    )
+    # The MSAC directory assigns one independent stream to each token batch.
+    if args.encoding == "AC_MULTISTREAM":
+        decompressor = MultistreamACDecoder(bit_string)
+        if decompressor.stream_count != args.batch_size:
+            raise ValueError("MSAC stream count does not match batch size")
+    else:
+        decompressor = _make_arithmetic_decompressor(
+            args, bit_string, alphabet_size=len(token_predictor.tokens_list)
+        )
+
+    if args.encoding == "AC_MULTISTREAM" and len(first_tokens) != args.batch_size:
+        raise ValueError("MSAC seed count does not match batch size")
 
     # Seed each batch with its initial token from the original data (required for autoregressive decoding)
     prompts = [[first_tokens[i]] for i in range(args.batch_size)]
@@ -378,6 +400,10 @@ def run_global_mask_decompression(
     batches_length = [
         chunk_length + (1 if i < extra else 0)
         for i in range(args.batch_size)]
+    if args.encoding == "AC_MULTISTREAM":
+        expected_counts = [length - 1 for length in batches_length]
+        if decompressor.symbol_counts != expected_counts:
+            raise ValueError("MSAC symbol counts do not match batch lengths")
     
     input_tokens_cnt = 0
     inference_time = 0
@@ -420,7 +446,10 @@ def run_global_mask_decompression(
             if token_idx + 1 < batches_length[idx]:
                 # Decompress the next token's index from the bit string.
                 #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
-                next_token_idx = decompressor.decompress(probs)
+                next_token_idx = (
+                    decompressor.decode(idx, probs) if args.encoding == "AC_MULTISTREAM"
+                    else decompressor.decompress(probs)
+                )
                 next_token = token_predictor.get_token_by_id(next_token_idx)
                 
                 # Append the decompressed token to the context for the next step.
@@ -431,6 +460,8 @@ def run_global_mask_decompression(
 
         ac_time += time.perf_counter() - t0_ac
     
+    if args.encoding == "AC_MULTISTREAM":
+        decompressor.assert_complete()
     reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
     t0_detokenize = time.perf_counter()
     detoken_string = token_predictor.detokenize(reconstructed_tokens)
@@ -455,9 +486,9 @@ def run_global_mask_decompression(
         "throughput_input_symbols_per_sec": args.first_n_tokens / decompression_time,
         "throughput_model_input_tokens_per_sec": input_tokens_cnt / decompression_time,
         "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
-        "inference_throughput_input_symbols_per_sec": args.first_n_tokens / inference_time,
-        "inference_throughput_model_input_tokens_per_sec": input_tokens_cnt / inference_time,
-        "inference_throughput_kibibytes_per_sec": len(detoken_string) / 1024 / inference_time,
+        "inference_throughput_input_symbols_per_sec": _rate(args.first_n_tokens, inference_time),
+        "inference_throughput_model_input_tokens_per_sec": _rate(input_tokens_cnt, inference_time),
+        "inference_throughput_kibibytes_per_sec": _rate(len(detoken_string) / 1024, inference_time),
     }
 
 def run_global_mask_speculative_decompression(

@@ -28,6 +28,16 @@ The runner charges the MSAC directory, per-stream byte rounding, and padding.
 Both implementations remain Python references; these timings do not establish
 the throughput of a compiled multistream coder.
 
+## Text compression
+
+`main.py --encoding AC_MULTISTREAM` now assigns one independent arithmetic
+stream to each token batch. The versioned GMMS file stores model settings, one
+seed token per batch, the token bitmap, and the MSAC coder payload. The model
+or n-gram checkpoint remains an external dependency. The JSON run result
+records `saved_archive_size_bytes`, which includes the file metadata and seeds.
+The older AC and ANS file formats remain readable. Standard decompression is
+supported; speculative decompression is not enabled for this mode.
+
 Next slices will add a matched compiled encoder and decoder, then engine-specific
 handoff experiments. Each performance condition must preserve its resolved
 environment, archive, exact round-trip result, and separate encode/decode wall

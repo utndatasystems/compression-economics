@@ -174,8 +174,8 @@ class NGramTokenPredictor:
     """Token bigram adapter implementing the legacy predictor interface."""
 
     def __init__(self, args, bitmap_data):
-        if args.encoding not in {"AC", "ANS"}:
-            raise ValueError("the ngram engine supports AC or ANS coding")
+        if args.encoding not in {"AC", "ANS", "AC_MULTISTREAM"}:
+            raise ValueError("the ngram engine supports AC, AC_MULTISTREAM, or ANS coding")
         if bitmap_data is None:
             raise ValueError("the ngram engine requires a global token bitmap")
         self.args = args

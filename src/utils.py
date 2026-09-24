@@ -8,6 +8,7 @@ This module provides:
 """
 
 import struct
+import zlib
 import json
 import os
 import tarfile
@@ -63,6 +64,65 @@ def bytes_to_bits(byte_data, padding):
     bit_str = bit_str[:-padding] if padding > 0 else bit_str
     return [int(b) for b in bit_str]
 
+_MULTISTREAM_MAGIC = b"GMMS"
+_MULTISTREAM_VERSION = 1
+_MULTISTREAM_HEADER = struct.Struct(">4sBIIIQ")
+_MULTISTREAM_CHECKSUM = struct.Struct(">I")
+
+
+def _save_multistream_global_mask_file(path, header, seeds, payload, bitmap):
+    """Store the text context and MSAC payload with portable field widths."""
+    if not isinstance(payload, bytes) or not payload.startswith(b"MSAC"):
+        raise ValueError("AC_MULTISTREAM requires an MSAC byte payload")
+    if len(seeds) != header["batch_size"]:
+        raise ValueError("seed count does not match batch size")
+    header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
+    seed_bytes = b"".join(struct.pack(">I", int(seed)) for seed in seeds)
+    body = header_bytes + seed_bytes + bitmap + payload
+    prefix = _MULTISTREAM_HEADER.pack(
+        _MULTISTREAM_MAGIC, _MULTISTREAM_VERSION, len(header_bytes),
+        len(seeds), len(bitmap), len(payload),
+    )
+    with open(path, "wb") as handle:
+        handle.write(prefix)
+        handle.write(body)
+        handle.write(_MULTISTREAM_CHECKSUM.pack(zlib.crc32(body)))
+
+
+def _load_multistream_global_mask_file(path):
+    """Reject truncated or changed files before exposing any decoded fields."""
+    data = Path(path).read_bytes()
+    minimum = _MULTISTREAM_HEADER.size + _MULTISTREAM_CHECKSUM.size
+    if len(data) < minimum:
+        raise ValueError("truncated multistream text archive")
+    magic, version, header_size, seed_count, bitmap_size, payload_size = (
+        _MULTISTREAM_HEADER.unpack_from(data)
+    )
+    if magic != _MULTISTREAM_MAGIC or version != _MULTISTREAM_VERSION:
+        raise ValueError("unsupported multistream text archive")
+    expected = minimum + header_size + seed_count * 4 + bitmap_size + payload_size
+    if len(data) != expected:
+        raise ValueError("multistream text archive length mismatch")
+    body = data[_MULTISTREAM_HEADER.size:-_MULTISTREAM_CHECKSUM.size]
+    (checksum,) = _MULTISTREAM_CHECKSUM.unpack_from(data, len(data) - 4)
+    if zlib.crc32(body) != checksum:
+        raise ValueError("multistream text archive checksum mismatch")
+    offset = _MULTISTREAM_HEADER.size
+    header = json.loads(data[offset:offset + header_size].decode("utf-8"))
+    offset += header_size
+    if header.get("encoding") != "AC_MULTISTREAM" or header.get("batch_size") != seed_count:
+        raise ValueError("multistream text archive settings do not match its directory")
+    seeds = list(struct.unpack_from(f">{seed_count}I", data, offset))
+    offset += seed_count * 4
+    bitmap = data[offset:offset + bitmap_size]
+    offset += bitmap_size
+    payload = data[offset:offset + payload_size]
+    from src.multistream_ac import MultistreamACDecoder
+    if MultistreamACDecoder(payload).stream_count != seed_count:
+        raise ValueError("MSAC stream count does not match seed count")
+    return header, seeds, payload, bitmap
+
+
 def save_global_mask_file(
     args,
     first_token,
@@ -72,16 +132,14 @@ def save_global_mask_file(
     """
     Save global-mask compression artifacts to a binary file.
 
-    File layout (binary):
-        1) JSON header line (UTF-8) + newline
-        2) first_token values (batch_size * uint32)
-        3) bit_string bytes length (uint32), padding (uint8), bit_string bytes
-        4) bitmask_data length (uint32), bitmask_data bytes
+    Legacy AC/ANS files use a JSON line, native-endian seed IDs, packed bits,
+    and the bitmap. AC_MULTISTREAM files use the versioned GMMS layout with
+    big-endian lengths and seeds, the bitmap, an MSAC payload, and a checksum.
 
     Args:
         args (argparse.Namespace): Experiment configuration with output_path.
         first_token (list[int]): First token for each batch.
-        bit_string (list[int]): Bit list to be packed and stored.
+        bit_string (list[int] | bytes): Bits for legacy coders or MSAC bytes.
         bitmask_data (bytes): Serialized bitmap describing allowed vocabulary.
     """
     file_path = args.output_path
@@ -110,6 +168,11 @@ def save_global_mask_file(
         "ngram_model_sha256": getattr(args, "ngram_model_sha256", None),
         "ngram_order": getattr(args, "ngram_order", None),
     }
+    if header["encoding"] == "AC_MULTISTREAM":
+        _save_multistream_global_mask_file(
+            file_path, header, first_token, bit_string, bitmask_data
+        )
+        return
     with open(file_path, "wb") as f:
         # Write header as JSON
         header_str = json.dumps(header) + "\n"
@@ -137,26 +200,34 @@ def load_global_mask_file(args):
         args (argparse.Namespace): Experiment configuration with input_path.
 
     Returns:
-        header, first_token, bit_string(list[int]), bitmask_data
+        Updated args, seed tokens, coded bits or MSAC bytes, and bitmap.
     """
     file_path = args.input_path
-    with open(file_path, "rb") as f:
-        # Header line precedes the binary payload.
-        header_line = f.readline().decode("utf-8").strip()
-        header = json.loads(header_line)
+    with open(file_path, "rb") as probe:
+        is_multistream = probe.read(4) == _MULTISTREAM_MAGIC
+    if is_multistream:
+        header, first_token, bit_string, bitmask_data = (
+            _load_multistream_global_mask_file(file_path)
+        )
+    else:
+        with open(file_path, "rb") as f:
+            # Header line precedes the binary payload.
+            header_line = f.readline().decode("utf-8").strip()
+            header = json.loads(header_line)
 
-        # Read batch start tokens (uint32).
-        first_token = [struct.unpack("I", f.read(4))[0] for _ in range(header["batch_size"])]
+            # Read batch start tokens (uint32).
+            first_token = [struct.unpack("I", f.read(4))[0] for _ in range(header["batch_size"])]
 
-        # Read bit_string
-        bit_len = struct.unpack("I", f.read(4))[0]
-        padding = struct.unpack("B", f.read(1))[0]
-        bit_bytes = f.read(bit_len)
-        bit_string = bytes_to_bits(bit_bytes, padding)
+            # Read bit_string
+            bit_len = struct.unpack("I", f.read(4))[0]
+            padding = struct.unpack("B", f.read(1))[0]
+            bit_bytes = f.read(bit_len)
+            bit_string = bytes_to_bits(bit_bytes, padding)
 
-        # Read bitmask_data
-        bitmask_len = struct.unpack("I", f.read(4))[0]
-        bitmask_data = f.read(bitmask_len)
+            # Read bitmask_data
+            bitmask_len = struct.unpack("I", f.read(4))[0]
+            bitmask_data = f.read(bitmask_len)
+
 
     # Update args with loaded header values (ensures decompression settings match).
     args.model_name = header["model_name"]

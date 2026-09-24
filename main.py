@@ -132,24 +132,24 @@ def main():
             }
             # TODO: add model dtype information
 
-            # ========================
-            # Save results (JSON stats)
-            # ========================
-            results_db = load_results(RESULTS_FILE)
-            exp_key = make_key(args)
-            if exp_key not in results_db:
-                results_db[exp_key] = {}
-            results_db[exp_key]["compression"] = comp_stats
-            save_results(results_db, RESULTS_FILE) #add 
-
-            # ========================
-            # Save binary compression file
-            # ========================
+            # Save the file before recording its measured size. Unlike the
+            # legacy payload estimate, this includes seeds, bitmap, and framing.
             save_global_mask_file(
                 args,
                 first_token=first_token,
                 bit_string=bit_string,
                 bitmask_data=bitmask_data)
+            comp_stats["saved_archive_size_bytes"] = Path(args.output_path).stat().st_size
+            comp_stats["saved_archive_compression_factor"] = (
+                comp_stats["original_size_bytes"] / comp_stats["saved_archive_size_bytes"]
+            )
+
+            results_db = load_results(RESULTS_FILE)
+            exp_key = make_key(args)
+            if exp_key not in results_db:
+                results_db[exp_key] = {}
+            results_db[exp_key]["compression"] = comp_stats
+            save_results(results_db, RESULTS_FILE)
 
             # ========================
             # Output compression results

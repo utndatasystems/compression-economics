@@ -6,6 +6,7 @@ import numpy as np
 import torch
 
 from src.encoding import LLMCompressor, choose_pmatic_r
+from src.utils import load_global_mask_file, save_global_mask_file
 from src.global_mask_compressor import (
     run_global_mask_compression,
     run_global_mask_decompression,
@@ -192,8 +193,12 @@ class _CharacterTokenizer:
         return bytes(token_ids).decode("utf-8")
 
 
-@pytest.mark.parametrize("encoding", ["AC", "ANS"])
-def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch, encoding):
+@pytest.mark.parametrize("token_count,encoding", [
+    (2, "AC"), (2, "AC_MULTISTREAM"),
+    (7, "AC"), (7, "ANS"), (7, "AC_MULTISTREAM"),
+    (8, "AC"), (8, "ANS"), (8, "AC_MULTISTREAM"),
+])
+def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch, encoding, token_count):
     import src.prediction as prediction_module
 
     monkeypatch.setattr(
@@ -212,12 +217,13 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
         text_input=None,
         output_path=str(tmp_path / "stream.bin"),
         model_name="character-tokenizer",
+        lora_path=None,
         is_mamba=False,
         is_seq2seq=False,
         engine="ngram",
         encoding=encoding,
         reduce_tokens=True,
-        first_n_tokens=8,
+        first_n_tokens=token_count,
         batch_size=2,
         context_length=8,
         retain_tokens=2,
@@ -230,23 +236,42 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
     first_tokens, bits, bitmap, compression_stats, args = run_global_mask_compression(args)
     assert checkpoint_path.exists()
     assert len(args.ngram_model_sha256) == 64
-    assert compression_stats["input_symbols_count"] == 8
-    assert compression_stats["model_input_tokens_count"] == 6
+    assert compression_stats["input_symbols_count"] == token_count
+    assert compression_stats["model_input_tokens_count"] == 2 * ((token_count + 1) // 2 - 1)
     assert compression_stats["throughput_input_symbols_per_sec"] > 0
-    assert compression_stats["throughput_model_input_tokens_per_sec"] > 0
+    assert compression_stats["throughput_model_input_tokens_per_sec"] >= 0
+    if token_count == 2:
+        assert compression_stats["inference_throughput_model_input_tokens_per_sec"] == 0
     assert (
         compression_stats["throughput_tokens_per_sec"]
         == compression_stats["throughput_model_input_tokens_per_sec"]
     )
 
+    save_global_mask_file(args, first_tokens, bits, bitmap)
+    if encoding == "AC_MULTISTREAM":
+        archive = (tmp_path / "stream.bin").read_bytes()
+        assert archive.startswith(b"GMMS")
+        assert isinstance(bits, bytes)
+        for damaged in (
+            archive[:-1], archive + b"x",
+            archive[:-8] + bytes([archive[-8] ^ 1]) + archive[-7:],
+        ):
+            damaged_path = tmp_path / "damaged.bin"
+            damaged_path.write_bytes(damaged)
+            with pytest.raises(ValueError):
+                load_global_mask_file(SimpleNamespace(input_path=str(damaged_path)))
     args.mode = "decompress"
+    args.input_path = args.output_path
+    args, first_tokens, bits, bitmap = load_global_mask_file(args)
     reconstructed, text, decompression_stats = run_global_mask_decompression(
         args, first_tokens, bits, bitmap
     )
 
-    assert reconstructed == list(b"abbaabba")
-    assert text == "abbaabba"
-    assert decompression_stats["input_symbols_count"] == 8
-    assert decompression_stats["model_input_tokens_count"] == 6
+    assert reconstructed == list(b"abbaabba"[:token_count])
+    assert text == "abbaabba"[:token_count]
+    assert decompression_stats["input_symbols_count"] == token_count
+    assert decompression_stats["model_input_tokens_count"] == 2 * ((token_count + 1) // 2 - 1)
     assert decompression_stats["throughput_input_symbols_per_sec"] > 0
-    assert decompression_stats["throughput_model_input_tokens_per_sec"] > 0
+    assert decompression_stats["throughput_model_input_tokens_per_sec"] >= 0
+    if token_count == 2:
+        assert decompression_stats["inference_throughput_model_input_tokens_per_sec"] == 0
