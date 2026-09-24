@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alphabet-size", type=int, default=64)
     parser.add_argument("--coder", choices=CODERS, action="append")
     parser.add_argument("--frequency-total", type=int, default=262144)
+    parser.add_argument("--ac-streams", type=int, default=4)
     parser.add_argument("--ans-block-size", type=int, default=256)
     parser.add_argument("--ans-lanes", type=int, default=4)
     parser.add_argument("--pmatic-delta", type=float, default=1e-3)
@@ -66,7 +67,7 @@ def main() -> None:
     for coder in coders:
         print(f"Benchmarking {coder} on trace {trace.sha256[:12]}...", flush=True)
         row = benchmark_coder(
-            trace, coder, total=args.frequency_total,
+            trace, coder, total=args.frequency_total, ac_streams=args.ac_streams,
             ans_block_size=args.ans_block_size, ans_lanes=args.ans_lanes,
             pmatic_delta=args.pmatic_delta, perturbation_scales=scales,
             seed=args.seed,

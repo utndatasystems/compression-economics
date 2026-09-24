@@ -27,10 +27,11 @@ from src.encoding import (
     build_huffman_code,
 )
 from src.encoding_utils import build_cumul, choose_pmatic_r, make_safe_decoder_probs
+from src.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 
 
 REFERENCE_BACKEND = "python_reference"
-CODERS = ("AC", "ANS", "PMATIC", "HUFFMAN_RANK", "BITPACKED_RANK")
+CODERS = ("AC", "AC_MULTISTREAM", "ANS", "PMATIC", "HUFFMAN_RANK", "BITPACKED_RANK")
 _BITPACK_HEADER = struct.Struct(">4sIBQ")
 _HUFFMAN_HEADER = struct.Struct(">4sIIQ")
 _HUFFMAN_ENTRY = struct.Struct(">IH")
@@ -289,6 +290,48 @@ def _with_ans_lanes(lanes: int, function: Callable[[], object]):
         RansBlockDecoder.LANES = decoder_lanes
 
 
+def _stream_slices(symbol_count: int, stream_count: int) -> tuple[slice, ...]:
+    if not 1 <= stream_count <= symbol_count:
+        raise ValueError("ac_streams must be between 1 and the symbol count")
+    width, extra = divmod(symbol_count, stream_count)
+    boundaries = [0]
+    for stream_id in range(stream_count):
+        boundaries.append(boundaries[-1] + width + (stream_id < extra))
+    return tuple(slice(start, end) for start, end in zip(boundaries, boundaries[1:]))
+
+
+def encode_multistream_probability_stream(
+    trace: ProbabilityTrace, *, total: int, stream_count: int
+) -> EncodedStream:
+    encoder = MultistreamACEncoder(stream_count, total=total)
+    for stream_id, span in enumerate(_stream_slices(trace.symbol_count, stream_count)):
+        for symbol, probabilities in zip(trace.symbols[span], trace.probabilities[span]):
+            encoder.encode(stream_id, int(symbol), probabilities)
+    archive = encoder.finish()
+    directory = MultistreamACDecoder(archive)
+    payload_bits = directory.payload_bits
+    payload_bytes = sum(math.ceil(bits / 8) for bits in directory.bit_counts)
+    return EncodedStream(
+        bits=(), archive=archive, payload_bits=payload_bits,
+        framing_bytes=directory.framing_bytes,
+        padding_bits=payload_bytes * 8 - payload_bits,
+    )
+
+
+def decode_multistream_probability_stream(
+    stream: EncodedStream, probabilities: np.ndarray
+) -> np.ndarray:
+    decoder = MultistreamACDecoder(stream.archive)
+    decoded = np.empty(len(probabilities), dtype=np.int64)
+    for stream_id, span in enumerate(_stream_slices(len(probabilities), decoder.stream_count)):
+        if decoder.symbol_counts[stream_id] != span.stop - span.start:
+            raise ValueError("MSAC stream symbol counts do not match the trace partition")
+        for index in range(span.start, span.stop):
+            decoded[index] = decoder.decode(stream_id, probabilities[index])
+    decoder.assert_complete()
+    return decoded
+
+
 def encode_probability_stream(
     trace: ProbabilityTrace, coder: str, *, total: int, ans_block_size: int,
     ans_lanes: int, pmatic_delta: float,
@@ -385,6 +428,8 @@ def _decode_for_coder(
     coder: str, stream: EncodedStream, probabilities: np.ndarray, *, total: int,
     alphabet_size: int, ans_lanes: int, pmatic_delta: float,
 ) -> np.ndarray:
+    if coder == "AC_MULTISTREAM":
+        return decode_multistream_probability_stream(stream, probabilities)
     if coder == "BITPACKED_RANK":
         return decode_bitpacked_ranks(stream, probabilities)
     if coder == "HUFFMAN_RANK":
@@ -397,6 +442,7 @@ def _decode_for_coder(
 
 def benchmark_coder(
     trace: ProbabilityTrace, coder: str, *, total: int = 262144,
+    ac_streams: int = 4,
     ans_block_size: int = 256, ans_lanes: int = 4,
     pmatic_delta: float = 1e-3, perturbation_scales: Iterable[float] = (),
     seed: int = 2027,
@@ -407,7 +453,11 @@ def benchmark_coder(
     if total <= trace.alphabet_size or total & (total - 1):
         raise ValueError("frequency total must be a power of two larger than the alphabet")
 
-    if coder == "BITPACKED_RANK":
+    if coder == "AC_MULTISTREAM":
+        encode_function = lambda: encode_multistream_probability_stream(
+            trace, total=total, stream_count=ac_streams
+        )
+    elif coder == "BITPACKED_RANK":
         encode_function = lambda: encode_bitpacked_ranks(trace)
     elif coder == "HUFFMAN_RANK":
         encode_function = lambda: encode_huffman_ranks(trace)
@@ -460,8 +510,10 @@ def benchmark_coder(
             "decoder_error": error_name,
         })
 
-    probability_semantics = coder in {"AC", "ANS", "PMATIC"}
+    probability_semantics = coder in {"AC", "AC_MULTISTREAM", "ANS", "PMATIC"}
     parameters = {"frequency_total": total}
+    if coder == "AC_MULTISTREAM":
+        parameters["streams"] = ac_streams
     if coder == "ANS":
         parameters.update(block_symbols=ans_block_size, lanes=ans_lanes)
     if coder == "PMATIC":
@@ -483,9 +535,9 @@ def benchmark_coder(
         "alphabet_size": trace.alphabet_size,
         "ideal_cross_entropy_bits": ideal_cross_entropy_bits(trace),
         "quantized_distribution_cross_entropy_bits": quantized_cross_entropy_bits(trace, total),
-        "quantized_cross_entropy_is_coder_objective": coder in {"AC", "ANS"},
+        "quantized_cross_entropy_is_coder_objective": coder in {"AC", "AC_MULTISTREAM", "ANS"},
         "payload_bits": stream.payload_bits,
-        "payload_bytes": math.ceil(stream.payload_bits / 8),
+        "payload_bytes": stream.archive_bytes - stream.framing_bytes - stream.codebook_bytes,
         "framing_bytes": stream.framing_bytes,
         "codebook_bytes": stream.codebook_bytes,
         "padding_bits": stream.padding_bits,

@@ -17,6 +17,13 @@ they code the predictor probability distribution as efficiently as AC or ANS.
 The Huffman archive contains a canonical serialized codebook, so its codebook
 charge is measured rather than estimated.
 
+`AC_MULTISTREAM` partitions the same trace into contiguous streams with
+independent arithmetic states. It uses the same fixed-total `build_cumul`
+quantizer as `AC`. Its result charges the portable MSAC directory and byte
+padding for each stream. Select the stream count with `--ac-streams` (default:
+four). This trace benchmark excludes the model-context seeds that an end-to-end
+archive would also need to store.
+
 For a self-contained smoke benchmark:
 
 ```bash

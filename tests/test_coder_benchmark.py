@@ -85,6 +85,18 @@ def test_ans_lane_setting_is_executable_and_recorded(trace, lanes):
     assert result["framing_bytes"] > 0
 
 
+@pytest.mark.parametrize("streams", [1, 4, 7])
+def test_multistream_ac_charges_each_stream_and_records_partition(trace, streams):
+    result = benchmark_coder(trace, "AC_MULTISTREAM", ac_streams=streams)
+
+    assert result["parameters"]["streams"] == streams
+    assert result["exact_roundtrip_valid"]
+    assert result["archive_bytes"] == result["framing_bytes"] + result["payload_bytes"]
+    assert result["payload_bytes"] * 8 == result["payload_bits"] + result["padding_bits"]
+    if streams == 1:
+        assert result["payload_bits"] == benchmark_coder(trace, "AC")["payload_bits"]
+
+
 def test_pmatic_runs_safe_numerical_reproducibility_scenario(trace):
     result = benchmark_coder(trace, "PMATIC", pmatic_delta=0.01)
     safe = next(
