@@ -1,0 +1,3 @@
+[submodule "research/papers/coding_survey/manuscript"]
+	path = research/papers/coding_survey/manuscript
+	url = git@github.com:luisaneubauer/Latex---Coding-for-LLM-based-Compression-Survey.git

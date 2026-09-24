@@ -23,6 +23,8 @@ next-token probabilities are encoded using arithmetic coding, range asymmetric n
 - `research/evaluation/`: shared result loaders, plots, notebooks, and reference data.
 - `tests/`: automated tests for maintained reusable code.
 - `research/papers/neurips_2026/`: manuscript, supplementary artifact metadata, experiments, evaluation, and tests for the current paper.
+- `research/papers/coding_survey/`: coding survey notes and a submodule containing
+  the separate Overleaf LaTeX project.
 - `research/papers/cidr_2027/`: configurations, evaluation code, and manuscript outputs
   for the row-versus-column benchmark program.
 - `docs/cidr_2027_experiment_plan.md`: inventory, remaining work, accounting
