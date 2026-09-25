@@ -111,3 +111,18 @@ def test_pmatic_runs_safe_numerical_reproducibility_scenario(trace):
 def test_invalid_trace_is_rejected():
     with pytest.raises(ValueError, match="sum to one"):
         ProbabilityTrace(np.asarray([[0.2, 0.2]]), np.asarray([0]))
+
+
+def test_parallel_benchmark_records_backend_and_roundtrip(trace):
+    pytest.importorskip("numba")
+    python = benchmark_coder(trace, "AC_MULTISTREAM", ac_streams=4)
+    parallel = benchmark_coder(
+        trace, "AC_MULTISTREAM", ac_streams=4,
+        ac_backend="numba_parallel", ac_threads=2,
+    )
+    assert parallel["exact_roundtrip_valid"]
+    assert parallel["payload_bits"] == python["payload_bits"]
+    assert parallel["archive_bytes"] == python["archive_bytes"]
+    assert parallel["parameters"]["ac_threads"] == 2
+    assert parallel["backend"] == "numba_parallel"
+    assert parallel["range_encode_seconds"] > 0

@@ -28,6 +28,7 @@ from src.encoding import (
 )
 from src.encoding_utils import build_cumul, choose_pmatic_r, make_safe_decoder_probs
 from src.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
+from src.parallel_ac import prepare_parallel_encoder
 
 
 REFERENCE_BACKEND = "python_reference"
@@ -301,13 +302,18 @@ def _stream_slices(symbol_count: int, stream_count: int) -> tuple[slice, ...]:
 
 
 def encode_multistream_probability_stream(
-    trace: ProbabilityTrace, *, total: int, stream_count: int
+    trace: ProbabilityTrace, *, total: int, stream_count: int,
+    backend: str = "python", threads: int | None = None, timings: dict | None = None,
 ) -> EncodedStream:
-    encoder = MultistreamACEncoder(stream_count, total=total)
+    encoder = MultistreamACEncoder(stream_count, total=total, backend=backend, threads=threads)
     for stream_id, span in enumerate(_stream_slices(trace.symbol_count, stream_count)):
         for symbol, probabilities in zip(trace.symbols[span], trace.probabilities[span]):
             encoder.encode(stream_id, int(symbol), probabilities)
     archive = encoder.finish()
+    if timings is not None:
+        timings.update(quantize_seconds=encoder.quantize_seconds,
+                       range_encode_seconds=encoder.range_encode_seconds,
+                       range_encode_workers=encoder.threads)
     directory = MultistreamACDecoder(archive)
     payload_bits = directory.payload_bits
     payload_bytes = sum(math.ceil(bits / 8) for bits in directory.bit_counts)
@@ -442,7 +448,7 @@ def _decode_for_coder(
 
 def benchmark_coder(
     trace: ProbabilityTrace, coder: str, *, total: int = 262144,
-    ac_streams: int = 4,
+    ac_streams: int = 4, ac_backend: str = "python", ac_threads: int | None = None,
     ans_block_size: int = 256, ans_lanes: int = 4,
     pmatic_delta: float = 1e-3, perturbation_scales: Iterable[float] = (),
     seed: int = 2027,
@@ -453,9 +459,13 @@ def benchmark_coder(
     if total <= trace.alphabet_size or total & (total - 1):
         raise ValueError("frequency total must be a power of two larger than the alphabet")
 
+    ac_timings = {}
+    if coder == "AC_MULTISTREAM" and ac_backend == "numba_parallel":
+        prepare_parallel_encoder(32, total)  # Keep first-use JIT compilation out of timing.
     if coder == "AC_MULTISTREAM":
         encode_function = lambda: encode_multistream_probability_stream(
-            trace, total=total, stream_count=ac_streams
+            trace, total=total, stream_count=ac_streams, backend=ac_backend,
+            threads=ac_threads, timings=ac_timings,
         )
     elif coder == "BITPACKED_RANK":
         encode_function = lambda: encode_bitpacked_ranks(trace)
@@ -514,16 +524,21 @@ def benchmark_coder(
     parameters = {"frequency_total": total}
     if coder == "AC_MULTISTREAM":
         parameters["streams"] = ac_streams
+        parameters["ac_backend"] = ac_backend
+        parameters["ac_threads"] = ac_timings["range_encode_workers"]
     if coder == "ANS":
         parameters.update(block_symbols=ans_block_size, lanes=ans_lanes)
     if coder == "PMATIC":
         parameters.update(delta=pmatic_delta, r=choose_pmatic_r(pmatic_delta))
     return {
         "coder": coder,
-        "backend": REFERENCE_BACKEND,
-        "implementation_language": "python",
+        "backend": ac_backend if coder == "AC_MULTISTREAM" else REFERENCE_BACKEND,
+        "implementation_language": "python+numba" if coder == "AC_MULTISTREAM" and ac_backend == "numba_parallel" else "python",
         "throughput_claim_eligible": False,
         "throughput_warning": (
+            "End-to-end timing includes Python quantization, archive construction, and "
+            "memory profiling; range_encode_seconds isolates the compiled worker phase."
+            if coder == "AC_MULTISTREAM" and ac_backend == "numba_parallel" else
             "Reference-Python result; interpreter and allocation overhead dominate. "
             "Do not use for native-coder throughput claims."
         ),
@@ -545,6 +560,9 @@ def benchmark_coder(
         "helper_symbols": stream.helper_symbols,
         "helper_model_bits": stream.helper_model_bits,
         "encode_seconds": encode_seconds,
+        "quantize_seconds": ac_timings.get("quantize_seconds"),
+        "range_encode_seconds": ac_timings.get("range_encode_seconds"),
+        "range_encode_symbols_per_second": (trace.symbol_count / ac_timings["range_encode_seconds"]) if ac_timings else None,
         "decode_seconds": decode_seconds,
         "encode_symbols_per_second": trace.symbol_count / encode_seconds,
         "decode_symbols_per_second": trace.symbol_count / decode_seconds,
