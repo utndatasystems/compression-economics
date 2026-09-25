@@ -53,8 +53,6 @@ for relative_path in \
   src/adversarial/__init__.py \
   src/adversarial/compression.py \
   src/adversarial/generation.py \
-  src/encoding.py \
-  src/encoding_utils.py \
   src/coding/__init__.py \
   src/coding/encoding.py \
   src/coding/encoding_utils.py \

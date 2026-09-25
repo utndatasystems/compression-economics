@@ -6,7 +6,7 @@ import random
 import numpy as np
 import pytest
 
-from src.encoding import *
+from src.coding.encoding import *
 
 
 @pytest.fixture(autouse=True)

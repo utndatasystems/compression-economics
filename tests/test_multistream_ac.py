@@ -5,8 +5,8 @@ import struct
 import numpy as np
 import pytest
 
-from src.encoding import LLMCompressor
-from src.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
+from src.coding.encoding import LLMCompressor
+from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 
 
 def test_independent_streams_roundtrip_from_persisted_bytes(tmp_path):
@@ -69,7 +69,7 @@ def test_corrupt_or_incomplete_archive_is_rejected():
         decoder.assert_complete()
 
 def test_float32_probabilities_match_single_stream_ac():
-    from src.encoding_utils import build_cumul
+    from src.coding.encoding_utils import build_cumul
 
     rng = np.random.default_rng(17)
     row = None

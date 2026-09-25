@@ -5,7 +5,7 @@ import pytest
 import numpy as np
 import torch
 
-from src.encoding import LLMCompressor, choose_pmatic_r
+from src.coding.encoding import LLMCompressor, choose_pmatic_r
 from src.utils import load_global_mask_file, save_global_mask_file
 from src.global_mask_compressor import (
     run_global_mask_compression,

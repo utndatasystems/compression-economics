@@ -5,7 +5,7 @@ from string import printable
 from tqdm import tqdm
 from typing import Optional, Dict, Any, List
 
-from src.encoding import *
+from src.coding.encoding import *
 
 @pytest.fixture(scope="session")
 def alphabet_size():
