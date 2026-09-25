@@ -117,7 +117,7 @@ def _load_multistream_global_mask_file(path):
     bitmap = data[offset:offset + bitmap_size]
     offset += bitmap_size
     payload = data[offset:offset + payload_size]
-    from src.multistream_ac import MultistreamACDecoder
+    from src.coding.multistream_ac import MultistreamACDecoder
     if MultistreamACDecoder(payload).stream_count != seed_count:
         raise ValueError("MSAC stream count does not match seed count")
     return header, seeds, payload, bitmap

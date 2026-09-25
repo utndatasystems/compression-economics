@@ -13,8 +13,8 @@ bitmap to reconstruct tokens from the bitstream.
 
 import sys
 
-from src.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
-from src.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
+from src.coding.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
+from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 from src.prediction import NGramTokenPredictor, TokenDataPreparer, TokenPredictor
 from itertools import chain
 from collections import defaultdict

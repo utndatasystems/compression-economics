@@ -11,7 +11,7 @@ import numpy as np
 import torch
 
 from src.models import NextSymbolPredictor
-from src.encoding import LLMCompressor, LLMDecompressor
+from src.coding.encoding import LLMCompressor, LLMDecompressor
 
 
 @dataclass(frozen=True)

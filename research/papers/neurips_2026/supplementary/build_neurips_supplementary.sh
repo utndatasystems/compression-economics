@@ -55,6 +55,9 @@ for relative_path in \
   src/adversarial/generation.py \
   src/encoding.py \
   src/encoding_utils.py \
+  src/coding/__init__.py \
+  src/coding/encoding.py \
+  src/coding/encoding_utils.py \
   src/models.py \
   src/prediction.py \
   src/predictors.py; do

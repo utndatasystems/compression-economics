@@ -16,7 +16,7 @@ The repository already provides:
 - Hugging Face tokenization and causal predictors, including a working default
   for `Qwen/Qwen2.5-0.5B`, in `src/prediction.py`.
 - Arithmetic coding, PMATIC, and rank-based bit-packed/Huffman paths in
-  `src/encoding.py` and `src/global_mask_compressor.py`.
+  `src/coding/encoding.py` and `src/global_mask_compressor.py`.
 - Contiguous multistream token processing, first-token decoder seeds, KV-cache
   support, compression/decompression timing, and a serialized global-mask
   format.

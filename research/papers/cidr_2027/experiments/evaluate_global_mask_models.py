@@ -21,7 +21,7 @@ import torch
 from pyroaring import BitMap
 from transformers import AutoTokenizer
 
-from src.encoding import LLMCompressor, LLMDecompressor
+from src.coding.encoding import LLMCompressor, LLMDecompressor
 from src.models import NGramPredictor
 from src.predictors import (
     build_predictor, expand_context_specs, survey_model_specs,

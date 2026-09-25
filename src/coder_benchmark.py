@@ -19,16 +19,16 @@ from typing import Callable, Iterable
 
 import numpy as np
 
-from src.encoding import (
+from src.coding.encoding import (
     LLMCompressor,
     LLMDecompressor,
     RansBlockDecoder,
     RansBlockEncoder,
     build_huffman_code,
 )
-from src.encoding_utils import build_cumul, choose_pmatic_r, make_safe_decoder_probs
-from src.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
-from src.parallel_ac import prepare_parallel_encoder
+from src.coding.encoding_utils import build_cumul, choose_pmatic_r, make_safe_decoder_probs
+from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
+from src.coding.parallel_ac import prepare_parallel_encoder
 
 
 REFERENCE_BACKEND = "python_reference"

@@ -22,7 +22,7 @@ import zstandard
 from tqdm.auto import tqdm
 
 from src.adversarial.generation import AdversarialGeneration, normalize_candidate_ids
-from src.encoding import LLMCompressor, LLMDecompressor
+from src.coding.encoding import LLMCompressor, LLMDecompressor
 
 
 CandidateValidator = Callable[[int, Sequence[int], int], bool]

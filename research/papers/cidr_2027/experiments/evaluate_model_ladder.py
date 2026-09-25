@@ -21,7 +21,7 @@ import torch
 from pyroaring import BitMap
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from src.encoding import LLMCompressor, LLMDecompressor
+from src.coding.encoding import LLMCompressor, LLMDecompressor
 from src.model_ladder import DEFAULT_CATALOG, ModelLadderEntry, load_model_ladder
 from src.result_schema import (
     SCHEMA_NAME, SCHEMA_VERSION, CoderSpec, DatasetSpec,

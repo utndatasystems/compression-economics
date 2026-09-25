@@ -21,7 +21,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from research.papers.neurips_2026.experiments.generate_adversarial import make_predictor_args
 from src.adversarial.compression import _full_vocab_logits
-from src.encoding import ArithmeticEncoder, BitOutputStream
+from src.coding.encoding import ArithmeticEncoder, BitOutputStream
 from src.prediction import TokenPredictor
 
 ARTIFACT_ROOT = REPO_ROOT / "artifacts/papers/neurips-2026"
@@ -77,7 +77,7 @@ def decode_size(tokenizer, token_ids: list[int]) -> int:
 
 def quantize_frequencies(probabilities: np.ndarray, total: int,
                          descending_indices: np.ndarray) -> np.ndarray:
-    """Match src.encoding_utils.build_cumul while reusing the probability sort."""
+    """Match src.coding.encoding_utils.build_cumul while reusing the probability sort."""
     alphabet_size = probabilities.size
     if total < alphabet_size:
         raise ValueError(f"Frequency total {total} is below alphabet size {alphabet_size}")
