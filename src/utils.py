@@ -169,6 +169,8 @@ def save_global_mask_file(
         "ngram_order": getattr(args, "ngram_order", None),
     }
     if header["encoding"] == "AC_MULTISTREAM":
+        header["ac_backend"] = getattr(args, "ac_backend", "python")
+        header["ac_threads"] = getattr(args, "ac_threads", None)
         _save_multistream_global_mask_file(
             file_path, header, first_token, bit_string, bitmask_data
         )
@@ -241,6 +243,8 @@ def load_global_mask_file(args):
     args.use_kv_cache = header["use_kv_cache"]
     args.batch_size = header["batch_size"]
     args.encoding = header.get("encoding", args.encoding)
+    args.ac_backend = header.get("ac_backend", "python")
+    args.ac_threads = header.get("ac_threads")
     args.reduce_tokens = header.get("reduce_tokens", args.reduce_tokens)
     args.engine = header.get("engine", args.engine)
     args.lora_path = header.get("lora_path", args.lora_path)

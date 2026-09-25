@@ -11,14 +11,18 @@ existing single-stream arithmetic coder.
 from __future__ import annotations
 
 import math
+import os
 import struct
+import time
 import zlib
+from concurrent.futures import ThreadPoolExecutor
 from typing import Sequence
 
 import numpy as np
 
 from src.encoding import ArithmeticDecoder, ArithmeticEncoder, BitInputStream, BitOutputStream
 from src.encoding_utils import build_cumul
+from src.parallel_ac import encode_intervals_packed, prepare_parallel_encoder
 
 
 MAGIC = b"MSAC"
@@ -52,41 +56,80 @@ def _cumulative(probabilities: Sequence[float] | np.ndarray, total: int) -> np.n
 
 
 class MultistreamACEncoder:
-    """Incrementally encode symbols into separate AC states."""
+    """Encode independent streams with Python or GIL-free Numba workers."""
 
-    def __init__(self, stream_count: int, *, total: int = 262144, state_bits: int = 32):
+    def __init__(self, stream_count: int, *, total: int = 262144, state_bits: int = 32,
+                 backend: str = "python", threads: int | None = None):
         _validate_settings(stream_count, state_bits, total)
+        if backend not in {"python", "numba_parallel"}:
+            raise ValueError("backend must be python or numba_parallel")
+        if threads is not None and threads < 1:
+            raise ValueError("threads must be positive")
+        if backend == "numba_parallel":
+            prepare_parallel_encoder(state_bits, total)
         self.stream_count = stream_count
         self.total = total
         self.state_bits = state_bits
-        self._outputs = [BitOutputStream() for _ in range(stream_count)]
+        self.backend = backend
+        self.threads = min(stream_count, threads or os.cpu_count() or 1) if backend == "numba_parallel" else 1
+        self._outputs = [BitOutputStream() for _ in range(stream_count)] if backend == "python" else []
         self._encoders = [ArithmeticEncoder(state_bits, out) for out in self._outputs]
+        self._lows = [[] for _ in range(stream_count)] if backend == "numba_parallel" else []
+        self._highs = [[] for _ in range(stream_count)] if backend == "numba_parallel" else []
         self._counts = [0] * stream_count
         self._finished = False
+        self.quantize_seconds = 0.0
+        self.range_encode_seconds = 0.0
 
     def encode(self, stream_id: int, symbol: int, probabilities: Sequence[float] | np.ndarray) -> None:
         if self._finished:
             raise ValueError("encoder has already been finished")
         if not 0 <= stream_id < self.stream_count:
             raise ValueError("stream_id outside archive")
+        start = time.perf_counter()
         cumulative = _cumulative(probabilities, self.total)
         if not 0 <= symbol < len(cumulative) - 1:
             raise ValueError("symbol outside alphabet")
-        self._encoders[stream_id].write(cumulative, symbol)
+        self.quantize_seconds += time.perf_counter() - start
+        start = time.perf_counter()
+        if self.backend == "python":
+            self._encoders[stream_id].write(cumulative, symbol)
+        else:
+            self._lows[stream_id].append(int(cumulative[symbol]))
+            self._highs[stream_id].append(int(cumulative[symbol + 1]))
+        self.range_encode_seconds += time.perf_counter() - start
         self._counts[stream_id] += 1
 
     def finish(self) -> bytes:
-        """Finalize each stream and serialize its descriptor followed by its bytes."""
+        """Finalize streams and write the unchanged portable MSAC v1 format."""
         if self._finished:
             raise ValueError("encoder has already been finished")
         self._finished = True
         payloads = []
         descriptors = []
-        for encoder, output, count in zip(self._encoders, self._outputs, self._counts):
-            encoder.finish()
-            bits = np.asarray(output.get_bits(), dtype=np.uint8)
-            data = np.packbits(bits, bitorder="big").tobytes()
-            descriptors.append(_STREAM.pack(count, len(bits), zlib.crc32(data)))
+        if self.backend == "python":
+            encoded = []
+            for encoder, output in zip(self._encoders, self._outputs):
+                start = time.perf_counter()
+                encoder.finish()
+                self.range_encode_seconds += time.perf_counter() - start
+                bits = np.asarray(output.get_bits(), dtype=np.uint8)
+                encoded.append((np.packbits(bits, bitorder="big").tobytes(), len(bits)))
+        else:
+            arrays = [
+                (np.asarray(lows, dtype=np.int64), np.asarray(highs, dtype=np.int64))
+                for lows, highs in zip(self._lows, self._highs)
+            ]
+            start = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=self.threads) as executor:
+                results = list(executor.map(
+                    lambda pair: encode_intervals_packed(pair[0], pair[1], self.total, self.state_bits),
+                    arrays,
+                ))
+            self.range_encode_seconds += time.perf_counter() - start
+            encoded = [(array.tobytes(), int(bits)) for array, bits in results]
+        for (data, bit_count), count in zip(encoded, self._counts):
+            descriptors.append(_STREAM.pack(count, bit_count, zlib.crc32(data)))
             payloads.append(data)
         return b"".join((
             _HEADER.pack(MAGIC, VERSION, self.state_bits, 0, self.total, self.stream_count),

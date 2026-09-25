@@ -98,3 +98,42 @@ def test_float32_probabilities_match_single_stream_ac():
     assert payload[:len(expected)].tolist() == expected
     assert [decoder.decode(0, row) for _ in range(8)] == [symbol] * 8
     decoder.assert_complete()
+
+
+@pytest.mark.parametrize("streams,threads", [(1, 1), (4, 1), (4, 4), (7, 3)])
+def test_parallel_backend_matches_python_archive_and_persisted_decode(tmp_path, streams, threads):
+    pytest.importorskip("numba")
+    rng = np.random.default_rng(384)
+    rows = rng.dirichlet(np.ones(31), size=173).astype(np.float32)
+    targets = rng.integers(0, 31, size=len(rows))
+    reference = MultistreamACEncoder(streams)
+    parallel = MultistreamACEncoder(streams, backend="numba_parallel", threads=threads)
+    for index, (target, row) in enumerate(zip(targets, rows)):
+        stream_id = index % streams
+        reference.encode(stream_id, int(target), row)
+        parallel.encode(stream_id, int(target), row)
+    expected = reference.finish()
+    path = tmp_path / "parallel.msac"
+    path.write_bytes(parallel.finish())
+    assert path.read_bytes() == expected
+    decoder = MultistreamACDecoder(path.read_bytes())
+    for stream_id in range(streams):
+        indices = range(stream_id, len(rows), streams)
+        assert [decoder.decode(stream_id, rows[i]) for i in indices] == [
+            int(targets[i]) for i in indices
+        ]
+    decoder.assert_complete()
+    assert parallel.threads == min(streams, threads)
+    assert parallel.range_encode_seconds > 0
+
+
+def test_parallel_backend_handles_empty_streams_and_rejects_overflow():
+    pytest.importorskip("numba")
+    python = MultistreamACEncoder(3)
+    parallel = MultistreamACEncoder(3, backend="numba_parallel", threads=2)
+    row = np.array([0.2, 0.8])
+    python.encode(1, 1, row)
+    parallel.encode(1, 1, row)
+    assert parallel.finish() == python.finish()
+    with pytest.raises(ValueError, match="64-bit"):
+        MultistreamACEncoder(1, state_bits=56, backend="numba_parallel")

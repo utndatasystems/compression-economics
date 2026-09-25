@@ -147,7 +147,10 @@ def run_global_mask_compression(args):
     if args.encoding in {"AC", "ANS"}:
         llm_compressor = LLMCompressor(algorithm=args.encoding)
     elif args.encoding == "AC_MULTISTREAM":
-        llm_compressor = MultistreamACEncoder(args.batch_size)
+        llm_compressor = MultistreamACEncoder(
+            args.batch_size, backend=getattr(args, "ac_backend", "python"),
+            threads=getattr(args, "ac_threads", None),
+        )
     elif args.encoding == "PMATIC":
         delta, r = _get_pmatic_params(args)
         print(f"Using PMATIC compressor with delta={delta}, r={r}")
@@ -328,6 +331,10 @@ def run_global_mask_compression(args):
         "compression_time": compression_time,
         "inference_time": inference_time,
         "ac_time": ac_time,
+        "msac_backend": llm_compressor.backend if args.encoding == "AC_MULTISTREAM" else None,
+        "msac_workers": llm_compressor.threads if args.encoding == "AC_MULTISTREAM" else None,
+        "msac_quantize_seconds": llm_compressor.quantize_seconds if args.encoding == "AC_MULTISTREAM" else None,
+        "msac_range_encode_seconds": llm_compressor.range_encode_seconds if args.encoding == "AC_MULTISTREAM" else None,
         "data_copy_time": data_copy_time,
         "softmax_time": softmax_time,
         # Throughput

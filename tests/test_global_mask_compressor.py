@@ -193,12 +193,13 @@ class _CharacterTokenizer:
         return bytes(token_ids).decode("utf-8")
 
 
-@pytest.mark.parametrize("token_count,encoding", [
-    (2, "AC"), (2, "AC_MULTISTREAM"),
-    (7, "AC"), (7, "ANS"), (7, "AC_MULTISTREAM"),
-    (8, "AC"), (8, "ANS"), (8, "AC_MULTISTREAM"),
+@pytest.mark.parametrize("token_count,encoding,ac_backend", [
+    (2, "AC", "python"), (2, "AC_MULTISTREAM", "python"),
+    (7, "AC", "python"), (7, "ANS", "python"), (7, "AC_MULTISTREAM", "python"),
+    (8, "AC", "python"), (8, "ANS", "python"), (8, "AC_MULTISTREAM", "python"),
+    (8, "AC_MULTISTREAM", "numba_parallel"),
 ])
-def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch, encoding, token_count):
+def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch, encoding, token_count, ac_backend):
     import src.prediction as prediction_module
 
     monkeypatch.setattr(
@@ -222,6 +223,7 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
         is_seq2seq=False,
         engine="ngram",
         encoding=encoding,
+        ac_backend=ac_backend, ac_threads=2,
         reduce_tokens=True,
         first_n_tokens=token_count,
         batch_size=2,
@@ -249,6 +251,8 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
 
     save_global_mask_file(args, first_tokens, bits, bitmap)
     if encoding == "AC_MULTISTREAM":
+        assert compression_stats["msac_backend"] == ac_backend
+        assert compression_stats["msac_range_encode_seconds"] > 0
         archive = (tmp_path / "stream.bin").read_bytes()
         assert archive.startswith(b"GMMS")
         assert isinstance(bits, bytes)

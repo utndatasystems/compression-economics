@@ -25,6 +25,11 @@ dependencies = [
     "wandb>=0.25.1",
 ]
 
+[project.optional-dependencies]
+parallel = [
+    "numba>=0.64",
+]
+
 [dependency-groups]
 dev = [
     "matplotlib>=3.10.8",
