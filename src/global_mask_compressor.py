@@ -56,13 +56,15 @@ def _get_pmatic_params(args):
 
 def _make_arithmetic_decompressor(args, bit_string, alphabet_size):
     if args.encoding in {"AC", "ANS"}:
-        return LLMDecompressor(bit_string, algorithm=args.encoding)
+        return LLMDecompressor(bit_string, algorithm=args.encoding,
+                               frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
 
     if args.encoding == "PMATIC":
         delta, r = _get_pmatic_params(args)
         return LLMDecompressor(
             bit_string,
             algorithm="PMATIC",
+            frequency_quantizer=getattr(args, "frequency_quantizer", "reference"),
             alphabet_size=alphabet_size,
             delta=delta,
             r=r,
@@ -145,11 +147,13 @@ def run_global_mask_compression(args):
     token_predictor = _make_token_predictor(args, bitmask_data)
 
     if args.encoding in {"AC", "ANS"}:
-        llm_compressor = LLMCompressor(algorithm=args.encoding)
+        llm_compressor = LLMCompressor(algorithm=args.encoding,
+                                       frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
     elif args.encoding == "AC_MULTISTREAM":
         llm_compressor = MultistreamACEncoder(
             args.batch_size, backend=getattr(args, "ac_backend", "python"),
             threads=getattr(args, "ac_threads", None),
+            frequency_quantizer=getattr(args, "frequency_quantizer", "reference"),
         )
     elif args.encoding == "PMATIC":
         delta, r = _get_pmatic_params(args)
@@ -384,7 +388,8 @@ def run_global_mask_decompression(
 
     # The MSAC directory assigns one independent stream to each token batch.
     if args.encoding == "AC_MULTISTREAM":
-        decompressor = MultistreamACDecoder(bit_string)
+        decompressor = MultistreamACDecoder(bit_string,
+            frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
         if decompressor.stream_count != args.batch_size:
             raise ValueError("MSAC stream count does not match batch size")
     else:

@@ -168,6 +168,10 @@ def save_global_mask_file(
         "ngram_model_sha256": getattr(args, "ngram_model_sha256", None),
         "ngram_order": getattr(args, "ngram_order", None),
     }
+    # Old archives imply the reference method; omit that default to preserve
+    # their headers and store the choice only for optimized runs.
+    if getattr(args, "frequency_quantizer", "reference") != "reference":
+        header["frequency_quantizer"] = args.frequency_quantizer
     if header["encoding"] == "AC_MULTISTREAM":
         header["ac_backend"] = getattr(args, "ac_backend", "python")
         header["ac_threads"] = getattr(args, "ac_threads", None)
@@ -243,6 +247,7 @@ def load_global_mask_file(args):
     args.use_kv_cache = header["use_kv_cache"]
     args.batch_size = header["batch_size"]
     args.encoding = header.get("encoding", args.encoding)
+    args.frequency_quantizer = header.get("frequency_quantizer", "reference")
     args.ac_backend = header.get("ac_backend", "python")
     args.ac_threads = header.get("ac_threads")
     args.reduce_tokens = header.get("reduce_tokens", args.reduce_tokens)
@@ -287,7 +292,9 @@ def make_key(args):
     The key captures dataset name and core settings so runs can be indexed in a dict.
     """
     filename = os.path.basename(args.input_path)
-    return f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
+    key = f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
+    method = getattr(args, "frequency_quantizer", "reference")
+    return key if method == "reference" else f"{key}|freqq={method}"
 
 def create_run_dir(base_dir="results"):
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")

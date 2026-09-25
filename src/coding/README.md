@@ -1,7 +1,7 @@
 # Coding modules
 
 - `encoding.py`: arithmetic, ANS, Huffman, bit-packed rank, and PMATIC coders.
-- `encoding_utils.py`: shared probability quantization and PMATIC helpers.
+- `encoding_utils.py`: shared probability quantization and PMATIC helpers. The `reference` and `vectorized_exact` methods produce the same integer CDF at fixed frequency total.
 - `multistream_ac.py`: portable MSAC archive and independent stream encoder/decoder.
 - `parallel_ac.py`: optional Numba range-encoding kernel used by MSAC.
 

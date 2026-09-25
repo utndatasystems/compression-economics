@@ -520,7 +520,8 @@ class LLMCompressor:
         r: Optional[float] = None,
         statesize: int = 32,
         total: int = 262144,
-        ans_block_size: int = 256):
+        ans_block_size: int = 256,
+        frequency_quantizer: str = "reference"):
 
         self.bitout = BitOutputStream()
         self.encoder = ArithmeticEncoder(statesize, self.bitout)
@@ -529,6 +530,7 @@ class LLMCompressor:
 
         self.algorithm = algorithm.upper()
         self.total = total
+        self.frequency_quantizer = validate_frequency_quantizer(frequency_quantizer)
 
         self.helper_ones = 0
         self.helper_count = 0
@@ -573,14 +575,20 @@ class LLMCompressor:
         self.cross_entropy_sum += -math.log2(max(prob, 1e-300))
         self.token_count += 1
 
-        self.encoder.write(build_cumul(probs, total=self.total), correct_token_idx)
+        self.encoder.write(
+            build_cumul(probs, total=self.total, method=self.frequency_quantizer),
+            correct_token_idx,
+        )
 
     def _next_token_ans(self, correct_token_idx: int, probs: np.ndarray):
         """Buffer a symbol using the same quantizer as arithmetic coding."""
         prob = probs[correct_token_idx]
         self.cross_entropy_sum += -math.log2(max(prob, 1e-300))
         self.token_count += 1
-        self._ans_entries.append((correct_token_idx, build_cumul(probs, total=self.total)))
+        self._ans_entries.append((
+            correct_token_idx,
+            build_cumul(probs, total=self.total, method=self.frequency_quantizer),
+        ))
         if len(self._ans_entries) == self.ans_block_size:
             self._flush_ans_block()
 
@@ -617,8 +625,8 @@ class LLMCompressor:
                 r=self.r,
             )
 
-            self.encoder.write(binary_cumul(helper_p1, self.total), helper_bit)
-            self.encoder.write(binary_cumul(qprob, self.total), bit)
+            self.encoder.write(binary_cumul(helper_p1, self.total, method=self.frequency_quantizer), helper_bit)
+            self.encoder.write(binary_cumul(qprob, self.total, method=self.frequency_quantizer), bit)
 
             self.helper_count += 1
             self.helper_ones += helper_bit
@@ -691,10 +699,12 @@ class LLMDecompressor:
         statesize: int = 32,
         total: int = 262144,
         ans_decode_lookup: bool = False,
+        frequency_quantizer: str = "reference",
     ):
         self.algorithm = algorithm.upper()
         self.total = total
         self.ans_decode_lookup = ans_decode_lookup
+        self.frequency_quantizer = validate_frequency_quantizer(frequency_quantizer)
 
         self.decoder = (RansBlockDecoder(code, total) if self.algorithm == "ANS"
                         else ArithmeticDecoder(statesize, BitInputStream(code)))
@@ -729,11 +739,11 @@ class LLMDecompressor:
         raise AssertionError("unreachable")
 
     def _decompress_ac(self, probs: np.ndarray) -> int:
-        cumul = build_cumul(probs, total=self.total)
+        cumul = build_cumul(probs, total=self.total, method=self.frequency_quantizer)
         return self.decoder.read(cumul, len(probs))
 
     def _decompress_ans(self, probs: np.ndarray) -> int:
-        cumul = build_cumul(probs, total=self.total)
+        cumul = build_cumul(probs, total=self.total, method=self.frequency_quantizer)
         # Dynamic LLM distributions are normally used once, so callers opt in
         # to the O(1) inverse-CDF table only when tables are reusable.
         lookup = RansBlockDecoder.build_lookup(cumul) if self.ans_decode_lookup else None
@@ -747,7 +757,7 @@ class LLMDecompressor:
 
         for _ in range(self.bit_width):
             helper_bit = self.decoder.read(
-                binary_cumul(helper_p1, self.total),
+                binary_cumul(helper_p1, self.total, method=self.frequency_quantizer),
                 2,
             )
 
@@ -761,7 +771,7 @@ class LLMDecompressor:
             )
 
             bit = self.decoder.read(
-                binary_cumul(qprob, self.total),
+                binary_cumul(qprob, self.total, method=self.frequency_quantizer),
                 2,
             )
 

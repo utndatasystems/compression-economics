@@ -141,6 +141,8 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--ngram-training-path", type=str, help="Disjoint training text used to create an n-gram checkpoint during compression")
     parser.add_argument("--ngram-order", type=int, choices=[2], default=2, help="N-gram order; currently bigram only")
     parser.add_argument("--encoding", type=str, choices=["AC", "AC_MULTISTREAM", "ANS", "bitpacked", "huffman", "PMATIC"], default="AC", help="Encoding method for compression")
+    parser.add_argument("--frequency-quantizer", choices=["reference", "vectorized_exact"], default="reference",
+                        help="Integer frequency normalization method for probability coders")
     parser.add_argument("--ac-backend", choices=["python", "numba_parallel"], default="python", help="MSAC encoding backend; numba_parallel needs the parallel extra")
     parser.add_argument("--ac-threads", type=int, default=None, help="Maximum workers for numba_parallel MSAC encoding")
     parser.add_argument("--spec_k", type=int, default=None, help="Number of speculative tokens to generate for speculative compression/decompression")

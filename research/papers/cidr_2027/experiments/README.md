@@ -81,3 +81,27 @@ The lower frequency total becomes 65,536 (16 bits), because every vocabulary
 symbol receives at least one count. There is no token mask or mask cost in this
 mode. The coder archive still depends on the saved model-probability trace;
 the initial context token is reported separately.
+
+
+## Frequency normalization comparison
+
+Use the same frozen GPT-2 probabilities to compare the reference Python
+leftover-count loop with exact vectorized allocation:
+
+```bash
+.venv/bin/python research/papers/cidr_2027/experiments/compare_coders_model.py \
+  --vocabulary full --no-pmatic --frequency-quantizer both
+```
+
+The sweep keeps the model trace and frequency total fixed for each method pair.
+Each result's `parameters.frequency_quantizer` field identifies the implementation.
+The `quantize_seconds` field is measured during encode for MSAC and
+in a separate pass over the same trace for AC and ANS; its
+`quantize_timing_scope` field records which applies. Total encode and decode
+times cover the whole coder path. A separate 16-bit versus 18-bit comparison
+changes the coding distribution and archive size.
+
+For text compression, select `--frequency-quantizer vectorized_exact`.
+The reference method remains the default. The optional archive header records
+a nondefault selection; either method can decode the same payload when the
+model probabilities agree.

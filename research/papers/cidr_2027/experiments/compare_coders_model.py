@@ -64,6 +64,10 @@ def main() -> None:
     parser.add_argument("--vocabulary", choices=["observed_mask", "full"],
                         default="observed_mask")
     parser.add_argument("--no-pmatic", action="store_true")
+    parser.add_argument("--frequency-quantizer",
+                        choices=["reference", "vectorized_exact", "both"],
+                        default="reference",
+                        help="Compare exact frequency normalization implementations")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     if args.target_tokens < 4:
@@ -73,8 +77,10 @@ def main() -> None:
     if args.output_dir is None:
         slug = args.model.replace("/", "-")
         mode = "mask" if args.vocabulary == "observed_mask" else "full"
+        method_suffix = ("" if args.frequency_quantizer == "reference"
+                         else f"-fq-{args.frequency_quantizer}")
         args.output_dir = Path(
-            f"artifacts/papers/cidr-2027/coder-comparison/{slug}-text8-{args.target_tokens}-{mode}"
+            f"artifacts/papers/cidr-2027/coder-comparison/{slug}-text8-{args.target_tokens}-{mode}{method_suffix}"
         )
 
     torch.set_num_threads(args.torch_threads)
@@ -124,7 +130,15 @@ def main() -> None:
         (args.output_dir / "token-mask.roaring").write_bytes(mask_bytes)
     results = []
     include_pmatic = args.vocabulary != "full" and not args.no_pmatic
-    for name, settings in configurations(trace.alphabet_size, include_pmatic=include_pmatic):
+    base_settings = configurations(trace.alphabet_size, include_pmatic=include_pmatic)
+    quantizers = (["reference", "vectorized_exact"] if args.frequency_quantizer == "both"
+                  else [args.frequency_quantizer])
+    runs = [(name if args.frequency_quantizer != "both" else f"{name}_{method}",
+             {**settings, "frequency_quantizer": method})
+            for name, settings in base_settings
+            for method in (quantizers if settings["coder"] not in
+                           {"HUFFMAN_RANK", "BITPACKED_RANK"} else ["reference"])]
+    for name, settings in runs:
         print(f"Running {name} on {trace.symbol_count} targets...", flush=True)
         samples = [
             benchmark_coder(
@@ -140,9 +154,10 @@ def main() -> None:
         row["decode_seconds"] = statistics.median(row["decode_seconds_samples"])
         row["encode_symbols_per_second"] = trace.symbol_count / row["encode_seconds"]
         row["decode_symbols_per_second"] = trace.symbol_count / row["decode_seconds"]
-        if row["range_encode_seconds"] is not None:
+        if row["quantize_seconds"] is not None:
             row["quantize_seconds"] = statistics.median(
                 item["quantize_seconds"] for item in samples)
+        if row["range_encode_seconds"] is not None:
             row["range_encode_seconds"] = statistics.median(
                 item["range_encode_seconds"] for item in samples)
             row["range_encode_symbols_per_second"] = (
@@ -171,6 +186,11 @@ def main() -> None:
         "persisted_trace_dtype": str(trace.probabilities.dtype),
         "trace_normalization": "float32 softmax, widened and renormalized in float64",
         "frequency_quantizer": "build_cumul: floor(p * (total - alphabet)) + 1, then adjust to exact total",
+        "frequency_quantizer_methods": quantizers,
+        "frequency_quantizer_note": (
+            "vectorized_exact changes only leftover-count allocation speed; "
+            "it uses the reference sort and produces identical integer CDFs at fixed total"
+        ),
         "frequency_totals": sorted({row["parameters"]["frequency_total"] for row in results}),
         "ac_state_bits": 32,
         "vocabulary_mode": args.vocabulary,

@@ -21,7 +21,7 @@ from typing import Sequence
 import numpy as np
 
 from src.coding.encoding import ArithmeticDecoder, ArithmeticEncoder, BitInputStream, BitOutputStream
-from src.coding.encoding_utils import build_cumul
+from src.coding.encoding_utils import build_cumul, validate_frequency_quantizer
 from src.coding.parallel_ac import encode_intervals_packed, prepare_parallel_encoder
 
 
@@ -41,7 +41,8 @@ def _validate_settings(stream_count: int, state_bits: int, total: int) -> None:
         raise ValueError("frequency total is outside the arithmetic coder's range")
 
 
-def _cumulative(probabilities: Sequence[float] | np.ndarray, total: int) -> np.ndarray:
+def _cumulative(probabilities: Sequence[float] | np.ndarray, total: int,
+                frequency_quantizer: str = "reference") -> np.ndarray:
     """Validate one model distribution before applying the shared quantizer."""
     row = np.asarray(probabilities)
     if not np.issubdtype(row.dtype, np.floating):
@@ -52,14 +53,15 @@ def _cumulative(probabilities: Sequence[float] | np.ndarray, total: int) -> np.n
         raise ValueError("probabilities must be finite and nonnegative")
     if not math.isclose(float(row.sum()), 1.0, rel_tol=0.0, abs_tol=1e-5):
         raise ValueError("probabilities must sum to one")
-    return build_cumul(row, total=total)
+    return build_cumul(row, total=total, method=frequency_quantizer)
 
 
 class MultistreamACEncoder:
     """Encode independent streams with Python or GIL-free Numba workers."""
 
     def __init__(self, stream_count: int, *, total: int = 262144, state_bits: int = 32,
-                 backend: str = "python", threads: int | None = None):
+                 backend: str = "python", threads: int | None = None,
+                 frequency_quantizer: str = "reference"):
         _validate_settings(stream_count, state_bits, total)
         if backend not in {"python", "numba_parallel"}:
             raise ValueError("backend must be python or numba_parallel")
@@ -67,6 +69,7 @@ class MultistreamACEncoder:
             raise ValueError("threads must be positive")
         if backend == "numba_parallel":
             prepare_parallel_encoder(state_bits, total)
+        self.frequency_quantizer = validate_frequency_quantizer(frequency_quantizer)
         self.stream_count = stream_count
         self.total = total
         self.state_bits = state_bits
@@ -87,7 +90,7 @@ class MultistreamACEncoder:
         if not 0 <= stream_id < self.stream_count:
             raise ValueError("stream_id outside archive")
         start = time.perf_counter()
-        cumulative = _cumulative(probabilities, self.total)
+        cumulative = _cumulative(probabilities, self.total, self.frequency_quantizer)
         if not 0 <= symbol < len(cumulative) - 1:
             raise ValueError("symbol outside alphabet")
         self.quantize_seconds += time.perf_counter() - start
@@ -141,7 +144,7 @@ class MultistreamACEncoder:
 class MultistreamACDecoder:
     """Validate an MSAC v1 payload and decode each stream independently."""
 
-    def __init__(self, archive: bytes):
+    def __init__(self, archive: bytes, *, frequency_quantizer: str = "reference"):
         if len(archive) < _HEADER.size:
             raise ValueError("truncated MSAC header")
         magic, version, state_bits, flags, total, stream_count = _HEADER.unpack_from(archive)
@@ -155,6 +158,7 @@ class MultistreamACDecoder:
         self.stream_count = stream_count
         self.total = total
         self.state_bits = state_bits
+        self.frequency_quantizer = validate_frequency_quantizer(frequency_quantizer)
         self.symbol_counts = []
         self.bit_counts = []
         self._decoders = []
@@ -193,7 +197,7 @@ class MultistreamACDecoder:
             raise ValueError("stream_id outside archive")
         if self._decoded[stream_id] >= self.symbol_counts[stream_id]:
             raise ValueError("stream has no more symbols")
-        cumulative = _cumulative(probabilities, self.total)
+        cumulative = _cumulative(probabilities, self.total, self.frequency_quantizer)
         symbol = self._decoders[stream_id].read(cumulative, len(cumulative) - 1)
         self._decoded[stream_id] += 1
         return symbol

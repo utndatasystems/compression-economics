@@ -26,7 +26,9 @@ from src.coding.encoding import (
     RansBlockEncoder,
     build_huffman_code,
 )
-from src.coding.encoding_utils import build_cumul, choose_pmatic_r, make_safe_decoder_probs
+from src.coding.encoding_utils import (
+    build_cumul, choose_pmatic_r, make_safe_decoder_probs, validate_frequency_quantizer,
+)
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 from src.coding.parallel_ac import prepare_parallel_encoder
 
@@ -124,10 +126,11 @@ def ideal_cross_entropy_bits(trace: ProbabilityTrace) -> float:
     return float(np.sum(-np.log2(np.maximum(selected, 1e-300))))
 
 
-def quantized_cross_entropy_bits(trace: ProbabilityTrace, total: int) -> float:
+def quantized_cross_entropy_bits(trace: ProbabilityTrace, total: int,
+                                 frequency_quantizer: str = "reference") -> float:
     value = 0.0
     for symbol, probabilities in zip(trace.symbols, trace.probabilities):
-        cumulative = build_cumul(probabilities, total=total)
+        cumulative = build_cumul(probabilities, total=total, method=frequency_quantizer)
         frequency = int(cumulative[symbol + 1] - cumulative[symbol])
         value -= math.log2(frequency / total)
     return value
@@ -304,8 +307,10 @@ def _stream_slices(symbol_count: int, stream_count: int) -> tuple[slice, ...]:
 def encode_multistream_probability_stream(
     trace: ProbabilityTrace, *, total: int, stream_count: int,
     backend: str = "python", threads: int | None = None, timings: dict | None = None,
+    frequency_quantizer: str = "reference",
 ) -> EncodedStream:
-    encoder = MultistreamACEncoder(stream_count, total=total, backend=backend, threads=threads)
+    encoder = MultistreamACEncoder(stream_count, total=total, backend=backend, threads=threads,
+                                   frequency_quantizer=frequency_quantizer)
     for stream_id, span in enumerate(_stream_slices(trace.symbol_count, stream_count)):
         for symbol, probabilities in zip(trace.symbols[span], trace.probabilities[span]):
             encoder.encode(stream_id, int(symbol), probabilities)
@@ -325,9 +330,10 @@ def encode_multistream_probability_stream(
 
 
 def decode_multistream_probability_stream(
-    stream: EncodedStream, probabilities: np.ndarray
+    stream: EncodedStream, probabilities: np.ndarray, *,
+    frequency_quantizer: str = "reference",
 ) -> np.ndarray:
-    decoder = MultistreamACDecoder(stream.archive)
+    decoder = MultistreamACDecoder(stream.archive, frequency_quantizer=frequency_quantizer)
     decoded = np.empty(len(probabilities), dtype=np.int64)
     for stream_id, span in enumerate(_stream_slices(len(probabilities), decoder.stream_count)):
         if decoder.symbol_counts[stream_id] != span.stop - span.start:
@@ -340,9 +346,10 @@ def decode_multistream_probability_stream(
 
 def encode_probability_stream(
     trace: ProbabilityTrace, coder: str, *, total: int, ans_block_size: int,
-    ans_lanes: int, pmatic_delta: float,
+    ans_lanes: int, pmatic_delta: float, frequency_quantizer: str = "reference",
 ) -> EncodedStream:
-    options = {"algorithm": coder, "alphabet_size": trace.alphabet_size, "total": total}
+    options = {"algorithm": coder, "alphabet_size": trace.alphabet_size, "total": total,
+               "frequency_quantizer": frequency_quantizer}
     if coder == "ANS":
         options["ans_block_size"] = ans_block_size
     if coder == "PMATIC":
@@ -383,8 +390,10 @@ def encode_probability_stream(
 def decode_probability_stream(
     stream: EncodedStream, probabilities: np.ndarray, coder: str, *, total: int,
     alphabet_size: int, ans_lanes: int, pmatic_delta: float,
+    frequency_quantizer: str = "reference",
 ) -> np.ndarray:
-    options = {"algorithm": coder, "alphabet_size": alphabet_size, "total": total}
+    options = {"algorithm": coder, "alphabet_size": alphabet_size, "total": total,
+               "frequency_quantizer": frequency_quantizer}
     if coder == "PMATIC":
         options["delta"] = pmatic_delta
         options["r"] = choose_pmatic_r(pmatic_delta)
@@ -437,9 +446,11 @@ def safe_pmatic_probabilities(trace: ProbabilityTrace, delta: float, seed: int) 
 def _decode_for_coder(
     coder: str, stream: EncodedStream, probabilities: np.ndarray, *, total: int,
     alphabet_size: int, ans_lanes: int, pmatic_delta: float,
+    frequency_quantizer: str = "reference",
 ) -> np.ndarray:
     if coder == "AC_MULTISTREAM":
-        return decode_multistream_probability_stream(stream, probabilities)
+        return decode_multistream_probability_stream(
+            stream, probabilities, frequency_quantizer=frequency_quantizer)
     if coder == "BITPACKED_RANK":
         return decode_bitpacked_ranks(stream, probabilities)
     if coder == "HUFFMAN_RANK":
@@ -447,6 +458,7 @@ def _decode_for_coder(
     return decode_probability_stream(
         stream, probabilities, coder, total=total, alphabet_size=alphabet_size,
         ans_lanes=ans_lanes, pmatic_delta=pmatic_delta,
+        frequency_quantizer=frequency_quantizer,
     )
 
 
@@ -457,8 +469,10 @@ def benchmark_coder(
     pmatic_delta: float = 1e-3, perturbation_scales: Iterable[float] = (),
     seed: int = 2027, profile_memory: bool = True,
     pmatic_safe_scenario: bool = True,
+    frequency_quantizer: str = "reference",
 ) -> dict:
     coder = coder.upper()
+    validate_frequency_quantizer(frequency_quantizer)
     if coder not in CODERS:
         raise ValueError(f"unknown coder: {coder}")
     if total <= trace.alphabet_size or total & (total - 1):
@@ -471,6 +485,7 @@ def benchmark_coder(
         encode_function = lambda: encode_multistream_probability_stream(
             trace, total=total, stream_count=ac_streams, backend=ac_backend,
             threads=ac_threads, timings=ac_timings,
+            frequency_quantizer=frequency_quantizer,
         )
     elif coder == "BITPACKED_RANK":
         encode_function = lambda: encode_bitpacked_ranks(trace)
@@ -480,13 +495,14 @@ def benchmark_coder(
         encode_function = lambda: encode_probability_stream(
             trace, coder, total=total, ans_block_size=ans_block_size,
             ans_lanes=ans_lanes, pmatic_delta=pmatic_delta,
+            frequency_quantizer=frequency_quantizer,
         )
     stream, encode_seconds, encode_peak = _measure(
         encode_function, profile_memory=profile_memory)
     decode_function = lambda: _decode_for_coder(
         coder, stream, trace.probabilities, total=total,
         alphabet_size=trace.alphabet_size, ans_lanes=ans_lanes,
-        pmatic_delta=pmatic_delta,
+        pmatic_delta=pmatic_delta, frequency_quantizer=frequency_quantizer,
     )
     decoded, decode_seconds, decode_peak = _measure(
         decode_function, profile_memory=profile_memory)
@@ -508,6 +524,7 @@ def benchmark_coder(
                 coder, stream, decoder_probabilities, total=total,
                 alphabet_size=trace.alphabet_size, ans_lanes=ans_lanes,
                 pmatic_delta=pmatic_delta,
+                frequency_quantizer=frequency_quantizer,
             )
             matches = candidate == trace.symbols
             success = bool(np.all(matches))
@@ -528,7 +545,22 @@ def benchmark_coder(
         })
 
     probability_semantics = coder in {"AC", "AC_MULTISTREAM", "ANS", "PMATIC"}
-    parameters = {"frequency_total": total}
+    # AC and ANS do not time quantization inside their legacy encoder. Measure
+    # one separate pass on the same frozen rows; MSAC times it during encoding.
+    if coder in {"AC", "ANS"}:
+        started = time.perf_counter()
+        for probabilities in trace.probabilities:
+            build_cumul(probabilities, total=total, method=frequency_quantizer)
+        quantize_seconds = time.perf_counter() - started
+        quantize_timing_scope = "separate_trace_pass"
+    elif coder == "AC_MULTISTREAM":
+        quantize_seconds = ac_timings["quantize_seconds"]
+        quantize_timing_scope = "within_encode"
+    else:
+        quantize_seconds = None
+        quantize_timing_scope = None
+    parameters = {"frequency_total": total,
+                  "frequency_quantizer": frequency_quantizer if probability_semantics else None}
     if coder == "AC_MULTISTREAM":
         parameters["streams"] = ac_streams
         parameters["ac_backend"] = ac_backend
@@ -556,7 +588,7 @@ def benchmark_coder(
         "symbol_count": trace.symbol_count,
         "alphabet_size": trace.alphabet_size,
         "ideal_cross_entropy_bits": ideal_cross_entropy_bits(trace),
-        "quantized_distribution_cross_entropy_bits": quantized_cross_entropy_bits(trace, total),
+        "quantized_distribution_cross_entropy_bits": quantized_cross_entropy_bits(trace, total, frequency_quantizer),
         "quantized_cross_entropy_is_coder_objective": coder in {"AC", "AC_MULTISTREAM", "ANS"},
         "payload_bits": stream.payload_bits,
         "payload_bytes": stream.archive_bytes - stream.framing_bytes - stream.codebook_bytes,
@@ -567,7 +599,8 @@ def benchmark_coder(
         "helper_symbols": stream.helper_symbols,
         "helper_model_bits": stream.helper_model_bits,
         "encode_seconds": encode_seconds,
-        "quantize_seconds": ac_timings.get("quantize_seconds"),
+        "quantize_seconds": quantize_seconds,
+        "quantize_timing_scope": quantize_timing_scope,
         "range_encode_seconds": ac_timings.get("range_encode_seconds"),
         "range_encode_symbols_per_second": (trace.symbol_count / ac_timings["range_encode_seconds"]) if ac_timings else None,
         "decode_seconds": decode_seconds,

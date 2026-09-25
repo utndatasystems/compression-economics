@@ -32,6 +32,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--alphabet-size", type=int, default=64)
     parser.add_argument("--coder", choices=CODERS, action="append")
     parser.add_argument("--frequency-total", type=int, default=262144)
+    parser.add_argument("--frequency-quantizer",
+                        choices=["reference", "vectorized_exact"],
+                        default="reference")
     parser.add_argument("--ac-streams", type=int, default=4)
     parser.add_argument("--ac-backend", choices=["python", "numba_parallel"], default="python")
     parser.add_argument("--ac-threads", type=int, default=None)
@@ -73,7 +76,7 @@ def main() -> None:
             ac_backend=args.ac_backend, ac_threads=args.ac_threads,
             ans_block_size=args.ans_block_size, ans_lanes=args.ans_lanes,
             pmatic_delta=args.pmatic_delta, perturbation_scales=scales,
-            seed=args.seed,
+            seed=args.seed, frequency_quantizer=args.frequency_quantizer,
         )
         rows.append(row)
         (args.output_dir / f"{coder.lower()}-result.json").write_text(
@@ -90,6 +93,7 @@ def main() -> None:
             "predictor_probabilities_frozen": True,
             "target_symbols_frozen": True,
             "frequency_total_shared": args.frequency_total,
+            "frequency_quantizer": args.frequency_quantizer,
             "predictor_time_excluded": True,
             "rank_codecs_are_probability_equivalent": False,
         },

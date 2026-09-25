@@ -2,11 +2,24 @@ import numpy as np
 import math
 from typing import List
 
-def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
+
+FREQUENCY_QUANTIZERS = ("reference", "vectorized_exact")
+
+
+def validate_frequency_quantizer(method: str) -> str:
+    """Reject unknown frequency allocation methods before coding begins."""
+    if method not in FREQUENCY_QUANTIZERS:
+        raise ValueError(f"frequency_quantizer must be one of {FREQUENCY_QUANTIZERS}")
+    return method
+
+
+def build_cumul(prob_vec: np.ndarray, total: int = 262144,
+                *, method: str = "reference") -> np.ndarray:
     """
     Turn a probability vector into a cumulative-frequency array for arithmetic coding.
     Ensures every symbol ≥1 and freq.sum() == total.
     """
+    validate_frequency_quantizer(method)
     alphabet_size = prob_vec.size
 
     # Step 1: allocate counts proportional to prob_vec
@@ -21,17 +34,26 @@ def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
         # adjust the symbol with largest probability first
         # np.argsort(-prob_vec) gives descending probabilities
         indices = np.argsort(-prob_vec)
-        idx = 0
-        while diff != 0:
-            i = indices[idx % alphabet_size]  # wrap around if needed
-            if diff > 0:
-                freq[i] += 1
-                diff -= 1
-            else:  # diff < 0
-                if freq[i] > 1:
-                    freq[i] -= 1
-                    diff += 1
-            idx += 1
+        if method == "vectorized_exact" and diff > 0:
+            # Whole passes visit every symbol once; the partial pass visits
+            # precisely the same prefix as the reference loop, including ties.
+            passes, remainder = divmod(int(diff), alphabet_size)
+            if passes:
+                freq += passes
+            freq[indices[:remainder]] += 1
+        else:
+            # Keep the decrement path unchanged for slightly overfull inputs.
+            idx = 0
+            while diff != 0:
+                i = indices[idx % alphabet_size]  # wrap around if needed
+                if diff > 0:
+                    freq[i] += 1
+                    diff -= 1
+                else:  # diff < 0
+                    if freq[i] > 1:
+                        freq[i] -= 1
+                        diff += 1
+                idx += 1
 
     # Safety check
     assert freq.sum() == total, f"freq.sum={freq.sum()} != total={total}"
@@ -48,14 +70,17 @@ def build_cumul(prob_vec: np.ndarray, total: int = 262144) -> np.ndarray:
 # PMATIC utilities
 # ------------------------------------------------------------------
 
-def binary_cumul(p1: float, total: int = 262144) -> np.ndarray:
+def binary_cumul(p1: float, total: int = 262144,
+                 *, method: str = "reference") -> np.ndarray:
     """
     Cumulative table for Bernoulli bit:
       symbol 0 has prob 1-p1
       symbol 1 has prob p1
     """
     p1 = float(np.clip(p1, 1e-12, 1.0 - 1e-12))
-    return build_cumul(np.array([1.0 - p1, p1], dtype=np.float64), total=total)
+    return build_cumul(
+        np.array([1.0 - p1, p1], dtype=np.float64), total=total, method=method
+    )
 
 def token_to_bits(token_idx: int, bit_width: int) -> List[int]:
     return [(token_idx >> shift) & 1 for shift in range(bit_width - 1, -1, -1)]
