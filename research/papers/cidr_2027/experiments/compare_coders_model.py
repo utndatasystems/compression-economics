@@ -23,10 +23,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from src.coder_benchmark import ProbabilityTrace, benchmark_coder, save_probability_trace
 
 
-def configurations(alphabet_size: int) -> list[tuple[str, dict]]:
+def configurations(alphabet_size: int, *, include_pmatic: bool = True
+                   ) -> list[tuple[str, dict]]:
     """Keep all runs on one trace while varying coder and coding settings."""
     low_total = 1 << max(12, (alphabet_size + 1).bit_length())
-    return [
+    settings = [
         ("AC_total_low", dict(coder="AC", total=low_total)),
         ("AC_total_262144", dict(coder="AC", total=262144)),
         ("MSAC_python_1", dict(coder="AC_MULTISTREAM", total=262144, ac_streams=1)),
@@ -43,11 +44,13 @@ def configurations(alphabet_size: int) -> list[tuple[str, dict]]:
                                     ans_block_size=64, ans_lanes=4)),
         ("ANS_block256_lanes4", dict(coder="ANS", total=262144,
                                      ans_block_size=256, ans_lanes=4)),
-        ("PMATIC_delta_0.001", dict(coder="PMATIC", total=262144,
-                                    pmatic_delta=0.001)),
         ("HUFFMAN_RANK", dict(coder="HUFFMAN_RANK", total=262144)),
         ("BITPACKED_RANK", dict(coder="BITPACKED_RANK", total=262144)),
     ]
+    if include_pmatic:
+        settings.append(("PMATIC_delta_0.001", dict(
+            coder="PMATIC", total=262144, pmatic_delta=0.001)))
+    return settings
 
 
 def main() -> None:
@@ -58,6 +61,9 @@ def main() -> None:
     parser.add_argument("--source-bytes", type=int, default=8192)
     parser.add_argument("--torch-threads", type=int, default=8)
     parser.add_argument("--repeats", type=int, default=3)
+    parser.add_argument("--vocabulary", choices=["observed_mask", "full"],
+                        default="observed_mask")
+    parser.add_argument("--no-pmatic", action="store_true")
     parser.add_argument("--output-dir", type=Path)
     args = parser.parse_args()
     if args.target_tokens < 4:
@@ -66,8 +72,9 @@ def main() -> None:
         parser.error("source-bytes, torch-threads, and repeats must be positive")
     if args.output_dir is None:
         slug = args.model.replace("/", "-")
+        mode = "mask" if args.vocabulary == "observed_mask" else "full"
         args.output_dir = Path(
-            f"artifacts/papers/cidr-2027/coder-comparison/{slug}-text8-{args.target_tokens}-mask"
+            f"artifacts/papers/cidr-2027/coder-comparison/{slug}-text8-{args.target_tokens}-{mode}"
         )
 
     torch.set_num_threads(args.torch_threads)
@@ -93,23 +100,31 @@ def main() -> None:
         target_logits = logits.gather(1, targets[:, None]).squeeze(1)
         full_entropy_bits = float(((torch.logsumexp(logits, dim=-1) - target_logits)
                                    / math.log(2)).sum().item())
-        mask_ids = sorted(set(ids))
-        masked_logits = logits[:, mask_ids]
-        probabilities_fp32 = torch.softmax(masked_logits, dim=-1)
+        if args.vocabulary == "full":
+            probabilities_fp32 = torch.softmax(logits, dim=-1)
+        else:
+            mask_ids = sorted(set(ids))
+            probabilities_fp32 = torch.softmax(logits[:, mask_ids], dim=-1)
     model_seconds = time.perf_counter() - started
     probabilities = probabilities_fp32.numpy().astype(np.float64)
     probabilities /= probabilities.sum(axis=1, keepdims=True)
-    symbol_lookup = {token_id: index for index, token_id in enumerate(mask_ids)}
-    symbols = np.asarray([symbol_lookup[token_id] for token_id in ids[1:]], dtype=np.int64)
+    if args.vocabulary == "full":
+        symbols = np.asarray(ids[1:], dtype=np.int64)
+        mask_bytes = b""
+    else:
+        symbol_lookup = {token_id: index for index, token_id in enumerate(mask_ids)}
+        symbols = np.asarray([symbol_lookup[token_id] for token_id in ids[1:]], dtype=np.int64)
+        mask_bytes = BitMap(mask_ids).serialize()
     trace = ProbabilityTrace(probabilities, symbols)
-    mask_bytes = BitMap(mask_ids).serialize()
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     trace_path = args.output_dir / "probability-trace.npz"
     save_probability_trace(trace_path, trace)
-    (args.output_dir / "token-mask.roaring").write_bytes(mask_bytes)
+    if mask_bytes:
+        (args.output_dir / "token-mask.roaring").write_bytes(mask_bytes)
     results = []
-    for name, settings in configurations(trace.alphabet_size):
+    include_pmatic = args.vocabulary != "full" and not args.no_pmatic
+    for name, settings in configurations(trace.alphabet_size, include_pmatic=include_pmatic):
         print(f"Running {name} on {trace.symbol_count} targets...", flush=True)
         samples = [
             benchmark_coder(
@@ -154,19 +169,24 @@ def main() -> None:
         "logit_dtype": str(logits.dtype),
         "softmax_dtype": str(probabilities_fp32.dtype),
         "persisted_trace_dtype": str(trace.probabilities.dtype),
-        "trace_normalization": "float32 masked softmax, widened and renormalized in float64",
+        "trace_normalization": "float32 softmax, widened and renormalized in float64",
         "frequency_quantizer": "build_cumul: floor(p * (total - alphabet)) + 1, then adjust to exact total",
         "frequency_totals": sorted({row["parameters"]["frequency_total"] for row in results}),
         "ac_state_bits": 32,
-        "vocabulary_mode": "observed token IDs in the selected source prefix",
+        "vocabulary_mode": args.vocabulary,
         "original_vocabulary_size": model.config.vocab_size,
-        "masked_alphabet_size": trace.alphabet_size,
-        "mask_format": "Roaring bitmap of original token IDs, sorted order defines trace symbols",
+        "trace_alphabet_size": trace.alphabet_size,
+        "masked_alphabet_size": trace.alphabet_size if mask_bytes else None,
+        "mask_format": (
+            "Roaring bitmap of original token IDs, sorted order defines trace symbols"
+            if mask_bytes else None
+        ),
         "mask_bytes_excluded_from_coder_archives": len(mask_bytes),
         "initial_context_token_excluded_from_coder_archives": int(ids[0]),
         "full_vocabulary_cross_entropy_bits": full_entropy_bits,
-        "masked_cross_entropy_bits": float(np.sum(-np.log2(
+        "trace_cross_entropy_bits": float(np.sum(-np.log2(
             trace.probabilities[np.arange(trace.symbol_count), trace.symbols]))),
+        "pmatic_included": include_pmatic,
         "target_tokens": trace.symbol_count,
         "timing_repetitions": args.repeats,
         "trace_sha256": trace.sha256,

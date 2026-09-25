@@ -66,3 +66,18 @@ separately from coder archives. The saved probability trace provides decoder
 distributions; these coder archives are not standalone compressed text files.
 Coder times exclude model inference and memory tracing. PMATIC's separate
 decoder-probability perturbation stress test is omitted from this comparison.
+
+
+For the same 512 text8 targets with GPT-2's full 50,257-token vocabulary and no
+PMATIC, run:
+
+```bash
+.venv/bin/python research/papers/cidr_2027/experiments/compare_coders_model.py \
+  --vocabulary full --no-pmatic
+```
+
+This stores results in `artifacts/papers/cidr-2027/coder-comparison/gpt2-text8-512-full/`.
+The lower frequency total becomes 65,536 (16 bits), because every vocabulary
+symbol receives at least one count. There is no token mask or mask cost in this
+mode. The coder archive still depends on the saved model-probability trace;
+the initial context token is reported separately.

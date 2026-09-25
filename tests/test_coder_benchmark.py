@@ -136,3 +136,12 @@ def test_benchmark_can_time_without_memory_or_perturbation_checks(trace):
     assert result["encode_peak_traced_bytes"] is None
     assert result["decode_peak_traced_bytes"] is None
     assert result["memory_metric"] == "not measured"
+
+
+def test_full_vocabulary_sweep_uses_valid_total_and_can_omit_pmatic():
+    from research.papers.cidr_2027.experiments.compare_coders_model import configurations
+
+    settings = configurations(50257, include_pmatic=False)
+    assert all(row["coder"] != "PMATIC" for _, row in settings)
+    assert dict(settings)["AC_total_low"]["total"] == 65536
+    assert dict(settings)["ANS_low_block64_lanes1"]["total"] == 65536
