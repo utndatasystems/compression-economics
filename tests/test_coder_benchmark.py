@@ -126,3 +126,13 @@ def test_parallel_benchmark_records_backend_and_roundtrip(trace):
     assert parallel["parameters"]["ac_threads"] == 2
     assert parallel["backend"] == "numba_parallel"
     assert parallel["range_encode_seconds"] > 0
+
+def test_benchmark_can_time_without_memory_or_perturbation_checks(trace):
+    result = benchmark_coder(
+        trace, "PMATIC", profile_memory=False, pmatic_safe_scenario=False
+    )
+    assert result["exact_roundtrip_valid"]
+    assert result["numerical_reproducibility"] == []
+    assert result["encode_peak_traced_bytes"] is None
+    assert result["decode_peak_traced_bytes"] is None
+    assert result["memory_metric"] == "not measured"

@@ -43,3 +43,26 @@ For a clean worker-scaling measurement of the same compiled range kernel, run
 --workers 1 2 4`. This uses fixed integer intervals, warms the JIT before
 timing, and checks output hashes across worker counts. It measures range
 coding only; it does not predict end-to-end text compression speed.
+
+
+### Small GPT/Qwen model comparison
+
+`compare_coders_model.py` loads a locally cached causal model in float32 and
+scores a fixed text8 prefix once. It builds one shared token alphabet from that
+prefix, then compares AC, MSAC, ANS, PMATIC, Huffman rank, and bit-packed rank
+on the same saved probability trace. Run from the repository root:
+
+```bash
+.venv/bin/python research/papers/cidr_2027/experiments/compare_coders_model.py
+```
+
+The default is GPT-2, 512 target tokens, and three timing repetitions.
+`--model Qwen/Qwen2.5-0.5B` uses the cached small Qwen model instead.
+Results, the exact trace, and the serialized Roaring token mask are saved under
+`artifacts/papers/cidr-2027/coder-comparison/`.
+
+The mask uses token IDs observed in the evaluated text, so its size is reported
+separately from coder archives. The saved probability trace provides decoder
+distributions; these coder archives are not standalone compressed text files.
+Coder times exclude model inference and memory tracing. PMATIC's separate
+decoder-probability perturbation stress test is omitted from this comparison.

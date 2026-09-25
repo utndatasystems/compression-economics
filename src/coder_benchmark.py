@@ -396,14 +396,18 @@ def decode_probability_stream(
     return _with_ans_lanes(ans_lanes, decode) if coder == "ANS" else decode()
 
 
-def _measure(function: Callable[[], object]) -> tuple[object, float, int]:
+def _measure(function: Callable[[], object], *, profile_memory: bool = True
+             ) -> tuple[object, float, int | None]:
     gc.collect()
-    tracemalloc.start()
+    if profile_memory:
+        tracemalloc.start()
     started = time.perf_counter()
     result = function()
     seconds = time.perf_counter() - started
-    _, peak_bytes = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
+    peak_bytes = None
+    if profile_memory:
+        _, peak_bytes = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
     return result, seconds, peak_bytes
 
 
@@ -451,7 +455,8 @@ def benchmark_coder(
     ac_streams: int = 4, ac_backend: str = "python", ac_threads: int | None = None,
     ans_block_size: int = 256, ans_lanes: int = 4,
     pmatic_delta: float = 1e-3, perturbation_scales: Iterable[float] = (),
-    seed: int = 2027,
+    seed: int = 2027, profile_memory: bool = True,
+    pmatic_safe_scenario: bool = True,
 ) -> dict:
     coder = coder.upper()
     if coder not in CODERS:
@@ -476,13 +481,15 @@ def benchmark_coder(
             trace, coder, total=total, ans_block_size=ans_block_size,
             ans_lanes=ans_lanes, pmatic_delta=pmatic_delta,
         )
-    stream, encode_seconds, encode_peak = _measure(encode_function)
+    stream, encode_seconds, encode_peak = _measure(
+        encode_function, profile_memory=profile_memory)
     decode_function = lambda: _decode_for_coder(
         coder, stream, trace.probabilities, total=total,
         alphabet_size=trace.alphabet_size, ans_lanes=ans_lanes,
         pmatic_delta=pmatic_delta,
     )
-    decoded, decode_seconds, decode_peak = _measure(decode_function)
+    decoded, decode_seconds, decode_peak = _measure(
+        decode_function, profile_memory=profile_memory)
     exact_roundtrip = bool(np.array_equal(decoded, trace.symbols))
     if not exact_roundtrip:
         raise AssertionError(f"{coder} failed exact round trip")
@@ -490,7 +497,7 @@ def benchmark_coder(
     perturbations = []
     scenarios = [(f"gaussian_{scale:g}", perturb_probabilities(trace, scale, seed))
                  for scale in perturbation_scales]
-    if coder == "PMATIC":
+    if coder == "PMATIC" and pmatic_safe_scenario:
         scenarios.append((
             f"pmatic_safe_delta_{pmatic_delta:g}",
             safe_pmatic_probabilities(trace, pmatic_delta, seed),
@@ -536,8 +543,8 @@ def benchmark_coder(
         "implementation_language": "python+numba" if coder == "AC_MULTISTREAM" and ac_backend == "numba_parallel" else "python",
         "throughput_claim_eligible": False,
         "throughput_warning": (
-            "End-to-end timing includes Python quantization, archive construction, and "
-            "memory profiling; range_encode_seconds isolates the compiled worker phase."
+            "End-to-end timing includes Python quantization and archive construction; "
+            "range_encode_seconds isolates interval buffering and the compiled worker phase."
             if coder == "AC_MULTISTREAM" and ac_backend == "numba_parallel" else
             "Reference-Python result; interpreter and allocation overhead dominate. "
             "Do not use for native-coder throughput claims."
@@ -568,7 +575,10 @@ def benchmark_coder(
         "decode_symbols_per_second": trace.symbol_count / decode_seconds,
         "encode_peak_traced_bytes": encode_peak,
         "decode_peak_traced_bytes": decode_peak,
-        "memory_metric": "Python tracemalloc peak; native allocator/device memory excluded",
+        "memory_metric": (
+            "Python tracemalloc peak; native allocator/device memory excluded"
+            if profile_memory else "not measured"
+        ),
         "exact_roundtrip_valid": exact_roundtrip,
         "numerical_reproducibility": perturbations,
         "hypothesis": "ANS may approach AC compression while improving throughput; not assumed true",
