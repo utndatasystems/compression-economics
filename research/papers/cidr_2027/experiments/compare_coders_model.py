@@ -20,7 +20,7 @@ from pyroaring import BitMap
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from src.coder_benchmark import ProbabilityTrace, benchmark_coder, save_probability_trace
+from src.coding.trace_benchmark import ProbabilityTrace, benchmark_coder, save_probability_trace
 
 
 def configurations(alphabet_size: int, *, include_pmatic: bool = True

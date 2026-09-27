@@ -42,10 +42,12 @@ _HUFFMAN_ENTRY = struct.Struct(">IH")
 
 @dataclass(frozen=True)
 class ProbabilityTrace:
+    """Validated probability rows and target symbols shared by every coder."""
     probabilities: np.ndarray
     symbols: np.ndarray
 
     def __post_init__(self) -> None:
+        """Normalize array types and validate the trace dimensions and values."""
         probabilities = np.asarray(self.probabilities, dtype=np.float64)
         symbols = np.asarray(self.symbols, dtype=np.int64)
         if probabilities.ndim != 2 or probabilities.shape[0] == 0:
@@ -65,14 +67,17 @@ class ProbabilityTrace:
 
     @property
     def symbol_count(self) -> int:
+        """Return the number of symbols to encode."""
         return self.probabilities.shape[0]
 
     @property
     def alphabet_size(self) -> int:
+        """Return the number of possible symbols per probability row."""
         return self.probabilities.shape[1]
 
     @property
     def sha256(self) -> str:
+        """Hash trace dimensions and values in a stable byte order."""
         digest = hashlib.sha256()
         digest.update(struct.pack(">II", self.symbol_count, self.alphabet_size))
         digest.update(self.probabilities.astype("<f8", copy=False).tobytes())
@@ -82,6 +87,7 @@ class ProbabilityTrace:
 
 @dataclass(frozen=True)
 class EncodedStream:
+    """Encoded archive and its payload, overhead, and helper size accounting."""
     bits: tuple[int, ...]
     archive: bytes
     payload_bits: int
@@ -93,6 +99,7 @@ class EncodedStream:
 
     @property
     def archive_bytes(self) -> int:
+        """Return the total encoded archive size in bytes."""
         return len(self.archive)
 
 
@@ -102,6 +109,7 @@ def save_probability_trace(path, trace: ProbabilityTrace) -> None:
 
 
 def load_probability_trace(path) -> ProbabilityTrace:
+    """Load and validate a trace from an archive with two named arrays."""
     with np.load(path, allow_pickle=False) as archive:
         if set(archive.files) != {"probabilities", "symbols"}:
             raise ValueError("trace archive must contain exactly probabilities and symbols")
@@ -111,6 +119,7 @@ def load_probability_trace(path) -> ProbabilityTrace:
 def synthetic_probability_trace(
     symbol_count: int, alphabet_size: int, *, seed: int = 2027
 ) -> ProbabilityTrace:
+    """Generate a reproducible Dirichlet trace and sample target symbols."""
     if symbol_count <= 0 or alphabet_size < 2:
         raise ValueError("synthetic trace dimensions must be positive")
     rng = np.random.default_rng(seed)
@@ -122,12 +131,14 @@ def synthetic_probability_trace(
 
 
 def ideal_cross_entropy_bits(trace: ProbabilityTrace) -> float:
+    """Sum ideal negative log probabilities for the observed symbols."""
     selected = trace.probabilities[np.arange(trace.symbol_count), trace.symbols]
     return float(np.sum(-np.log2(np.maximum(selected, 1e-300))))
 
 
 def quantized_cross_entropy_bits(trace: ProbabilityTrace, total: int,
                                  frequency_quantizer: str = "reference") -> float:
+    """Sum symbol costs after mapping each probability row to integer counts."""
     value = 0.0
     for symbol, probabilities in zip(trace.symbols, trace.probabilities):
         cumulative = build_cumul(probabilities, total=total, method=frequency_quantizer)
@@ -137,12 +148,14 @@ def quantized_cross_entropy_bits(trace: ProbabilityTrace, total: int,
 
 
 def _pack_bits(bits: Iterable[int]) -> tuple[bytes, int]:
+    """Pack bits most significant first and return the trailing padding count."""
     values = np.fromiter(bits, dtype=np.uint8)
     padding = (-len(values)) % 8
     return np.packbits(values, bitorder="big").tobytes(), padding
 
 
 def _unpack_bits(data: bytes, bit_count: int) -> tuple[int, ...]:
+    """Read the declared number of bits from a packed byte payload."""
     if bit_count > 8 * len(data):
         raise ValueError("declared bit count exceeds payload")
     values = np.unpackbits(np.frombuffer(data, dtype=np.uint8), bitorder="big")[:bit_count]
@@ -150,11 +163,12 @@ def _unpack_bits(data: bytes, bit_count: int) -> tuple[int, ...]:
 
 
 def _rank_order(probabilities: np.ndarray) -> np.ndarray:
-    # Probability descending, token ID ascending provides deterministic ties.
+    """Order token IDs by descending probability, breaking ties by ID."""
     return np.lexsort((np.arange(probabilities.size), -probabilities))
 
 
 def ranks_for_trace(trace: ProbabilityTrace) -> list[int]:
+    """Convert each target symbol to its rank in that row's probability order."""
     ranks = []
     for symbol, probabilities in zip(trace.symbols, trace.probabilities):
         order = _rank_order(probabilities)
@@ -163,6 +177,7 @@ def ranks_for_trace(trace: ProbabilityTrace) -> list[int]:
 
 
 def symbols_from_ranks(ranks: Iterable[int], probabilities: np.ndarray) -> np.ndarray:
+    """Recover token IDs from ranks using the corresponding probability rows."""
     decoded = []
     for rank, row in zip(ranks, probabilities):
         order = _rank_order(row)
@@ -173,6 +188,7 @@ def symbols_from_ranks(ranks: Iterable[int], probabilities: np.ndarray) -> np.nd
 
 
 def _canonical_codebook(ranks: list[int]) -> dict[int, str]:
+    """Build canonical Huffman bit strings for the observed ranks."""
     lengths = {symbol: len(code) for symbol, code in build_huffman_code(ranks).items()}
     canonical: dict[int, str] = {}
     code = 0
@@ -186,6 +202,7 @@ def _canonical_codebook(ranks: list[int]) -> dict[int, str]:
 
 
 def encode_bitpacked_ranks(trace: ProbabilityTrace) -> EncodedStream:
+    """Encode observed ranks at a fixed bit width with a small archive header."""
     ranks = ranks_for_trace(trace)
     width = max(1, max(ranks, default=0).bit_length())
     bits = tuple(bit for rank in ranks for bit in map(int, format(rank, f"0{width}b")))
@@ -198,6 +215,7 @@ def encode_bitpacked_ranks(trace: ProbabilityTrace) -> EncodedStream:
 
 
 def decode_bitpacked_ranks(stream: EncodedStream, probabilities: np.ndarray) -> np.ndarray:
+    """Decode fixed-width ranks and map them back to token IDs."""
     magic, count, width, payload_bits = _BITPACK_HEADER.unpack(
         stream.archive[:_BITPACK_HEADER.size]
     )
@@ -212,6 +230,7 @@ def decode_bitpacked_ranks(stream: EncodedStream, probabilities: np.ndarray) -> 
 
 
 def encode_huffman_ranks(trace: ProbabilityTrace) -> EncodedStream:
+    """Huffman-code ranks and store canonical code lengths in the archive."""
     ranks = ranks_for_trace(trace)
     codebook = _canonical_codebook(ranks)
     bits = tuple(bit for rank in ranks for bit in map(int, codebook[rank]))
@@ -228,6 +247,7 @@ def encode_huffman_ranks(trace: ProbabilityTrace) -> EncodedStream:
 
 
 def decode_huffman_ranks(stream: EncodedStream, probabilities: np.ndarray) -> np.ndarray:
+    """Rebuild the canonical codebook and decode ranks to token IDs."""
     magic, count, entry_count, payload_bits = _HUFFMAN_HEADER.unpack(
         stream.archive[:_HUFFMAN_HEADER.size]
     )
@@ -260,6 +280,7 @@ def decode_huffman_ranks(stream: EncodedStream, probabilities: np.ndarray) -> np
 
 
 def _ans_size_breakdown(bits: tuple[int, ...], count: int, block_size: int, lanes: int) -> tuple[int, int]:
+    """Separate rANS payload bits from its headers and lane state bytes."""
     data, padding = _pack_bits(bits)
     if padding or len(data) < 6:
         raise ValueError("invalid byte-aligned rANS stream")
@@ -282,6 +303,7 @@ def _ans_size_breakdown(bits: tuple[int, ...], count: int, block_size: int, lane
 
 
 def _with_ans_lanes(lanes: int, function: Callable[[], object]):
+    """Temporarily set rANS lane counts while running a callback."""
     if not 1 <= lanes <= 32:
         raise ValueError("ans_lanes must be between 1 and 32")
     encoder_lanes, decoder_lanes = RansBlockEncoder.LANES, RansBlockDecoder.LANES
@@ -295,6 +317,7 @@ def _with_ans_lanes(lanes: int, function: Callable[[], object]):
 
 
 def _stream_slices(symbol_count: int, stream_count: int) -> tuple[slice, ...]:
+    """Partition symbols into balanced contiguous streams."""
     if not 1 <= stream_count <= symbol_count:
         raise ValueError("ac_streams must be between 1 and the symbol count")
     width, extra = divmod(symbol_count, stream_count)
@@ -309,6 +332,7 @@ def encode_multistream_probability_stream(
     backend: str = "python", threads: int | None = None, timings: dict | None = None,
     frequency_quantizer: str = "reference",
 ) -> EncodedStream:
+    """Encode contiguous trace partitions as independent arithmetic streams."""
     encoder = MultistreamACEncoder(stream_count, total=total, backend=backend, threads=threads,
                                    frequency_quantizer=frequency_quantizer)
     for stream_id, span in enumerate(_stream_slices(trace.symbol_count, stream_count)):
@@ -333,6 +357,7 @@ def decode_multistream_probability_stream(
     stream: EncodedStream, probabilities: np.ndarray, *,
     frequency_quantizer: str = "reference",
 ) -> np.ndarray:
+    """Decode and validate each arithmetic stream against its trace partition."""
     decoder = MultistreamACDecoder(stream.archive, frequency_quantizer=frequency_quantizer)
     decoded = np.empty(len(probabilities), dtype=np.int64)
     for stream_id, span in enumerate(_stream_slices(len(probabilities), decoder.stream_count)):
@@ -348,6 +373,7 @@ def encode_probability_stream(
     trace: ProbabilityTrace, coder: str, *, total: int, ans_block_size: int,
     ans_lanes: int, pmatic_delta: float, frequency_quantizer: str = "reference",
 ) -> EncodedStream:
+    """Encode a trace with AC, ANS, or PMATIC and account for archive overhead."""
     options = {"algorithm": coder, "alphabet_size": trace.alphabet_size, "total": total,
                "frequency_quantizer": frequency_quantizer}
     if coder == "ANS":
@@ -392,6 +418,7 @@ def decode_probability_stream(
     alphabet_size: int, ans_lanes: int, pmatic_delta: float,
     frequency_quantizer: str = "reference",
 ) -> np.ndarray:
+    """Decode an AC, ANS, or PMATIC stream with supplied probability rows."""
     options = {"algorithm": coder, "alphabet_size": alphabet_size, "total": total,
                "frequency_quantizer": frequency_quantizer}
     if coder == "PMATIC":
@@ -407,6 +434,7 @@ def decode_probability_stream(
 
 def _measure(function: Callable[[], object], *, profile_memory: bool = True
              ) -> tuple[object, float, int | None]:
+    """Time a callback and optionally capture peak Python allocated memory."""
     gc.collect()
     if profile_memory:
         tracemalloc.start()
@@ -421,6 +449,7 @@ def _measure(function: Callable[[], object], *, profile_memory: bool = True
 
 
 def perturb_probabilities(trace: ProbabilityTrace, scale: float, seed: int) -> np.ndarray:
+    """Add seeded Gaussian noise and renormalize each probability row."""
     if scale < 0:
         raise ValueError("perturbation scale must be nonnegative")
     if scale == 0:
@@ -432,6 +461,7 @@ def perturb_probabilities(trace: ProbabilityTrace, scale: float, seed: int) -> n
 
 
 def safe_pmatic_probabilities(trace: ProbabilityTrace, delta: float, seed: int) -> np.ndarray:
+    """Create reproducible PMATIC-safe decoder probabilities."""
     state = np.random.get_state()
     np.random.seed(seed)
     try:
@@ -448,6 +478,7 @@ def _decode_for_coder(
     alphabet_size: int, ans_lanes: int, pmatic_delta: float,
     frequency_quantizer: str = "reference",
 ) -> np.ndarray:
+    """Dispatch decoding to the selected probability or rank coder."""
     if coder == "AC_MULTISTREAM":
         return decode_multistream_probability_stream(
             stream, probabilities, frequency_quantizer=frequency_quantizer)
@@ -471,6 +502,7 @@ def benchmark_coder(
     pmatic_safe_scenario: bool = True,
     frequency_quantizer: str = "reference",
 ) -> dict:
+    """Measure one coder, verify decoding, and report size and robustness metrics."""
     coder = coder.upper()
     validate_frequency_quantizer(frequency_quantizer)
     if coder not in CODERS:

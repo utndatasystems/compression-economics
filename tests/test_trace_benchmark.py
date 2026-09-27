@@ -3,7 +3,7 @@ import math
 import numpy as np
 import pytest
 
-from src.coder_benchmark import (
+from src.coding.trace_benchmark import (
     CODERS,
     ProbabilityTrace,
     benchmark_coder,

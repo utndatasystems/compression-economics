@@ -12,7 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[4]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from src.coder_benchmark import (
+from src.coding.trace_benchmark import (
     CODERS,
     benchmark_coder,
     load_probability_trace,

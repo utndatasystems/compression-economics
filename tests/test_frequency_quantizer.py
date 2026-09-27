@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from src.coder_benchmark import (
+from src.coding.trace_benchmark import (
     benchmark_coder,
     decode_multistream_probability_stream,
     decode_probability_stream,
