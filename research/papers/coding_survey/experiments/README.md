@@ -1,5 +1,8 @@
 # Coding survey experiments
 
+See the [experiment tracker](EXPERIMENT_PLAN.md) for planned experiments,
+the completed Qwen/text8 CPU pilot, its GPU repeat, and ablations.
+
 Keep survey-specific benchmark definitions and analysis here. Reusable coder
 implementations and trace measurements live in `src/`; raw traces, archives,
 profiles, and result JSON belong under the ignored
