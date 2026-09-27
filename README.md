@@ -85,6 +85,13 @@ python src/train_adapter.py \
     --epoch 4
 ```
 
+### Target interval AC (O3)
+
+Use `--encoding AC_TARGET_INTERVAL` with Transformers or the optional vLLM
+engine. The inference path exports a compact target interval per token.
+See [O3 usage and archive compatibility](docs/ac_target_interval.md) and
+[design choices and ablations](docs/ac_target_interval_todos.txt).
+
 ## Key options
 - `--input_path`: Text file to compress (compress mode) or `.bin` to decompress.
 - `--output_path`: Override default output file path.
@@ -95,7 +102,8 @@ python src/train_adapter.py \
 - `--batch_size`: Number of parallel sequences per step. Default: 1.
 - `--use_kv_cache` / `--no_kv_cache`: Enable or disable KV caching. Default: enabled for supported transformer models. Uneven cached batches are scored row by row.
 - `--reduce_tokens/--no_reduce_tokens`: Toggle global vocabulary reduction. Default: enabled.
-- `--encoding`: `AC`, `ANS`, `bitpacked`, `huffman`, or `PMATIC`. Default: `AC`.
+- `--engine`: `transformer`, `ngram`, or optional `vllm`.
+- `--encoding`: `AC`, `AC_MULTISTREAM`, `AC_TARGET_INTERVAL`, `ANS`, `bitpacked`, `huffman`, or `PMATIC`. Default: `AC`.
 - `--print_results`: Print detailed stats to stdout. Default: disabled.
 
 [ToDo: update key options with new training arguments]

@@ -3,8 +3,9 @@
 - `encoding.py`: arithmetic, ANS, Huffman, bit-packed rank, and PMATIC coders.
 - `encoding_utils.py`: shared probability quantization and PMATIC helpers. The `reference` and `vectorized_exact` methods produce the same integer CDF at fixed frequency total.
 - `multistream_ac.py`: portable MSAC archive and independent stream encoder/decoder.
+- `target_interval.py`: device-side float64 floor counts and compact target intervals (MSAC v2).
 - `parallel_ac.py`: optional Numba range-encoding kernel used by MSAC.
 
 Import these modules through `src.coding.*`. The frozen-trace comparison
-remains in `src/coder_benchmark.py`; its runnable experiments are in
+lives in `src/coding/trace_benchmark.py`; its runnable experiments are in
 `research/papers/cidr_2027/experiments/`.

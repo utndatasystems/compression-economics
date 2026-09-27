@@ -230,3 +230,6 @@ cython_debug/
 
 # job files
 /jobs
+
+# Versioned O3 design and ablation log
+!/docs/ac_target_interval_todos.txt

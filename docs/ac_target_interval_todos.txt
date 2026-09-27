@@ -1,0 +1,82 @@
+AC_TARGET_INTERVAL design choices and ablations
+
+[DECIDED] Port O3 using floor counts plus one per symbol and the actual row
+total. Use MSAC version 2, flag 1; retain version 1 for existing fixed-total
+archives. TODO: compare against device-side fixed-total count redistribution,
+including sorting/tie handling, coding size, conversion time, and exact parity.
+
+[DECIDED] Normalize probabilities in float64 for the floor-count path on both
+encoder and decoder. TODO: measure float32/float64 cost and interval stability
+on CPU/CUDA; evaluate an explicit MPS-compatible precision policy.
+
+[DECIDED] Reuse the current MSAC framing, checksums, and Python/Numba backends.
+TODO: compare Python and compiled interval encoding with JIT warmup excluded.
+
+[DECIDED] Implement a dedicated predictor method accepting known target tokens;
+decompression continues to request full distributions because targets are unknown.
+TODO: evaluate in-engine inverse-CDF decoding separately from compression O3.
+
+[DECIDED] Restore vLLM as an optional engine using worker-side interval capture.
+TODO: verify live CUDA/vLLM round trips and throughput on available hardware;
+measure worker synchronization and shared-memory allocation/transfer separately.
+
+[DECIDED] Keep O3 independent of teacher-forced windows and background pipelining.
+TODO: ablate O1 windows, O2 pipeline, O3 capture, and their interactions.
+
+[DECIDED] Frozen-trace benchmarks do not measure inference-to-host savings.
+TODO: add a matched live-model benchmark reporting transferred bytes, interval
+conversion, range encoding, full archive size, and end-to-end throughput.
+
+[DECIDED] Reject speculative decoding for target-interval archives until wired.
+TODO: integrate speculation without changing the probability/quantization contract.
+
+[DECIDED] vLLM O3 uses 32-byte capture storage per row (dense storage during
+decompression); batch compact GPU-to-CPU copies instead of scalar .item calls.
+TODO: benchmark pinned/asynchronous copies and synchronization overhead.
+
+[DECIDED] vLLM is an optional v1 logits-processor dependency; use the runtime's
+default attention backend. TODO: pin a validated version and compare attention
+backends. Interface source: https://docs.vllm.ai/en/v0.11.0/features/custom_logitsprocs.html
+
+[DECIDED] Obtain model metadata from the compression predictor to avoid loading
+a second model. vLLM parameter counts remain explicitly labeled config estimates.
+TODO: report measured model bytes/parameters from engine metadata when available.
+
+[DECIDED] vLLM initially supports standard decoder-only inference without LoRA.
+TODO: validate LoRA and additional model architectures; do not silently ignore them.
+
+[DECIDED] Dense vLLM decompression uses the same device softmax as worker-side
+O3 capture. TODO: stress-test counts near rounding boundaries across device
+reductions; cross-device probability/quantization equivalence is not assumed.
+
+[DECIDED] Capture exactly the archive vocabulary even when vocabulary reduction
+is off; exclude vLLM padding IDs so minimum counts agree with decompression.
+TODO: test tokenizer/model vocabulary-size differences with live engines.
+
+[DECIDED] Use device prefix sums for target bounds. TODO: compare prefix sums
+with masked reductions or fused kernels, including peak device memory.
+
+[DECIDED] Include inactive tail rows in inference capture, discard them during
+encoding. TODO: compact active rows to measure savings without changing ordering.
+
+[DECIDED] O3 remains outside the matched fixed-total frozen-trace coder list,
+because the current port uses a different quantized distribution.
+TODO: add O3 to trace studies only with explicit per-coder quantization metadata,
+or after implementing exact fixed-total target interval capture.
+
+[DECIDED] Expose logical interval record bytes and host-timed local conversion.
+TODO: CUDA-event profiling, physical transfer instrumentation, and worker-side
+softmax/quantization timings; distinguish cold model loading from warm inference.
+
+[DECIDED] Use the portable archive format; old fast-ac dictionary payloads are
+not imported. TODO: build an explicit migration reader if old archives are needed.
+
+[DECIDED] Persist vLLM tensor-parallel size and memory fraction in text archives;
+include tensor parallelism in result keys. TODO: compare tensor-parallel layouts
+and validate probability reproducibility before claiming cross-layout decoding.
+
+[DECIDED] Live Qwen/text8 comparison: CPU float32, 1,024 tokens, 16 rows,
+KV cache, global vocabulary mask, same Python coder backend, one warmed model,
+rotated order over three repeats, full archive sizes, verified round trips.
+TODO: repeat on CUDA; sweep excerpt/batch size and full versus masked vocabulary;
+separate compiled-backend effects. CPU results do not measure transfer savings.
