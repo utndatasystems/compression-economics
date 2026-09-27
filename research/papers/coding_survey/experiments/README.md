@@ -28,6 +28,27 @@ The runner charges the MSAC directory, per-stream byte rounding, and padding.
 Both implementations remain Python references; these timings do not establish
 the throughput of a compiled multistream coder.
 
+## Reproduce the coder bit-cost figure
+
+The manuscript figure uses one deterministic synthetic trace, not a model
+trace. From the repository root:
+
+    .venv/bin/python research/papers/cidr_2027/experiments/evaluate_coders.py \
+      --synthetic-symbols 4096 --alphabet-size 64 --seed 2027 \
+      --perturbation-scale 1e-6 \
+      --output-dir artifacts/papers/coding-survey/coder-bit-cost-trace
+    .venv/bin/python research/papers/coding_survey/experiments/plot_coder_bit_cost.py \
+      artifacts/papers/coding-survey/coder-bit-cost-trace/results.json \
+      artifacts/papers/coding-survey/coder-bit-cost-trace/synthetic-trace.npz \
+      research/papers/coding_survey/manuscript/figures/coder_bit_cost.pdf --synthetic-source
+
+The bars report serialized archive bits per token. The probability-coder
+reference is quantized model log-loss; the rank-coder reference is empirical
+rank entropy. The expected Shannon lower bound is computed from the
+trace probabilities because this synthetic generator sampled symbols
+from those same distributions. PMATIC's helper bits are included in
+its payload.
+
 ## Text compression
 
 `main.py --encoding AC_MULTISTREAM` now assigns one independent arithmetic
