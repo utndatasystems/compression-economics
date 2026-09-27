@@ -198,6 +198,8 @@ class _CharacterTokenizer:
     (7, "AC", "python"), (7, "ANS", "python"), (7, "AC_MULTISTREAM", "python"),
     (8, "AC", "python"), (8, "ANS", "python"), (8, "AC_MULTISTREAM", "python"),
     (8, "AC_MULTISTREAM", "numba_parallel"),
+    (2, "AC_TARGET_INTERVAL", "python"), (7, "AC_TARGET_INTERVAL", "python"),
+    (8, "AC_TARGET_INTERVAL", "numba_parallel"),
 ])
 def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch, encoding, token_count, ac_backend):
     import src.prediction as prediction_module
@@ -250,7 +252,7 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
     )
 
     save_global_mask_file(args, first_tokens, bits, bitmap)
-    if encoding == "AC_MULTISTREAM":
+    if encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
         assert compression_stats["msac_backend"] == ac_backend
         assert compression_stats["msac_range_encode_seconds"] > 0
         archive = (tmp_path / "stream.bin").read_bytes()

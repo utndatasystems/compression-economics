@@ -26,6 +26,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+vllm = [
+    "vllm>=0.11",
+]
 parallel = [
     "numba>=0.64",
 ]

@@ -136,11 +136,11 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--reduce_tokens", action="store_true", help="Restrict token space")
     parser.add_argument("--no_reduce_tokens", dest="reduce_tokens", action="store_false", help="Disable token space restriction")
     parser.set_defaults(reduce_tokens=True)
-    parser.add_argument("--engine", type=str, choices=["transformer", "ngram"], default="transformer", help="Inference engine to use")
+    parser.add_argument("--engine", type=str, choices=["transformer", "ngram", "vllm"], default="transformer", help="Inference engine to use")
     parser.add_argument("--ngram-model-path", type=str, help="Checkpoint path for --engine ngram")
     parser.add_argument("--ngram-training-path", type=str, help="Disjoint training text used to create an n-gram checkpoint during compression")
     parser.add_argument("--ngram-order", type=int, choices=[2], default=2, help="N-gram order; currently bigram only")
-    parser.add_argument("--encoding", type=str, choices=["AC", "AC_MULTISTREAM", "ANS", "bitpacked", "huffman", "PMATIC"], default="AC", help="Encoding method for compression")
+    parser.add_argument("--encoding", type=str, choices=["AC", "AC_MULTISTREAM", "AC_TARGET_INTERVAL", "ANS", "bitpacked", "huffman", "PMATIC"], default="AC", help="Encoding method for compression")
     parser.add_argument("--frequency-quantizer", choices=["reference", "vectorized_exact"], default="reference",
                         help="Integer frequency normalization method for probability coders")
     parser.add_argument("--ac-backend", choices=["python", "numba_parallel"], default="python", help="MSAC encoding backend; numba_parallel needs the parallel extra")
@@ -152,16 +152,24 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--print_results", action="store_true", help="Print detailed results")
     parser.add_argument("--force", action="store_true", help="Run the experiment even if results already exist.",)
     
+    parser.add_argument("--gpu-memory-utilization", type=float, default=0.8, help="vLLM GPU memory fraction")
+    parser.add_argument("--tensor-parallel-size", type=int, default=1, help="vLLM tensor parallel workers")
     args = parser.parse_args()
+    if args.encoding == "AC_TARGET_INTERVAL" and args.frequency_quantizer != "reference":
+        parser.error("AC_TARGET_INTERVAL uses its versioned floor-count quantizer; fixed-total quantizer options do not apply")
+    if args.engine == "vllm" and args.spec_k is not None:
+        parser.error("vLLM currently supports standard decompression only")
+    if not 0 < args.gpu_memory_utilization <= 1 or args.tensor_parallel_size < 1:
+        parser.error("invalid vLLM memory fraction or tensor parallel size")
 
     if args.ac_threads is not None and args.ac_threads < 1:
         parser.error("--ac-threads must be positive")
-    if args.encoding == "AC_MULTISTREAM" and args.spec_k is not None:
-        parser.error("AC_MULTISTREAM currently supports standard decompression only")
+    if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} and args.spec_k is not None:
+        parser.error("multistream and target-interval AC currently support standard decompression only")
 
     if args.engine == "ngram":
-        if args.encoding not in {"AC", "AC_MULTISTREAM", "ANS"}:
-            parser.error("--engine ngram currently supports --encoding AC, AC_MULTISTREAM, or ANS only")
+        if args.encoding not in {"AC", "AC_MULTISTREAM", "AC_TARGET_INTERVAL", "ANS"}:
+            parser.error("--engine ngram supports AC, AC_MULTISTREAM, AC_TARGET_INTERVAL, or ANS")
         if args.spec_k is not None:
             parser.error("--engine ngram does not support speculative decompression")
         if not args.ngram_model_path:

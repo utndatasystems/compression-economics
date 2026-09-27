@@ -71,9 +71,13 @@ _MULTISTREAM_CHECKSUM = struct.Struct(">I")
 
 
 def _save_multistream_global_mask_file(path, header, seeds, payload, bitmap):
-    """Store the text context and MSAC payload with portable field widths."""
+    """Store the text context and MSAC v1/v2 payload with portable field widths."""
     if not isinstance(payload, bytes) or not payload.startswith(b"MSAC"):
         raise ValueError("AC_MULTISTREAM requires an MSAC byte payload")
+    from src.coding.multistream_ac import MultistreamACDecoder
+    decoder = MultistreamACDecoder(payload)
+    if decoder.target_interval != (header["encoding"] == "AC_TARGET_INTERVAL"):
+        raise ValueError("archive encoding does not match MSAC quantization version")
     if len(seeds) != header["batch_size"]:
         raise ValueError("seed count does not match batch size")
     header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
@@ -110,7 +114,7 @@ def _load_multistream_global_mask_file(path):
     offset = _MULTISTREAM_HEADER.size
     header = json.loads(data[offset:offset + header_size].decode("utf-8"))
     offset += header_size
-    if header.get("encoding") != "AC_MULTISTREAM" or header.get("batch_size") != seed_count:
+    if header.get("encoding") not in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} or header.get("batch_size") != seed_count:
         raise ValueError("multistream text archive settings do not match its directory")
     seeds = list(struct.unpack_from(f">{seed_count}I", data, offset))
     offset += seed_count * 4
@@ -118,7 +122,10 @@ def _load_multistream_global_mask_file(path):
     offset += bitmap_size
     payload = data[offset:offset + payload_size]
     from src.coding.multistream_ac import MultistreamACDecoder
-    if MultistreamACDecoder(payload).stream_count != seed_count:
+    decoder = MultistreamACDecoder(payload)
+    if decoder.target_interval != (header["encoding"] == "AC_TARGET_INTERVAL"):
+        raise ValueError("archive encoding does not match MSAC quantization version")
+    if decoder.stream_count != seed_count:
         raise ValueError("MSAC stream count does not match seed count")
     return header, seeds, payload, bitmap
 
@@ -133,7 +140,7 @@ def save_global_mask_file(
     Save global-mask compression artifacts to a binary file.
 
     Legacy AC/ANS files use a JSON line, native-endian seed IDs, packed bits,
-    and the bitmap. AC_MULTISTREAM files use the versioned GMMS layout with
+    and the bitmap. AC_MULTISTREAM and AC_TARGET_INTERVAL files use GMMS with
     big-endian lengths and seeds, the bitmap, an MSAC payload, and a checksum.
 
     Args:
@@ -168,13 +175,18 @@ def save_global_mask_file(
         "ngram_model_sha256": getattr(args, "ngram_model_sha256", None),
         "ngram_order": getattr(args, "ngram_order", None),
     }
+    if header["engine"] == "vllm":
+        header["tensor_parallel_size"] = getattr(args, "tensor_parallel_size", 1)
+        header["gpu_memory_utilization"] = getattr(args, "gpu_memory_utilization", 0.8)
     # Old archives imply the reference method; omit that default to preserve
     # their headers and store the choice only for optimized runs.
     if getattr(args, "frequency_quantizer", "reference") != "reference":
         header["frequency_quantizer"] = args.frequency_quantizer
-    if header["encoding"] == "AC_MULTISTREAM":
+    if header["encoding"] in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
         header["ac_backend"] = getattr(args, "ac_backend", "python")
         header["ac_threads"] = getattr(args, "ac_threads", None)
+        if header["encoding"] == "AC_TARGET_INTERVAL":
+            header["interval_quantizer"] = "floor_float64_v1"
         _save_multistream_global_mask_file(
             file_path, header, first_token, bit_string, bitmask_data
         )
@@ -235,6 +247,8 @@ def load_global_mask_file(args):
             bitmask_data = f.read(bitmask_len)
 
 
+    if header.get("encoding") == "AC_TARGET_INTERVAL" and header.get("interval_quantizer") != "floor_float64_v1":
+        raise ValueError("unsupported target-interval quantizer")
     # Update args with loaded header values (ensures decompression settings match).
     args.model_name = header["model_name"]
     args.model_revision = header.get("model_revision")
@@ -252,6 +266,9 @@ def load_global_mask_file(args):
     args.ac_threads = header.get("ac_threads")
     args.reduce_tokens = header.get("reduce_tokens", args.reduce_tokens)
     args.engine = header.get("engine", args.engine)
+    if args.engine == "vllm":
+        args.tensor_parallel_size = header.get("tensor_parallel_size", 1)
+        args.gpu_memory_utilization = header.get("gpu_memory_utilization", 0.8)
     args.lora_path = header.get("lora_path", args.lora_path)
     args.pmatic_delta = header.get("pmatic_delta", getattr(args, "pmatic_delta", None))
     args.pmatic_r = header.get("pmatic_r", getattr(args, "pmatic_r", None))
@@ -293,6 +310,8 @@ def make_key(args):
     """
     filename = os.path.basename(args.input_path)
     key = f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
+    if args.engine == "vllm":
+        key += f"|tp={getattr(args, 'tensor_parallel_size', 1)}"
     method = getattr(args, "frequency_quantizer", "reference")
     return key if method == "reference" else f"{key}|freqq={method}"
 

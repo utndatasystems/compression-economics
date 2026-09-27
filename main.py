@@ -11,7 +11,6 @@ from pathlib import Path
 from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression, run_global_mask_speculative_decompression
 from src.config import get_main_args
 from src.utils import save_global_mask_file, load_global_mask_file, load_results, save_results, make_key, create_run_dir, save_params, check_mismatch
-from src.prediction import TokenPredictor
 
 RUN_DIR = Path("artifacts/runs/current")
 RESULTS_FILE = str(RUN_DIR / "compression_results.json")
@@ -93,27 +92,16 @@ def main():
             print(f"  Batch size       : {args.batch_size}")
             print(f"  Encoding         : {args.encoding}")
         
-            # add parameters to comp_stats for saving in results JSON
-            if args.engine == "ngram":
-                base_params = adapter_params = 0
-                base_size_mb = adapter_size_mb = 0.0
-            else:
-                token_predictor = TokenPredictor(args, bitmap_data=None)
-                base_params, adapter_params = token_predictor.base_params, token_predictor.adapter_params
-                base_size_mb, adapter_size_mb = token_predictor.base_size_mb, token_predictor.adapter_size_mb
-            total_params = base_params + adapter_params
-            total_size_mb = base_size_mb + adapter_size_mb
-
-            print(f'\nModel parameters:')
-            print(f"Adapter parameters   : {adapter_params:,}")
-            print(f"Base model parameters: {base_params:,}")
-            print(f"Adapter size (MB).   : {adapter_size_mb:.2f}")
-            print(f"Base model size (MB).: {base_size_mb:.2f}")
-
             # ========================
             # Run compression
             # ========================
             first_token, bit_string, bitmask_data, comp_stats, args = run_global_mask_compression(args)
+            base_params = comp_stats.get("base_params", 0)
+            adapter_params = comp_stats.get("adapter_params", 0)
+            base_size_mb = comp_stats.get("base_size_mb", 0.0)
+            adapter_size_mb = comp_stats.get("adapter_size_mb", 0.0)
+            total_params = base_params + adapter_params
+            total_size_mb = base_size_mb + adapter_size_mb
 
             comp_stats = {
                 **comp_stats,

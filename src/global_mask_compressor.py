@@ -36,9 +36,12 @@ def _rate(amount, seconds):
 
 
 def _make_token_predictor(args, bitmap_data):
-    """Select the legacy Transformer or n-gram predictor adapter."""
+    """Select the Transformer, n-gram, or optional vLLM predictor adapter."""
     if args.engine == "ngram":
         return NGramTokenPredictor(args, bitmap_data)
+    if args.engine == "vllm":
+        from src.vllm_prediction import VLLMTokenPredictor
+        return VLLMTokenPredictor(args, bitmap_data)
     return TokenPredictor(args, bitmap_data)
 
 
@@ -119,7 +122,7 @@ def run_global_mask_compression(args):
         args.first_n_tokens = len(data_tokens)
 
 
-    if args.encoding == "AC_MULTISTREAM" and not 1 <= args.batch_size <= len(data_tokens):
+    if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} and not 1 <= args.batch_size <= len(data_tokens):
         raise ValueError("AC_MULTISTREAM needs one seed token per nonempty batch")
 
     # Split tokens into contiguous batches of (roughly) equal length.
@@ -143,214 +146,249 @@ def run_global_mask_compression(args):
     bitmask_data = token_data_preparer.get_bitmap()
     total_bitmap_size = len(bitmask_data) * 8
     tokenize_time = time.perf_counter() - t0_tokenize
-        
+
     token_predictor = _make_token_predictor(args, bitmask_data)
+    try:
 
-    if args.encoding in {"AC", "ANS"}:
-        llm_compressor = LLMCompressor(algorithm=args.encoding,
-                                       frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
-    elif args.encoding == "AC_MULTISTREAM":
-        llm_compressor = MultistreamACEncoder(
-            args.batch_size, backend=getattr(args, "ac_backend", "python"),
-            threads=getattr(args, "ac_threads", None),
-            frequency_quantizer=getattr(args, "frequency_quantizer", "reference"),
-        )
-    elif args.encoding == "PMATIC":
-        delta, r = _get_pmatic_params(args)
-        print(f"Using PMATIC compressor with delta={delta}, r={r}")
-        alphabet_size = len(token_predictor.tokens_list)
-        # alternatively alphabet_size = token_predictor.tokenizer.vocab_size
-        llm_compressor = LLMCompressor(
-            alphabet_size=alphabet_size,
-            delta=delta,
-            r=r,
-            algorithm="PMATIC",
-        )
+        if args.encoding in {"AC", "ANS"}:
+            llm_compressor = LLMCompressor(algorithm=args.encoding,
+                                           frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
+        elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+            llm_compressor = MultistreamACEncoder(
+                args.batch_size, backend=getattr(args, "ac_backend", "python"),
+                threads=getattr(args, "ac_threads", None),
+                frequency_quantizer=getattr(args, "frequency_quantizer", "reference"),
+                target_interval=args.encoding == "AC_TARGET_INTERVAL",
+            )
+        elif args.encoding == "PMATIC":
+            delta, r = _get_pmatic_params(args)
+            print(f"Using PMATIC compressor with delta={delta}, r={r}")
+            alphabet_size = len(token_predictor.tokens_list)
+            # alternatively alphabet_size = token_predictor.tokenizer.vocab_size
+            llm_compressor = LLMCompressor(
+                alphabet_size=alphabet_size,
+                delta=delta,
+                r=r,
+                algorithm="PMATIC",
+            )
 
-    # Per-batch prompt buffers that grow token-by-token.
-    prompts = [[] for _ in range(args.batch_size)]
-    compression_time = time.perf_counter()
-    inference_time = 0
-    ac_time = 0
-    data_copy_time = 0
-    softmax_time = 0
-    entropy = 0.0
-    rank_list = []
-    probs_list = []
-    # Process each token in the dataset to compress it.
-    # Only run steps that have at least one next symbol. When all batches have
-    # equal length, the old ``range(chunk_length)`` performed one useless final
-    # model call and inflated the model-work throughput counter.
-    prediction_steps = max(batches_length) - 1
-    for token_idx in tqdm(range(prediction_steps), disable=not use_tqdm):
-        # Append the current token from each batch to its prompt context.
-        for i in range(args.batch_size):
-            prompts[i].append(batches[i][token_idx])
+        # Per-batch prompt buffers that grow token-by-token.
+        prompts = [[] for _ in range(args.batch_size)]
+        compression_time = time.perf_counter()
+        inference_time = 0
+        ac_time = 0
+        data_copy_time = 0
+        softmax_time = 0
+        entropy = 0.0
+        rank_list = []
+        probs_list = []
+        # Process each token in the dataset to compress it.
+        # Only run steps that have at least one next symbol. When all batches have
+        # equal length, the old ``range(chunk_length)`` performed one useless final
+        # model call and inflated the model-work throughput counter.
+        interval_transfer_bytes = 0
+        interval_seconds = 0.0
+        token_columns = {token: index for index, token in enumerate(token_predictor.tokens_list)}
+        prediction_steps = max(batches_length) - 1
+        for token_idx in tqdm(range(prediction_steps), disable=not use_tqdm):
+            # Append the current token from each batch to its prompt context.
+            for i in range(args.batch_size):
+                prompts[i].append(batches[i][token_idx])
 
-        # Trim context to keep inference cost bounded.
-        if len(prompts[0]) >= args.context_length:
-            prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
-        
-        # Run LLM inference
-        t0_inference = time.perf_counter()
-        token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
-        input_token_cnt += getattr(
-            token_predictor,
-            "last_model_input_tokens",
-            sum(len(prompt) for prompt in prompts),
-        )
-        data_copy_time += _data_copy_time
-        softmax_time += _softmax_time
-        inference_time += time.perf_counter() - t0_inference
+            # Trim context to keep inference cost bounded.
+            if len(prompts[0]) >= args.context_length:
+                prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
 
-        actual_next_tokens = []
-        valid_mask = [] 
+            actual_next_tokens = []
+            valid_mask = []
 
-        # Build a mask for batches that still have a "next token" at this step.
-        for idx in range(args.batch_size):
-            if token_idx + 1 < batches_length[idx]:
-                token = batches[idx][token_idx + 1]
-                actual_next_tokens.append(token_ids.index(token))
-                valid_mask.append(True)
+            # Build a mask for batches that still have a "next token" at this step.
+            for idx in range(args.batch_size):
+                if token_idx + 1 < batches_length[idx]:
+                    token = batches[idx][token_idx + 1]
+                    actual_next_tokens.append(token_columns[token])
+                    valid_mask.append(True)
+                else:
+                    actual_next_tokens.append(0)
+                    valid_mask.append(False)
+
+            # Run LLM inference
+            t0_inference = time.perf_counter()
+            if args.encoding == "AC_TARGET_INTERVAL":
+                targets = [batches[i][token_idx + 1] if valid_mask[i] else token_predictor.tokens_list[0]
+                           for i in range(args.batch_size)]
+                token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_interval_inference(
+                    prompts, targets, args.use_kv_cache)
+                interval_transfer_bytes += getattr(token_predictor, "last_interval_transfer_bytes", 32 * len(prompts))
+                interval_seconds += getattr(token_predictor, "last_interval_seconds", 0.0)
             else:
-                actual_next_tokens.append(0)
-                valid_mask.append(False)
+                token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
+            input_token_cnt += getattr(
+                token_predictor,
+                "last_model_input_tokens",
+                sum(len(prompt) for prompt in prompts),
+            )
+            data_copy_time += _data_copy_time
+            softmax_time += _softmax_time
+            inference_time += time.perf_counter() - t0_inference
 
-        if args.engine in {"transformer", "ngram"}:
-            if args.encoding in {"AC", "ANS", "AC_MULTISTREAM"}:
-                t0_ac = time.perf_counter()
-                probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
+            if args.engine in {"transformer", "ngram", "vllm"}:
+                if args.encoding == "AC_TARGET_INTERVAL":
+                    started = time.perf_counter()
+                    records = zip(probs_values["lows"].tolist(), probs_values["highs"].tolist(),
+                                  probs_values["totals"].tolist(), probs_values["target_probs"].tolist())
+                    for idx, (low, high, total, probability) in enumerate(records):
+                        if valid_mask[idx]:
+                            llm_compressor.encode_interval(idx, low, high, total)
+                            entropy += -np.log2(max(probability, 1e-300))
+                            probs_list.append(probability)
+                    ac_time += time.perf_counter() - started
+                elif args.encoding in {"AC", "ANS", "AC_MULTISTREAM"}:
+                    t0_ac = time.perf_counter()
+                    probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
 
-                # Encode each valid batch's next token using arithmetic coding.
-                for idx, probs in enumerate(probs_cpu):
-                    if not valid_mask[idx]:
-                        continue
-                    target_idx = actual_next_tokens[idx]
-                    if args.encoding == "AC_MULTISTREAM":
-                        llm_compressor.encode(idx, target_idx, probs)
-                    else:
+                    # Encode each valid batch's next token using arithmetic coding.
+                    for idx, probs in enumerate(probs_cpu):
+                        if not valid_mask[idx]:
+                            continue
+                        target_idx = actual_next_tokens[idx]
+                        if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+                            llm_compressor.encode(idx, target_idx, probs)
+                        else:
+                            llm_compressor.next_token(target_idx, probs)
+                        entropy += -np.log2(probs[target_idx])
+                        probs_list.append(probs[target_idx])
+
+                    ac_time += time.perf_counter() - t0_ac
+
+                elif args.encoding == "PMATIC":
+                    t0_ac = time.perf_counter()
+                    probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
+
+                    for idx, probs in enumerate(probs_cpu):
+                        if not valid_mask[idx]:
+                            continue
+                        target_idx = actual_next_tokens[idx]
+
                         llm_compressor.next_token(target_idx, probs)
-                    entropy += -np.log2(probs[target_idx])
-                    probs_list.append(probs[target_idx])
+                        entropy += -np.log2(probs[target_idx])
+                        probs_list.append(probs[target_idx])
 
-                ac_time += time.perf_counter() - t0_ac
+                    ac_time += time.perf_counter() - t0_ac
 
+                elif args.encoding in ("bitpacked", "huffman"):
+                    logits = probs_values.to(torch.float32)
+                    device = logits.device
+                    B, V = logits.shape
+
+                    # Compute rank of the true token within the model's logits.
+                    target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
+                    batch_idx = torch.arange(B, device=device)  # [B]
+
+                    target_logits = logits[batch_idx, target_idx].unsqueeze(1)
+
+                    ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
+                    ranks = ranks_0.cpu().tolist()
+
+                    for idx in range(args.batch_size):
+                        if not valid_mask[idx]:
+                            continue
+                        rank = ranks[idx]
+                        rank_list.append(rank)
+                        # llm_compressor.next_token(rank)
+
+                else:
+                    raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
+            else:
+                raise ValueError(f"Unsupported engine: {args.engine}")
+
+        if args.engine in {"transformer", "ngram", "vllm"}:
+            if args.encoding in {"AC", "ANS"}:
+                bit_string = llm_compressor.compress(encoding=args.encoding)
+            elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+                bit_string = llm_compressor.finish()
             elif args.encoding == "PMATIC":
-                t0_ac = time.perf_counter()
-                probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
-
-                for idx, probs in enumerate(probs_cpu):
-                    if not valid_mask[idx]:
-                        continue
-                    target_idx = actual_next_tokens[idx]
-        
-                    llm_compressor.next_token(target_idx, probs)
-                    entropy += -np.log2(probs[target_idx])
-                    probs_list.append(probs[target_idx])
-
-                ac_time += time.perf_counter() - t0_ac
-
-            elif args.encoding in ("bitpacked", "huffman"):
-                logits = probs_values.to(torch.float32)
-                device = logits.device
-                B, V = logits.shape
-
-                # Compute rank of the true token within the model's logits.
-                target_idx = torch.tensor(actual_next_tokens, device=device, dtype=torch.long)  # [B]
-                batch_idx = torch.arange(B, device=device)  # [B]
-
-                target_logits = logits[batch_idx, target_idx].unsqueeze(1)
-
-                ranks_0 = (logits > target_logits).sum(dim=1)  # [B]
-                ranks = ranks_0.cpu().tolist()
-
-                for idx in range(args.batch_size):
-                    if not valid_mask[idx]:
-                        continue
-                    rank = ranks[idx]
-                    rank_list.append(rank)
-                    # llm_compressor.next_token(rank)
-
+                bit_string = llm_compressor.compress(encoding="PMATIC")
+            elif args.encoding == "bitpacked":
+                print(f"len of rank list: {len(rank_list)}")
+                print(f"max rank: {max(rank_list)}")
+                bit_string = llm_compressor.compress(encoding="bitpacked", rank_list=rank_list)
+            elif args.encoding == "huffman":
+                print(f"len of rank list: {len(rank_list)}")
+                print(f"first 10 in rank list: {rank_list[:10]}")
+                bit_string, codebook = llm_compressor.compress(encoding="huffman", rank_list=rank_list)
             else:
                 raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
         else:
             raise ValueError(f"Unsupported engine: {args.engine}")
 
-    if args.engine in {"transformer", "ngram"}:
-        if args.encoding in {"AC", "ANS"}:
-            bit_string = llm_compressor.compress(encoding=args.encoding)
-        elif args.encoding == "AC_MULTISTREAM":
-            bit_string = llm_compressor.finish()
-        elif args.encoding == "PMATIC": 
-            bit_string = llm_compressor.compress(encoding="PMATIC")
-        elif args.encoding == "bitpacked":
-            print(f"len of rank list: {len(rank_list)}")
-            print(f"max rank: {max(rank_list)}")
-            bit_string = llm_compressor.compress(encoding="bitpacked", rank_list=rank_list)
-        elif args.encoding == "huffman":
-            print(f"len of rank list: {len(rank_list)}")
-            print(f"first 10 in rank list: {rank_list[:10]}")
-            bit_string, codebook = llm_compressor.compress(encoding="huffman", rank_list=rank_list)
-        else:
-            raise NotImplementedError(f"Encoding method '{args.encoding}' is not implemented.")
-    else:
-        raise ValueError(f"Unsupported engine: {args.engine}")
-    
-    compression_time = time.perf_counter() - compression_time
-    
-    total_compression_time = time.perf_counter() - t0_tokenize
-    # Bitstream length (in bits) plus bitmap size yields the final compressed size.
-    total_arithmetic_code_size = len(bit_string) * (8 if isinstance(bit_string, bytes) else 1)
-    if args.encoding == "huffman":
-        # Estimate the size of the codebook in bits
-        codebook_size = sum(len(code) for code in codebook.values())
-        total_arithmetic_code_size += codebook_size
-        print(f"Estimated codebook size (bits): {codebook_size}")
+        compression_time = time.perf_counter() - compression_time
 
-    # Calculate final size and compression ratio.
-    final_size = total_arithmetic_code_size + total_bitmap_size
-    original_text = token_predictor.detokenize(data_tokens)
-    original_size_bytes = len(original_text.encode("utf-8"))
+        total_compression_time = time.perf_counter() - t0_tokenize
+        # Bitstream length (in bits) plus bitmap size yields the final compressed size.
+        total_arithmetic_code_size = len(bit_string) * (8 if isinstance(bit_string, bytes) else 1)
+        if args.encoding == "huffman":
+            # Estimate the size of the codebook in bits
+            codebook_size = sum(len(code) for code in codebook.values())
+            total_arithmetic_code_size += codebook_size
+            print(f"Estimated codebook size (bits): {codebook_size}")
 
-    return first_tokens, bit_string, bitmask_data, {
-        "args": args.__dict__,
-        "chunk_length": chunk_length,
-        "chunk_size": -1, # -1 indicates global mask, not chunking
-        "original_size_bytes": original_size_bytes,
-        "arithmetic_code_size_bytes": total_arithmetic_code_size / 8,
-        "bitmap_size_bytes": total_bitmap_size / 8,
-        "final_size_bytes": final_size / 8,
-        "pure_compression_factor": original_size_bytes / (total_arithmetic_code_size / 8),
-        "compression_factor": original_size_bytes / (final_size / 8),
-        # Work counters. ``input_symbols_count`` measures useful source
-        # progress, whereas ``model_input_tokens_count`` includes context
-        # replay and therefore measures predictor work.
-        "input_symbols_count": len(data_tokens),
-        "model_input_tokens_count": input_token_cnt,
-        "input_tokens_count": input_token_cnt,  # Deprecated compatibility alias.
-        "entropy": float(entropy),
-        # Timings
-        "total_compression_time": total_compression_time,
-        "tokenize_time": tokenize_time,
-        "compression_time": compression_time,
-        "inference_time": inference_time,
-        "ac_time": ac_time,
-        "msac_backend": llm_compressor.backend if args.encoding == "AC_MULTISTREAM" else None,
-        "msac_workers": llm_compressor.threads if args.encoding == "AC_MULTISTREAM" else None,
-        "msac_quantize_seconds": llm_compressor.quantize_seconds if args.encoding == "AC_MULTISTREAM" else None,
-        "msac_range_encode_seconds": llm_compressor.range_encode_seconds if args.encoding == "AC_MULTISTREAM" else None,
-        "data_copy_time": data_copy_time,
-        "softmax_time": softmax_time,
-        # Throughput
-        "throughput_input_symbols_per_sec": len(data_tokens) / total_compression_time,
-        "throughput_model_input_tokens_per_sec": input_token_cnt / total_compression_time,
-        "throughput_tokens_per_sec": input_token_cnt / total_compression_time,  # Deprecated alias.
-        "throughput_kibibytes_per_sec": original_size_bytes / 1024 / total_compression_time,
-        "inference_throughput_input_symbols_per_sec": _rate(len(data_tokens), inference_time),
-        "inference_throughput_model_input_tokens_per_sec": _rate(input_token_cnt, inference_time),
-        "inference_throughput_tokens_per_sec": _rate(input_token_cnt, inference_time),  # Deprecated alias.
-        "inference_throughput_kibibytes_per_sec": _rate(original_size_bytes / 1024, inference_time),
-    }, args
+        # Calculate final size and compression ratio.
+        final_size = total_arithmetic_code_size + total_bitmap_size
+        original_text = token_predictor.detokenize(data_tokens)
+        original_size_bytes = len(original_text.encode("utf-8"))
+
+        return first_tokens, bit_string, bitmask_data, {
+            "base_params": getattr(token_predictor, "base_params", 0),
+            "adapter_params": getattr(token_predictor, "adapter_params", 0),
+            "base_size_mb": getattr(token_predictor, "base_size_mb", 0.0),
+            "adapter_size_mb": getattr(token_predictor, "adapter_size_mb", 0.0),
+            "model_parameter_count_source": "config_estimate" if args.engine == "vllm" else "loaded_model",
+            "args": args.__dict__,
+            "chunk_length": chunk_length,
+            "chunk_size": -1, # -1 indicates global mask, not chunking
+            "original_size_bytes": original_size_bytes,
+            "arithmetic_code_size_bytes": total_arithmetic_code_size / 8,
+            "bitmap_size_bytes": total_bitmap_size / 8,
+            "final_size_bytes": final_size / 8,
+            "pure_compression_factor": original_size_bytes / (total_arithmetic_code_size / 8),
+            "compression_factor": original_size_bytes / (final_size / 8),
+            # Work counters. ``input_symbols_count`` measures useful source
+            # progress, whereas ``model_input_tokens_count`` includes context
+            # replay and therefore measures predictor work.
+            "input_symbols_count": len(data_tokens),
+            "model_input_tokens_count": input_token_cnt,
+            "input_tokens_count": input_token_cnt,  # Deprecated compatibility alias.
+            "entropy": float(entropy),
+            # Timings
+            "total_compression_time": total_compression_time,
+            "tokenize_time": tokenize_time,
+            "compression_time": compression_time,
+            "inference_time": inference_time,
+            "ac_time": ac_time,
+            "msac_backend": llm_compressor.backend if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} else None,
+            "msac_workers": llm_compressor.threads if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} else None,
+            "msac_quantize_seconds": llm_compressor.quantize_seconds if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} else None,
+            "msac_range_encode_seconds": llm_compressor.range_encode_seconds if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} else None,
+            "interval_transfer_bytes": interval_transfer_bytes,
+            "interval_conversion_seconds": None if args.engine == "vllm" else interval_seconds,
+            "data_copy_time": data_copy_time,
+            "softmax_time": softmax_time,
+            # Throughput
+            "throughput_input_symbols_per_sec": len(data_tokens) / total_compression_time,
+            "throughput_model_input_tokens_per_sec": input_token_cnt / total_compression_time,
+            "throughput_tokens_per_sec": input_token_cnt / total_compression_time,  # Deprecated alias.
+            "throughput_kibibytes_per_sec": original_size_bytes / 1024 / total_compression_time,
+            "inference_throughput_input_symbols_per_sec": _rate(len(data_tokens), inference_time),
+            "inference_throughput_model_input_tokens_per_sec": _rate(input_token_cnt, inference_time),
+            "inference_throughput_tokens_per_sec": _rate(input_token_cnt, inference_time),  # Deprecated alias.
+            "inference_throughput_kibibytes_per_sec": _rate(original_size_bytes / 1024, inference_time),
+        }, args
+
+    finally:
+        cleanup = getattr(token_predictor, "cleanup", None)
+        if cleanup is not None:
+            cleanup()
 
 
 def run_global_mask_decompression(
@@ -385,123 +423,131 @@ def run_global_mask_decompression(
 
     # Initialize the token predictor.
     token_predictor = _make_token_predictor(args, bitmap)
+    try:
 
-    # The MSAC directory assigns one independent stream to each token batch.
-    if args.encoding == "AC_MULTISTREAM":
-        decompressor = MultistreamACDecoder(bit_string,
-            frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
-        if decompressor.stream_count != args.batch_size:
-            raise ValueError("MSAC stream count does not match batch size")
-    else:
-        decompressor = _make_arithmetic_decompressor(
-            args, bit_string, alphabet_size=len(token_predictor.tokens_list)
-        )
+        # The MSAC directory assigns one independent stream to each token batch.
+        if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+            decompressor = MultistreamACDecoder(bit_string,
+                frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
+            if decompressor.target_interval != (args.encoding == "AC_TARGET_INTERVAL"):
+                raise ValueError("archive encoding does not match MSAC quantization version")
+            if decompressor.stream_count != args.batch_size:
+                raise ValueError("MSAC stream count does not match batch size")
+        else:
+            decompressor = _make_arithmetic_decompressor(
+                args, bit_string, alphabet_size=len(token_predictor.tokens_list)
+            )
 
-    if args.encoding == "AC_MULTISTREAM" and len(first_tokens) != args.batch_size:
-        raise ValueError("MSAC seed count does not match batch size")
+        if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} and len(first_tokens) != args.batch_size:
+            raise ValueError("MSAC seed count does not match batch size")
 
-    # Seed each batch with its initial token from the original data (required for autoregressive decoding)
-    prompts = [[first_tokens[i]] for i in range(args.batch_size)]
-    reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
+        # Seed each batch with its initial token from the original data (required for autoregressive decoding)
+        prompts = [[first_tokens[i]] for i in range(args.batch_size)]
+        reconstructed_tokens = [[first_tokens[i]] for i in range(args.batch_size) if first_tokens]
 
-    # Set minimum tokens per batch = chunk_length 
-    chunk_length = args.first_n_tokens // args.batch_size
-    extra = args.first_n_tokens % args.batch_size
+        # Set minimum tokens per batch = chunk_length
+        chunk_length = args.first_n_tokens // args.batch_size
+        extra = args.first_n_tokens % args.batch_size
 
-    # Adjust length for extra tokens 
-    batches_length = [
-        chunk_length + (1 if i < extra else 0)
-        for i in range(args.batch_size)]
-    if args.encoding == "AC_MULTISTREAM":
-        expected_counts = [length - 1 for length in batches_length]
-        if decompressor.symbol_counts != expected_counts:
-            raise ValueError("MSAC symbol counts do not match batch lengths")
-    
-    input_tokens_cnt = 0
-    inference_time = 0
-    ac_time = 0
-    data_copy_time = 0
-    softmax_time = 0
+        # Adjust length for extra tokens
+        batches_length = [
+            chunk_length + (1 if i < extra else 0)
+            for i in range(args.batch_size)]
+        if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+            expected_counts = [length - 1 for length in batches_length]
+            if decompressor.symbol_counts != expected_counts:
+                raise ValueError("MSAC symbol counts do not match batch lengths")
 
-    # Determine max tokens to decode, set to first_n_tokens if not specified
-    max_tokens = args.first_n_tokens
-    total_decoded = len(first_tokens) if first_tokens else 0
+        input_tokens_cnt = 0
+        inference_time = 0
+        ac_time = 0
+        data_copy_time = 0
+        softmax_time = 0
 
-    # Iterate through all tokens in chunk length 
-    for token_idx in range(chunk_length):
-        if total_decoded >= max_tokens: 
-            # if max_tokens are reached, break 
-            break
+        # Determine max tokens to decode, set to first_n_tokens if not specified
+        max_tokens = args.first_n_tokens
+        total_decoded = len(first_tokens) if first_tokens else 0
 
-        # Bitstring is unbatched, therefore we have to calculate batch id again using chunk-length
-        #print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
+        # Iterate through all tokens in chunk length
+        for token_idx in range(chunk_length):
+            if total_decoded >= max_tokens:
+                # if max_tokens are reached, break
+                break
 
-        # Truncate context if it exceeds model limit (prevents overflow)
-        if len(prompts[0]) >= args.context_length:
-            prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
+            # Bitstring is unbatched, therefore we have to calculate batch id again using chunk-length
+            #print(f"\rProcessing batch {token_idx + 1}/{chunk_length}", end='')
 
-        # Run LLM inference
-        t0_inference = time.perf_counter()
-        _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, enable_kv_cache=args.use_kv_cache)
-        input_tokens_cnt += getattr(
-            token_predictor,
-            "last_model_input_tokens",
-            sum(len(prompt) for prompt in prompts),
-        )
-        data_copy_time += _data_copy_time
-        softmax_time += _softmax_time
-        inference_time += time.perf_counter() - t0_inference
+            # Truncate context if it exceeds model limit (prevents overflow)
+            if len(prompts[0]) >= args.context_length:
+                prompts = [prompt[-args.retain_tokens:] for prompt in prompts]
 
-        t0_ac = time.perf_counter()
-        # Provide the actual token's indexes and the probability distributions to the compressor.
-        for idx, probs in enumerate(probs_values.to(torch.float32).numpy()):
-            if token_idx + 1 < batches_length[idx]:
-                # Decompress the next token's index from the bit string.
-                #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
-                next_token_idx = (
-                    decompressor.decode(idx, probs) if args.encoding == "AC_MULTISTREAM"
-                    else decompressor.decompress(probs)
-                )
-                next_token = token_predictor.get_token_by_id(next_token_idx)
-                
-                # Append the decompressed token to the context for the next step.
-                prompts[idx].append(next_token)
-                reconstructed_tokens[idx].append(next_token)
+            # Run LLM inference
+            t0_inference = time.perf_counter()
+            _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, enable_kv_cache=args.use_kv_cache)
+            input_tokens_cnt += getattr(
+                token_predictor,
+                "last_model_input_tokens",
+                sum(len(prompt) for prompt in prompts),
+            )
+            data_copy_time += _data_copy_time
+            softmax_time += _softmax_time
+            inference_time += time.perf_counter() - t0_inference
 
-                total_decoded += 1 
+            t0_ac = time.perf_counter()
+            # Provide the actual token's indexes and the probability distributions to the compressor.
+            for idx, probs in enumerate(probs_values.to(torch.float32).numpy()):
+                if token_idx + 1 < batches_length[idx]:
+                    # Decompress the next token's index from the bit string.
+                    #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
+                    next_token_idx = (
+                        decompressor.decode(idx, probs) if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+                        else decompressor.decompress(probs)
+                    )
+                    next_token = token_predictor.get_token_by_id(next_token_idx)
 
-        ac_time += time.perf_counter() - t0_ac
-    
-    if args.encoding == "AC_MULTISTREAM":
-        decompressor.assert_complete()
-    reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
-    t0_detokenize = time.perf_counter()
-    detoken_string = token_predictor.detokenize(reconstructed_tokens)
-    detokenize_time = time.perf_counter() - t0_detokenize
+                    # Append the decompressed token to the context for the next step.
+                    prompts[idx].append(next_token)
+                    reconstructed_tokens[idx].append(next_token)
 
-    decompression_time = time.perf_counter() - t0_decompress
+                    total_decoded += 1
 
-    return reconstructed_tokens, detoken_string, {
-        "args": args.__dict__,
-        "decompression_time_sec": decompression_time,
-        "input_symbols_count": args.first_n_tokens,
-        "model_input_tokens_count": input_tokens_cnt,
-        "input_tokens_cnt": input_tokens_cnt,  # Deprecated compatibility alias.
-        # Timings
-        "total_decompression_time": decompression_time,
-        "detokenize_time": detokenize_time,
-        "inference_time": inference_time,
-        "ac_time": ac_time,
-        "data_copy_time": data_copy_time,
-        "softmax_time": softmax_time,
-        # Throughput
-        "throughput_input_symbols_per_sec": args.first_n_tokens / decompression_time,
-        "throughput_model_input_tokens_per_sec": input_tokens_cnt / decompression_time,
-        "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
-        "inference_throughput_input_symbols_per_sec": _rate(args.first_n_tokens, inference_time),
-        "inference_throughput_model_input_tokens_per_sec": _rate(input_tokens_cnt, inference_time),
-        "inference_throughput_kibibytes_per_sec": _rate(len(detoken_string) / 1024, inference_time),
-    }
+            ac_time += time.perf_counter() - t0_ac
+
+        if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+            decompressor.assert_complete()
+        reconstructed_tokens = list(chain.from_iterable(reconstructed_tokens))
+        t0_detokenize = time.perf_counter()
+        detoken_string = token_predictor.detokenize(reconstructed_tokens)
+        detokenize_time = time.perf_counter() - t0_detokenize
+
+        decompression_time = time.perf_counter() - t0_decompress
+
+        return reconstructed_tokens, detoken_string, {
+            "args": args.__dict__,
+            "decompression_time_sec": decompression_time,
+            "input_symbols_count": args.first_n_tokens,
+            "model_input_tokens_count": input_tokens_cnt,
+            "input_tokens_cnt": input_tokens_cnt,  # Deprecated compatibility alias.
+            # Timings
+            "total_decompression_time": decompression_time,
+            "detokenize_time": detokenize_time,
+            "inference_time": inference_time,
+            "ac_time": ac_time,
+            "data_copy_time": data_copy_time,
+            "softmax_time": softmax_time,
+            # Throughput
+            "throughput_input_symbols_per_sec": args.first_n_tokens / decompression_time,
+            "throughput_model_input_tokens_per_sec": input_tokens_cnt / decompression_time,
+            "throughput_kibibytes_per_sec": len(detoken_string) / 1024 / decompression_time,
+            "inference_throughput_input_symbols_per_sec": _rate(args.first_n_tokens, inference_time),
+            "inference_throughput_model_input_tokens_per_sec": _rate(input_tokens_cnt, inference_time),
+            "inference_throughput_kibibytes_per_sec": _rate(len(detoken_string) / 1024, inference_time),
+        }
+    finally:
+        cleanup = getattr(token_predictor, "cleanup", None)
+        if cleanup is not None:
+            cleanup()
+
 
 def run_global_mask_speculative_decompression(
     args,
@@ -531,6 +577,9 @@ def run_global_mask_speculative_decompression(
     Returns:
         tuple: (reconstructed_tokens_flat, detoken_string, stats)
     """
+    if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} or args.engine == "vllm":
+        raise ValueError("this engine/encoding requires standard decompression")
+
 
     print(
         f"\n----- Running Speculative Decompression: "
@@ -1169,7 +1218,7 @@ def run_global_mask_speculative_decompression_old(
 
 def run_global_mask_speculative_decompression_pseudo_code():
     pass
-    #draft k tokens, 
+    #draft k tokens,
         # --> can be imported from TokenPredictor.generate_draft with full_draft=True
     #score all drafted prefixes with the verifier,
         # --> can be imported from TokenPredictor.run_batched_inference on the set of all drafted prefixes

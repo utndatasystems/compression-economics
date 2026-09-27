@@ -5,7 +5,8 @@ probabilities used during encoding. The calling text archive stores the
 initial tokens and model settings. The model remains an external dependency.
 MSAC v1 stores stream lengths and
 checksums in big-endian fields. It uses the same probability quantizer as the
-existing single-stream arithmetic coder.
+existing single-stream arithmetic coder. MSAC v2 flag 1 identifies normalized
+float64 floor counts with per-symbol totals for target-interval capture.
 """
 
 from __future__ import annotations
@@ -61,7 +62,7 @@ class MultistreamACEncoder:
 
     def __init__(self, stream_count: int, *, total: int = 262144, state_bits: int = 32,
                  backend: str = "python", threads: int | None = None,
-                 frequency_quantizer: str = "reference"):
+                 frequency_quantizer: str = "reference", target_interval: bool = False):
         _validate_settings(stream_count, state_bits, total)
         if backend not in {"python", "numba_parallel"}:
             raise ValueError("backend must be python or numba_parallel")
@@ -83,8 +84,32 @@ class MultistreamACEncoder:
         self._finished = False
         self.quantize_seconds = 0.0
         self.range_encode_seconds = 0.0
+        if target_interval and frequency_quantizer != "reference":
+            raise ValueError("target intervals use floor counts, not fixed-total quantizers")
+        self.target_interval = target_interval
+        self._totals = [[] for _ in range(stream_count)]
+
+    def encode_interval(self, stream_id: int, low: int, high: int, total: int) -> None:
+        """Accept a captured interval without a host vocabulary-sized CDF."""
+        if not self.target_interval:
+            raise ValueError("captured intervals require target-interval mode")
+        if self._finished or not 0 <= stream_id < self.stream_count:
+            raise ValueError("invalid stream or encoder already finished")
+        if not 0 <= low < high <= total <= self.total:
+            raise ValueError("invalid captured interval")
+        started = time.perf_counter()
+        if self.backend == "python":
+            self._encoders[stream_id].write(np.array([low, high, total], dtype=np.int64), 0)
+        else:
+            self._lows[stream_id].append(low)
+            self._highs[stream_id].append(high)
+            self._totals[stream_id].append(total)
+        self._counts[stream_id] += 1
+        self.range_encode_seconds += time.perf_counter() - started
 
     def encode(self, stream_id: int, symbol: int, probabilities: Sequence[float] | np.ndarray) -> None:
+        if self.target_interval:
+            raise ValueError("target-interval encoder requires captured intervals")
         if self._finished:
             raise ValueError("encoder has already been finished")
         if not 0 <= stream_id < self.stream_count:
@@ -104,7 +129,7 @@ class MultistreamACEncoder:
         self._counts[stream_id] += 1
 
     def finish(self) -> bytes:
-        """Finalize streams and write the unchanged portable MSAC v1 format."""
+        """Finalize streams in MSAC v1 or the versioned target-interval format."""
         if self._finished:
             raise ValueError("encoder has already been finished")
         self._finished = True
@@ -120,13 +145,14 @@ class MultistreamACEncoder:
                 encoded.append((np.packbits(bits, bitorder="big").tobytes(), len(bits)))
         else:
             arrays = [
-                (np.asarray(lows, dtype=np.int64), np.asarray(highs, dtype=np.int64))
-                for lows, highs in zip(self._lows, self._highs)
+                (np.asarray(lows, dtype=np.int64), np.asarray(highs, dtype=np.int64),
+                 np.asarray(totals, dtype=np.int64))
+                for lows, highs, totals in zip(self._lows, self._highs, self._totals)
             ]
             start = time.perf_counter()
             with ThreadPoolExecutor(max_workers=self.threads) as executor:
                 results = list(executor.map(
-                    lambda pair: encode_intervals_packed(pair[0], pair[1], self.total, self.state_bits),
+                    lambda pair: encode_intervals_packed(pair[0], pair[1], self.total, self.state_bits, pair[2]),
                     arrays,
                 ))
             self.range_encode_seconds += time.perf_counter() - start
@@ -135,20 +161,21 @@ class MultistreamACEncoder:
             descriptors.append(_STREAM.pack(count, bit_count, zlib.crc32(data)))
             payloads.append(data)
         return b"".join((
-            _HEADER.pack(MAGIC, VERSION, self.state_bits, 0, self.total, self.stream_count),
+            _HEADER.pack(MAGIC, 2 if self.target_interval else VERSION, self.state_bits,
+                         int(self.target_interval), self.total, self.stream_count),
             *descriptors,
             *payloads,
         ))
 
 
 class MultistreamACDecoder:
-    """Validate an MSAC v1 payload and decode each stream independently."""
+    """Validate MSAC v1/v2 and decode each stream independently."""
 
     def __init__(self, archive: bytes, *, frequency_quantizer: str = "reference"):
         if len(archive) < _HEADER.size:
             raise ValueError("truncated MSAC header")
         magic, version, state_bits, flags, total, stream_count = _HEADER.unpack_from(archive)
-        if magic != MAGIC or version != VERSION or flags != 0:
+        if magic != MAGIC or (version, flags) not in {(VERSION, 0), (2, 1)}:
             raise ValueError("invalid or unsupported MSAC header")
         _validate_settings(stream_count, state_bits, total)
         descriptor_end = _HEADER.size + stream_count * _STREAM.size
@@ -159,6 +186,9 @@ class MultistreamACDecoder:
         self.total = total
         self.state_bits = state_bits
         self.frequency_quantizer = validate_frequency_quantizer(frequency_quantizer)
+        self.target_interval = version == 2
+        if self.target_interval and frequency_quantizer != "reference":
+            raise ValueError("target intervals use floor counts, not fixed-total quantizers")
         self.symbol_counts = []
         self.bit_counts = []
         self._decoders = []
@@ -197,7 +227,13 @@ class MultistreamACDecoder:
             raise ValueError("stream_id outside archive")
         if self._decoded[stream_id] >= self.symbol_counts[stream_id]:
             raise ValueError("stream has no more symbols")
-        cumulative = _cumulative(probabilities, self.total, self.frequency_quantizer)
+        if self.target_interval:
+            import torch
+            from src.coding.target_interval import floor_frequencies
+            frequencies, _ = floor_frequencies(torch.as_tensor(np.asarray(probabilities))[None], self.total)
+            cumulative = np.concatenate(([0], frequencies[0].cumsum(0).numpy()))
+        else:
+            cumulative = _cumulative(probabilities, self.total, self.frequency_quantizer)
         symbol = self._decoders[stream_id].read(cumulative, len(cumulative) - 1)
         self._decoded[stream_id] += 1
         return symbol

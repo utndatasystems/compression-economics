@@ -13,7 +13,8 @@ except ImportError:  # The Python MSAC backend has no Numba dependency.
 if njit is not None:
     @njit(cache=True, nogil=True)
     def encode_intervals_packed(
-        lows: np.ndarray, highs: np.ndarray, total: int, state_bits: int
+        lows: np.ndarray, highs: np.ndarray, total: int, state_bits: int,
+        totals: np.ndarray = np.empty(0, dtype=np.int64),
     ) -> tuple[np.ndarray, int]:
         """Encode one stream, returning packed bytes and its unpadded bit count."""
         max_range = 1 << state_bits
@@ -29,10 +30,11 @@ if njit is not None:
         bit_count = 0
 
         for i in range(lows.size):
+            symbol_total = totals[i] if totals.size else total
             current_range = high - low + 1
             base_low = low
-            low = base_low + lows[i] * current_range // total
-            high = base_low + highs[i] * current_range // total - 1
+            low = base_low + lows[i] * current_range // symbol_total
+            high = base_low + highs[i] * current_range // symbol_total - 1
 
             while ((low ^ high) & top_mask) == 0:
                 bit = low >> (state_bits - 1)

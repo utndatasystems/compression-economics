@@ -19,6 +19,36 @@ from peft import PeftModel
 from src.models import NGramPredictor
 from src.predictors import load_ngram_predictor, save_ngram_predictor, train_ngram_predictor
 
+def _run_interval_inference(predictor, prompts, target_token_ids, enable_kv_cache=True):
+    """Capture only four values per row after device-local quantization."""
+    from src.coding.target_interval import target_intervals_from_probs_tensor
+    if len(prompts) != len(target_token_ids):
+        raise ValueError("one target token is required per prompt")
+    vocabulary = tuple(predictor.tokens_list)
+    if getattr(predictor, "_interval_vocabulary", None) != vocabulary:
+        predictor._interval_vocabulary = vocabulary
+        predictor._interval_columns = {token: index for index, token in enumerate(vocabulary)}
+    columns = predictor._interval_columns
+    try:
+        targets = [columns[token] for token in target_token_ids]
+    except KeyError as error:
+        raise ValueError("target token outside vocabulary mask") from error
+    tokens, probabilities, copy_time, softmax_time = predictor.run_batched_inference(
+        prompts, enable_kv_cache, scores_on_device=True)
+    started = time.perf_counter()
+    low, high, total, probability = target_intervals_from_probs_tensor(probabilities, targets)
+    predictor.last_interval_seconds = time.perf_counter() - started
+    started = time.perf_counter()
+    records = torch.stack((low, high, total, probability), dim=1).detach().cpu()
+    predictor.last_interval_transfer_bytes = records.numel() * records.element_size()
+    copy_time += time.perf_counter() - started
+    intervals = {"lows": records[:, 0].to(torch.int64),
+                 "highs": records[:, 1].to(torch.int64),
+                 "totals": records[:, 2].to(torch.int64),
+                 "target_probs": records[:, 3]}
+    return tokens, intervals, copy_time, softmax_time
+
+
 class TokenDataPreparer:
     def __init__(self, args):
         """
@@ -174,8 +204,8 @@ class NGramTokenPredictor:
     """Token bigram adapter implementing the legacy predictor interface."""
 
     def __init__(self, args, bitmap_data):
-        if args.encoding not in {"AC", "ANS", "AC_MULTISTREAM"}:
-            raise ValueError("the ngram engine supports AC, AC_MULTISTREAM, or ANS coding")
+        if args.encoding not in {"AC", "ANS", "AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+            raise ValueError("the ngram engine supports AC, AC_MULTISTREAM, AC_TARGET_INTERVAL, or ANS coding")
         if bitmap_data is None:
             raise ValueError("the ngram engine requires a global token bitmap")
         self.args = args
@@ -206,7 +236,10 @@ class NGramTokenPredictor:
                 expected_sha256=getattr(args, "ngram_model_sha256", None),
             )
 
-    def run_batched_inference(self, prompts, enable_kv_cache=True):
+    def run_batched_interval_inference(self, prompts, target_token_ids, enable_kv_cache=True):
+        return _run_interval_inference(self, prompts, target_token_ids, enable_kv_cache)
+
+    def run_batched_inference(self, prompts, enable_kv_cache=True, *, scores_on_device=False):
         """Score prompt final tokens in global-bitmap order; no KV cache is used."""
         started = time.perf_counter()
         try:
@@ -378,7 +411,7 @@ class TokenPredictor:
         return len(set(lengths)) == 1
 
     
-    def _finalize_batched_scores(self, logits, data_copy_time):
+    def _finalize_batched_scores(self, logits, data_copy_time, *, scores_on_device=False):
         """
         Apply optional vocab reduction and return scores in the configured format.
         Follows last in run_batched_inference() after obtaining the raw logits from the model.
@@ -400,11 +433,13 @@ class TokenPredictor:
             logits = logits.index_select(1, self.index_tensor.to(logits.device))
 
         softmax_time = 0.0
-        if self.args.encoding in {"AC", "AC_MULTISTREAM", "ANS", "PMATIC"}:
+        if self.args.encoding in {"AC", "AC_MULTISTREAM", "AC_TARGET_INTERVAL", "ANS", "PMATIC"}:
             t0_softmax = time.perf_counter()
             probs = torch.softmax(logits, dim=-1)
             softmax_time = time.perf_counter() - t0_softmax
 
+            if scores_on_device:
+                return self.tokens_list, probs, data_copy_time, softmax_time
             t0_data_copy = time.perf_counter()
             probs_cpu = probs.cpu()
             data_copy_time += time.perf_counter() - t0_data_copy
@@ -418,7 +453,7 @@ class TokenPredictor:
             f"Encoding method '{self.args.encoding}' is not implemented.")
     
 
-    def run_batched_inference_cachefree(self, prompts):
+    def run_batched_inference_cachefree(self, prompts, *, scores_on_device=False):
         """
         Run a full forward pass without reusing KV cache state.
         Uneven prompts are scored independently without padding.
@@ -466,10 +501,13 @@ class TokenPredictor:
         assert logits.dim() == 2, f"Expected logits of shape (batch_size, vocab_size), got {logits.shape}"
         assert isinstance(logits, torch.Tensor), f"Expected logits to be a torch.Tensor, got {type(logits)}"
 
-        return self._finalize_batched_scores(logits, data_copy_time)
+        return self._finalize_batched_scores(logits, data_copy_time, scores_on_device=scores_on_device)
     
 
-    def run_batched_inference(self, prompts, enable_kv_cache=True):
+    def run_batched_interval_inference(self, prompts, target_token_ids, enable_kv_cache=True):
+        return _run_interval_inference(self, prompts, target_token_ids, enable_kv_cache)
+
+    def run_batched_inference(self, prompts, enable_kv_cache=True, *, scores_on_device=False):
         """Score prompts, reusing only caches built from their exact prefixes.
 
         Rectangular batches share a single cache. Uneven batches use independent
@@ -477,7 +515,7 @@ class TokenPredictor:
         Cache-free calls discard all previous cache state.
         """
         if not enable_kv_cache:
-            return self.run_batched_inference_cachefree(prompts)
+            return self.run_batched_inference_cachefree(prompts, scores_on_device=scores_on_device)
         if self.args.engine != "transformer":
             raise ValueError(f"Unsupported engine: {self.args.engine}")
         if not prompts or any(not row for row in prompts):
@@ -546,7 +584,7 @@ class TokenPredictor:
             self.reset_kv_cache()
             raise
 
-        return self._finalize_batched_scores(logits, data_copy_time)
+        return self._finalize_batched_scores(logits, data_copy_time, scores_on_device=scores_on_device)
 
     def generate_draft(self, prompt, k=None, enable_kv_cache=False, full_draft=False):                 
         #ToDo: later implement kv cashing for repeated calls on iterative prompts
