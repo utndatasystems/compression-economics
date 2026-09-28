@@ -193,15 +193,17 @@ class _CharacterTokenizer:
         return bytes(token_ids).decode("utf-8")
 
 
-@pytest.mark.parametrize("token_count,encoding,ac_backend", [
-    (2, "AC", "python"), (2, "AC_MULTISTREAM", "python"),
-    (7, "AC", "python"), (7, "ANS", "python"), (7, "AC_MULTISTREAM", "python"),
-    (8, "AC", "python"), (8, "ANS", "python"), (8, "AC_MULTISTREAM", "python"),
-    (8, "AC_MULTISTREAM", "numba_parallel"),
-    (2, "AC_TARGET_INTERVAL", "python"), (7, "AC_TARGET_INTERVAL", "python"),
-    (8, "AC_TARGET_INTERVAL", "numba_parallel"),
+@pytest.mark.parametrize("token_count,encoding,ac_backend,ac_layout", [
+    (2, "AC", "python", "standard"), (2, "AC_MULTISTREAM", "python", "standard"),
+    (7, "AC", "python", "standard"), (7, "ANS", "python", "standard"), (7, "AC_MULTISTREAM", "python", "standard"),
+    (8, "AC", "python", "standard"), (8, "ANS", "python", "standard"), (8, "AC_MULTISTREAM", "python", "standard"),
+    (8, "AC_MULTISTREAM", "numba_parallel", "standard"),
+    (2, "AC_TARGET_INTERVAL", "python", "standard"), (7, "AC_TARGET_INTERVAL", "python", "standard"),
+    (8, "AC_TARGET_INTERVAL", "numba_parallel", "standard"),
+    (7, "AC_MULTISTREAM", "python", "paired"),
+    (8, "AC_TARGET_INTERVAL", "python", "paired"),
 ])
-def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch, encoding, token_count, ac_backend):
+def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypatch, encoding, token_count, ac_backend, ac_layout):
     import src.prediction as prediction_module
 
     monkeypatch.setattr(
@@ -225,7 +227,7 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
         is_seq2seq=False,
         engine="ngram",
         encoding=encoding,
-        ac_backend=ac_backend, ac_threads=2,
+        ac_backend=ac_backend, ac_threads=2, ac_layout=ac_layout,
         reduce_tokens=True,
         first_n_tokens=token_count,
         batch_size=2,
@@ -269,6 +271,8 @@ def test_global_mask_bigram_round_trips_with_saved_checkpoint(tmp_path, monkeypa
     args.mode = "decompress"
     args.input_path = args.output_path
     args, first_tokens, bits, bitmap = load_global_mask_file(args)
+    if encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+        assert args.ac_layout == ac_layout
     reconstructed, text, decompression_stats = run_global_mask_decompression(
         args, first_tokens, bits, bitmap
     )

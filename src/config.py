@@ -145,6 +145,7 @@ def get_main_args() -> argparse.Namespace:
                         help="Integer frequency normalization method for probability coders")
     parser.add_argument("--ac-backend", choices=["python", "numba_parallel"], default="python", help="MSAC encoding backend; numba_parallel needs the parallel extra")
     parser.add_argument("--ac-threads", type=int, default=None, help="Maximum workers for numba_parallel MSAC encoding")
+    parser.add_argument("--ac-layout", choices=["standard", "paired"], default="standard", help="MSAC byte layout; paired shares compatible terminal bytes")
     parser.add_argument("--spec_k", type=int, default=None, help="Number of speculative tokens to generate for speculative compression/decompression")
     parser.add_argument("--draft_model_name", type=str, choices=model_list, default=None, help="Draft model name for speculative decompression (if different from teacher)")
     

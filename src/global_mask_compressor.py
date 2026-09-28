@@ -15,6 +15,7 @@ import sys
 
 from src.coding.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
+from src.coding.paired_ac import PairedACDecoder, PairedACEncoder
 from src.prediction import NGramTokenPredictor, TokenDataPreparer, TokenPredictor
 from itertools import chain
 from collections import defaultdict
@@ -154,7 +155,8 @@ def run_global_mask_compression(args):
             llm_compressor = LLMCompressor(algorithm=args.encoding,
                                            frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
         elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
-            llm_compressor = MultistreamACEncoder(
+            encoder_type = PairedACEncoder if getattr(args, "ac_layout", "standard") == "paired" else MultistreamACEncoder
+            llm_compressor = encoder_type(
                 args.batch_size, backend=getattr(args, "ac_backend", "python"),
                 threads=getattr(args, "ac_threads", None),
                 frequency_quantizer=getattr(args, "frequency_quantizer", "reference"),
@@ -427,7 +429,8 @@ def run_global_mask_decompression(
 
         # The MSAC directory assigns one independent stream to each token batch.
         if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
-            decompressor = MultistreamACDecoder(bit_string,
+            decoder_type = PairedACDecoder if getattr(args, "ac_layout", "standard") == "paired" else MultistreamACDecoder
+            decompressor = decoder_type(bit_string,
                 frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
             if decompressor.target_interval != (args.encoding == "AC_TARGET_INTERVAL"):
                 raise ValueError("archive encoding does not match MSAC quantization version")

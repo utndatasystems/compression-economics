@@ -72,10 +72,12 @@ _MULTISTREAM_CHECKSUM = struct.Struct(">I")
 
 def _save_multistream_global_mask_file(path, header, seeds, payload, bitmap):
     """Store the text context and MSAC v1/v2 payload with portable field widths."""
-    if not isinstance(payload, bytes) or not payload.startswith(b"MSAC"):
-        raise ValueError("AC_MULTISTREAM requires an MSAC byte payload")
+    paired = isinstance(payload, bytes) and payload.startswith(b"MSAP")
+    if not isinstance(payload, bytes) or not payload.startswith((b"MSAC", b"MSAP")):
+        raise ValueError("unsupported multistream payload")
     from src.coding.multistream_ac import MultistreamACDecoder
-    decoder = MultistreamACDecoder(payload)
+    from src.coding.paired_ac import PairedACDecoder
+    decoder = (PairedACDecoder if paired else MultistreamACDecoder)(payload)
     if decoder.target_interval != (header["encoding"] == "AC_TARGET_INTERVAL"):
         raise ValueError("archive encoding does not match MSAC quantization version")
     if len(seeds) != header["batch_size"]:
@@ -122,7 +124,10 @@ def _load_multistream_global_mask_file(path):
     offset += bitmap_size
     payload = data[offset:offset + payload_size]
     from src.coding.multistream_ac import MultistreamACDecoder
-    decoder = MultistreamACDecoder(payload)
+    from src.coding.paired_ac import PairedACDecoder
+    layout = "paired" if payload.startswith(b"MSAP") else "standard"
+    decoder = (PairedACDecoder if layout == "paired" else MultistreamACDecoder)(payload)
+    header["ac_layout"] = layout
     if decoder.target_interval != (header["encoding"] == "AC_TARGET_INTERVAL"):
         raise ValueError("archive encoding does not match MSAC quantization version")
     if decoder.stream_count != seed_count:
@@ -264,6 +269,7 @@ def load_global_mask_file(args):
     args.frequency_quantizer = header.get("frequency_quantizer", "reference")
     args.ac_backend = header.get("ac_backend", "python")
     args.ac_threads = header.get("ac_threads")
+    args.ac_layout = header.get("ac_layout", "standard")
     args.reduce_tokens = header.get("reduce_tokens", args.reduce_tokens)
     args.engine = header.get("engine", args.engine)
     if args.engine == "vllm":
