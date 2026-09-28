@@ -328,3 +328,9 @@ adversarial directory:
 python research/papers/neurips_2026/experiments/score_adversarial_payloads.py \
   --input-dir artifacts/runs/adversarial/qwen_05b_n1000
 ```
+
+## Coding survey GPU experiments
+
+For a new NVIDIA server, follow the [GPU setup and experiment guide](research/papers/coding_survey/experiments/GPU_SETUP.md).
+The [CUDA arithmetic coder implementation plan](docs/cuda_arithmetic_coder_plan.md)
+records the MSAC v2 compatibility contract and profiling gates.

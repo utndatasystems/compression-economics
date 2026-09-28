@@ -66,3 +66,47 @@ Next slices will add a matched compiled encoder and decoder, then engine-specifi
 handoff experiments. Each performance condition must preserve its resolved
 environment, archive, exact round-trip result, and separate encode/decode wall
 times.
+
+## Device-side arithmetic decoding pilot
+
+For MSAC v2 target-interval archives with the Transformer engine, pass
+`--ac-decode-backend device` during decompression. This opt-in path keeps
+probabilities and arithmetic state on the model's CPU/CUDA device; only token
+IDs return to the host prompt buffers. The default `host` path remains the
+reference. The current torch decoder performs host-visible synchronization in
+its renormalization loop, so it is a correctness baseline for a later fused
+kernel, not an established GPU speedup.
+
+A frozen-trace comparison, including exact recovery, can be run from the repo
+root with:
+
+```bash
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_device_decode.py \
+  --device cpu --steps 128 --streams 4 --alphabet 64 --repeats 5
+```
+
+Use `--device cuda` on a CUDA machine. This benchmark excludes model inference,
+archive I/O, and prompt transfer; live archive timings must be reported
+separately. CUDA synchronization brackets measured decode loops.
+
+The live CPU baseline uses the existing E02 Qwen/text8 archive and excerpt,
+loads one cached float32 model, rotates host/device condition order after
+warmup, and writes every exact-recovery timing sample:
+
+```bash
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_live_device_decode.py \
+  --repeats 5
+```
+
+The default output is ignored by Git at
+`artifacts/papers/coding-survey/in-engine-decoding/live-cpu.json`. The frozen
+trace runner also accepts `--output` for its raw samples. Include these files
+and the E02 archive in the anonymous submission artifact.
+
+## GPU server handoff
+
+Use the [GPU setup guide](GPU_SETUP.md) to install the locked environment,
+validate CUDA, run the frozen and live decode benchmarks, and preserve the
+machine and archive metadata. The [CUDA arithmetic coder plan](../../../../docs/cuda_arithmetic_coder_plan.md)
+specifies the MSAC v2 byte contract, implementation stages, and performance
+gates for a compiled kernel.

@@ -15,6 +15,7 @@ import sys
 
 from src.coding.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
+from src.coding.device_ac import DeviceMultistreamACDecoder
 from src.coding.paired_ac import PairedACDecoder, PairedACEncoder
 from src.prediction import NGramTokenPredictor, TokenDataPreparer, TokenPredictor
 from itertools import chain
@@ -426,13 +427,23 @@ def run_global_mask_decompression(
     # Initialize the token predictor.
     token_predictor = _make_token_predictor(args, bitmap)
     try:
+        device_decode = getattr(args, "ac_decode_backend", "host") == "device"
+        if device_decode and (args.encoding != "AC_TARGET_INTERVAL" or args.engine != "transformer"):
+            raise ValueError("device decoding requires Transformer and AC_TARGET_INTERVAL")
+        if device_decode:
+            token_ids_on_device = torch.tensor(token_predictor.tokens_list, dtype=torch.long,
+                                               device=token_predictor.device)
 
         # The MSAC directory assigns one independent stream to each token batch.
         if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
             decoder_type = PairedACDecoder if getattr(args, "ac_layout", "standard") == "paired" else MultistreamACDecoder
-            decompressor = decoder_type(bit_string,
-                frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
-            if decompressor.target_interval != (args.encoding == "AC_TARGET_INTERVAL"):
+            decompressor = (
+                DeviceMultistreamACDecoder(bit_string, token_predictor.device,
+                                           paired=getattr(args, "ac_layout", "standard") == "paired")
+                if device_decode else decoder_type(bit_string,
+                    frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
+            )
+            if not device_decode and decompressor.target_interval != (args.encoding == "AC_TARGET_INTERVAL"):
                 raise ValueError("archive encoding does not match MSAC quantization version")
             if decompressor.stream_count != args.batch_size:
                 raise ValueError("MSAC stream count does not match batch size")
@@ -466,6 +477,7 @@ def run_global_mask_decompression(
         ac_time = 0
         data_copy_time = 0
         softmax_time = 0
+        decoded_token_transfer_bytes = 0
 
         # Determine max tokens to decode, set to first_n_tokens if not specified
         max_tokens = args.first_n_tokens
@@ -486,7 +498,11 @@ def run_global_mask_decompression(
 
             # Run LLM inference
             t0_inference = time.perf_counter()
-            _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, enable_kv_cache=args.use_kv_cache)
+            _, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(
+                prompts, enable_kv_cache=args.use_kv_cache, scores_on_device=True
+            ) if device_decode else token_predictor.run_batched_inference(
+                prompts, enable_kv_cache=args.use_kv_cache
+            )
             input_tokens_cnt += getattr(
                 token_predictor,
                 "last_model_input_tokens",
@@ -497,22 +513,34 @@ def run_global_mask_decompression(
             inference_time += time.perf_counter() - t0_inference
 
             t0_ac = time.perf_counter()
-            # Provide the actual token's indexes and the probability distributions to the compressor.
-            for idx, probs in enumerate(probs_values.to(torch.float32).numpy()):
-                if token_idx + 1 < batches_length[idx]:
-                    # Decompress the next token's index from the bit string.
-                    #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
-                    next_token_idx = (
-                        decompressor.decode(idx, probs) if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
-                        else decompressor.decompress(probs)
-                    )
-                    next_token = token_predictor.get_token_by_id(next_token_idx)
+            # Device path keeps the CDF, lookup, and arithmetic state beside inference.
+            if device_decode:
+                active = [token_idx + 1 < length for length in batches_length]
+                columns = decompressor.decode(probs_values, active)
+                decoded_tokens = token_ids_on_device[columns].cpu().tolist()
+                decoded_token_transfer_bytes += len(decoded_tokens) * token_ids_on_device.element_size()
+                for idx, next_token in enumerate(decoded_tokens):
+                    if active[idx]:
+                        prompts[idx].append(next_token)
+                        reconstructed_tokens[idx].append(next_token)
+                        total_decoded += 1
+            else:
+                # Host decoder receives a full probability row for each stream.
+                for idx, probs in enumerate(probs_values.to(torch.float32).numpy()):
+                    if token_idx + 1 < batches_length[idx]:
+                        # Decompress the next token's index from the bit string.
+                        #print(f'probs_steps shape: {probs.shape}') --> probs_steps shape: (357,)
+                        next_token_idx = (
+                            decompressor.decode(idx, probs) if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+                            else decompressor.decompress(probs)
+                        )
+                        next_token = token_predictor.get_token_by_id(next_token_idx)
 
-                    # Append the decompressed token to the context for the next step.
-                    prompts[idx].append(next_token)
-                    reconstructed_tokens[idx].append(next_token)
+                        # Append the decompressed token to the context for the next step.
+                        prompts[idx].append(next_token)
+                        reconstructed_tokens[idx].append(next_token)
 
-                    total_decoded += 1
+                        total_decoded += 1
 
             ac_time += time.perf_counter() - t0_ac
 
@@ -536,6 +564,8 @@ def run_global_mask_decompression(
             "detokenize_time": detokenize_time,
             "inference_time": inference_time,
             "ac_time": ac_time,
+            "ac_decode_backend": "device" if device_decode else "host",
+            "decoded_token_transfer_bytes": decoded_token_transfer_bytes,
             "data_copy_time": data_copy_time,
             "softmax_time": softmax_time,
             # Throughput

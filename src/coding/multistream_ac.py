@@ -191,6 +191,7 @@ class MultistreamACDecoder:
             raise ValueError("target intervals use floor counts, not fixed-total quantizers")
         self.symbol_counts = []
         self.bit_counts = []
+        self.payload_bytes = []
         self._decoders = []
         self._decoded = [0] * stream_count
         offset = descriptor_end
@@ -208,6 +209,7 @@ class MultistreamACDecoder:
             if np.any(bits[bit_count:]):
                 raise ValueError("nonzero MSAC padding bits")
             self._decoders.append(ArithmeticDecoder(state_bits, BitInputStream(bits[:bit_count].tolist())))
+            self.payload_bytes.append(data)
             self.symbol_counts.append(count)
             self.bit_counts.append(bit_count)
             offset += byte_count

@@ -137,7 +137,7 @@ Remaining work:
 | A02 | Prefix scan vs masked reduction vs fused mask/softmax/quantization/interval kernel. | Alternative kernels needed; measure launches, device memory traffic, and total time. |
 | A03 | Batched records, pinned buffers, asynchronous copies, shared-memory allocation/reuse. | Profile existing capture first; alternatives need implementation. Charge synchronization/allocation. |
 | A04 | Inactive final-batch rows vs active-row compaction. | Alternative needed; measure tail utilization and result parity. |
-| A05 | In-engine arithmetic decoding and batched inverse CDF. | Exploratory implementation; compare CPU/batched/device search and state update; exact recovery required. |
+| A05 | In-engine arithmetic decoding and batched inverse CDF. | Opt-in torch device-state decoder implemented for MSAC v2 and paired layout; exact CPU and end-to-end tests pass. CUDA tests and live GPU profiling remain. Run `benchmark_device_decode.py` for a frozen-trace host/device comparison. |
 | A06 | vLLM attention backends, tensor parallel layouts, vocabulary padding, worker vs dense probabilities. | Live GPU required; pin validated version and test count-level agreement before performance claims. |
 | A07 | Speculative decompression/coding and early exit. | Exploratory; define lossless fallback, charge rejected work/helper data, compare multistream decoding. |
 | A08 | More models, datasets, and adaptation. | After Qwen/text8, select additional model sizes/source types. Other architectures/LoRA only if supported and retained in scope; vLLM LoRA is not currently validated. |
@@ -179,3 +179,36 @@ Results / variability:
 Limitations / deviations:
 Next action / design TODO:
 ```
+
+## D1--D5 — decoder-side integration study
+
+The manuscript section `sections/in_engine_decoding.tex` states the hypotheses,
+controls, and current results. The implementation is opt-in with
+`--ac-decode-backend device` for Transformer/MSAC-v2 decompression.
+
+| ID | Comparison | Current evidence and next step |
+| --- | --- | --- |
+| D1 | Frozen MSAC-v2 host versus batched torch decoder; stream/alphabet sweep. | **CPU complete.** Four 128-step conditions, seed 2027, five timed repeats after warmup, exact recovery. Raw JSON: `artifacts/papers/coding-survey/in-engine-decoding/frozen-cpu-*.json`. Run GPU equivalents with probability rows preloaded on device. |
+| D2 | Live host versus torch decode of identical Qwen/text8 archive. | **CPU complete.** Five rotated repeats after one warmup per path; 1,024 tokens, exact text recovery. Medians: host 6.187 s, torch 6.215 s. Raw JSON: `artifacts/papers/coding-survey/in-engine-decoding/live-cpu.json`. |
+| D3 | Matched live CUDA decode, full archive and physical transfer. | **Pending GPU.** First verify the same archive; if GPU probabilities produce different counts, create a matched GPU archive and report cross-device failure separately. |
+| D4 | Device decode stage ablations and fused kernel. | **Pending GPU.** Separate full-row host copy, device CDF with host state, current torch device state, and fused device state. Measure synchronization and memory. |
+| D5 | Cross-device/engine exactness and mismatch. | **CPU tests complete; GPU/engine work pending.** Never time failed decodes as successful conditions. |
+
+D1 reproduction (from the repository root):
+
+```bash
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_device_decode.py \
+  --device cpu --steps 128 --streams 4 --alphabet 64 --repeats 5 \
+  --output artifacts/papers/coding-survey/in-engine-decoding/frozen-cpu-b4-a64.json
+```
+
+Repeat with streams/alphabet `(1,64)`, `(16,64)`, and `(4,512)` for the manuscript
+table. D2 uses the existing ignored E02 archive and excerpt:
+
+```bash
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_live_device_decode.py \
+  --repeats 5
+```
+
+These JSON outputs are ignored by Git; include them, the archived source/model
+identifiers, and the E02 archive in the anonymous artifact package.

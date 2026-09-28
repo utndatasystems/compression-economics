@@ -114,7 +114,8 @@ def test_tiny_transformer_capture_decodes_with_full_distribution(cache, mask):
 
 
 @pytest.mark.parametrize("backend", ["python", "numba_parallel"])
-def test_local_transformer_text_archive_roundtrip(tmp_path, monkeypatch, backend):
+@pytest.mark.parametrize("decode_backend", ["host", "device"])
+def test_local_transformer_text_archive_roundtrip(tmp_path, monkeypatch, backend, decode_backend):
     if backend == "numba_parallel":
         pytest.importorskip("numba")
     from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
@@ -141,8 +142,10 @@ def test_local_transformer_text_archive_roundtrip(tmp_path, monkeypatch, backend
     assert stats["interval_transfer_bytes"] > 0
     save_global_mask_file(args, seeds, payload, bitmap)
     args.mode = "decompress"
+    args.ac_decode_backend = decode_backend
     args.input_path = args.output_path
     args, seeds, payload, bitmap = load_global_mask_file(args)
-    tokens, text, _ = run_global_mask_decompression(args, seeds, payload, bitmap)
+    tokens, text, decode_stats = run_global_mask_decompression(args, seeds, payload, bitmap)
+    assert decode_stats["ac_decode_backend"] == decode_backend
     assert bytes(tokens) == source.read_bytes()
     assert text.encode() == source.read_bytes()
