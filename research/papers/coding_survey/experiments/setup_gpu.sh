@@ -10,8 +10,11 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 # The broad root setup.sh downloads several datasets. This script prepares
-# only the locked Python environment and validates the CUDA decoder path.
-uv sync --locked --no-dev --extra parallel
+# only the frozen, committed Python environment and validates CUDA decoding.
+# The optional vLLM extra was added after uv.lock and currently conflicts with
+# the project NumPy/Torch/Transformers requirements. Kernel work needs only
+# the already-locked base and parallel dependencies, so avoid re-resolving it.
+uv sync --frozen --no-dev --extra parallel
 
 output_dir="artifacts/papers/coding-survey/gpu-setup"
 mkdir -p "$output_dir"
