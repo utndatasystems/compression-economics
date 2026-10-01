@@ -110,3 +110,22 @@ validate CUDA, run the frozen and live decode benchmarks, and preserve the
 machine and archive metadata. The [CUDA arithmetic coder plan](../../../../docs/cuda_arithmetic_coder_plan.md)
 specifies the MSAC v2 byte contract, implementation stages, and performance
 gates for a compiled kernel.
+
+
+## Compiled CUDA interval encoder
+
+`src/coding/cuda_ac.py` implements the first custom-kernel slice from the CUDA
+plan. It accepts exact integer lower, upper, and actual-total tensors with
+shape `[steps, streams]`; one CUDA thread owns each sequential arithmetic
+stream. The host wrapper adds the unchanged MSAC v2 directory and CRCs. It
+checks private-workspace overflow and retries rather than truncating output.
+The extension builds lazily on first use and requires Ninja plus a matching CUDA toolkit, so exclude compilation from timings.
+
+On a GPU allocation, run the byte-exact reference and overflow tests with:
+
+```bash
+MAX_JOBS=1 .venv/bin/python -m pytest -q tests/test_device_ac.py
+```
+
+The next implementation slice is the device decoder kernel, followed by
+in-engine interval capture that removes the remaining host synchronization.
