@@ -68,9 +68,14 @@ def _cuda_interval_trace(steps=19, streams=4, alphabet=17):
 def test_cuda_interval_encoder_matches_python_archive(workspace_bytes):
     probabilities, lows, highs, totals, targets = _cuda_interval_trace()
     counts = torch.tensor([19, 13, 1, 0], dtype=torch.int64, device="cuda")
+    metrics = {}
     actual = encode_intervals_cuda(
-        lows, highs, totals, counts, workspace_bytes=workspace_bytes
+        lows, highs, totals, counts,
+        workspace_bytes=workspace_bytes, metrics=metrics,
     )
+    assert metrics["kernel_seconds"] > 0
+    assert metrics["device_to_host_bytes"] > 0
+    assert metrics["workspace_retries"] == (workspace_bytes == 1)
 
     reference = MultistreamACEncoder(4, target_interval=True)
     host_lows = lows.cpu().numpy()

@@ -119,7 +119,8 @@ plan. It accepts exact integer lower, upper, and actual-total tensors with
 shape `[steps, streams]`; one CUDA thread owns each sequential arithmetic
 stream. The host wrapper adds the unchanged MSAC v2 directory and CRCs. It
 checks private-workspace overflow and retries rather than truncating output.
-The extension builds lazily on first use and requires Ninja plus a matching CUDA toolkit, so exclude compilation from timings.
+The extension builds lazily on first use and requires Ninja plus a matching
+CUDA toolkit, so exclude compilation from timings.
 
 On a GPU allocation, run the byte-exact reference and overflow tests with:
 
@@ -129,3 +130,29 @@ MAX_JOBS=1 .venv/bin/python -m pytest -q tests/test_device_ac.py
 
 The next implementation slice is the device decoder kernel, followed by
 in-engine interval capture that removes the remaining host synchronization.
+
+
+## Run the compiled CUDA encoder
+
+On Helma, the test wrapper obtains one H100 through Slurm when needed, loads
+CUDA 12.8, NCCL, and Ninja, and caps extension compilation to one job:
+
+```bash
+research/papers/coding_survey/experiments/run_cuda_ac_tests.sh
+```
+
+Live compression selects the buffered CUDA encoder with
+`--encoding AC_TARGET_INTERVAL --engine transformer --ac-backend cuda`. The
+CUDA path retains `[steps, streams]` interval tensors until finalization, uses
+one controlled synchronization, and records kernel and final device-to-host
+transfer metrics under `cuda_ac_metrics`.
+
+Kernel-only and matched live-Qwen benchmarks are:
+
+```bash
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_cuda_encode.py \
+  --output artifacts/papers/coding-survey/cuda-ac/kernel.json
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_cuda_compression.py \
+  --input data/text8 --tokens 256 --batch-size 16 \
+  --output artifacts/papers/coding-survey/cuda-ac/end-to-end.json
+```

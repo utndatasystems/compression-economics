@@ -113,7 +113,16 @@ def test_tiny_transformer_capture_decodes_with_full_distribution(cache, mask):
     decoder.assert_complete()
 
 
-@pytest.mark.parametrize("backend", ["python", "numba_parallel"])
+@pytest.mark.parametrize("backend", [
+    "python",
+    "numba_parallel",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(
+            not torch.cuda.is_available(), reason="CUDA unavailable"
+        ),
+    ),
+])
 @pytest.mark.parametrize("decode_backend", ["host", "device"])
 def test_local_transformer_text_archive_roundtrip(tmp_path, monkeypatch, backend, decode_backend):
     if backend == "numba_parallel":
@@ -139,7 +148,12 @@ def test_local_transformer_text_archive_roundtrip(tmp_path, monkeypatch, backend
         batch_size=3, context_length=4, retain_tokens=2, use_kv_cache=True,
         ac_backend=backend, ac_threads=2, spec_k=None)
     seeds, payload, bitmap, stats, args = run_global_mask_compression(args)
-    assert stats["interval_transfer_bytes"] > 0
+    if backend == "cuda":
+        assert stats["interval_transfer_bytes"] == 0
+        assert stats["cuda_ac_metrics"]["kernel_seconds"] > 0
+        assert stats["cuda_ac_metrics"]["device_to_host_bytes"] > 0
+    else:
+        assert stats["interval_transfer_bytes"] > 0
     save_global_mask_file(args, seeds, payload, bitmap)
     args.mode = "decompress"
     args.ac_decode_backend = decode_backend

@@ -36,16 +36,31 @@ def _run_interval_inference(predictor, prompts, target_token_ids, enable_kv_cach
     tokens, probabilities, copy_time, softmax_time = predictor.run_batched_inference(
         prompts, enable_kv_cache, scores_on_device=True)
     started = time.perf_counter()
-    low, high, total, probability = target_intervals_from_probs_tensor(probabilities, targets)
+    low, high, total, probability = target_intervals_from_probs_tensor(
+        probabilities,
+        targets,
+        validate=getattr(predictor.args, "ac_backend", "python") != "cuda",
+    )
     predictor.last_interval_seconds = time.perf_counter() - started
-    started = time.perf_counter()
-    records = torch.stack((low, high, total, probability), dim=1).detach().cpu()
-    predictor.last_interval_transfer_bytes = records.numel() * records.element_size()
-    copy_time += time.perf_counter() - started
-    intervals = {"lows": records[:, 0].to(torch.int64),
-                 "highs": records[:, 1].to(torch.int64),
-                 "totals": records[:, 2].to(torch.int64),
-                 "target_probs": records[:, 3]}
+    if getattr(predictor.args, "ac_backend", "python") == "cuda":
+        predictor.last_interval_transfer_bytes = 0
+        intervals = {
+            "lows": low.detach().contiguous(),
+            "highs": high.detach().contiguous(),
+            "totals": total.detach().contiguous(),
+            "target_probs": probability.detach().contiguous(),
+        }
+    else:
+        started = time.perf_counter()
+        records = torch.stack((low, high, total, probability), dim=1).detach().cpu()
+        predictor.last_interval_transfer_bytes = records.numel() * records.element_size()
+        copy_time += time.perf_counter() - started
+        intervals = {
+            "lows": records[:, 0].to(torch.int64),
+            "highs": records[:, 1].to(torch.int64),
+            "totals": records[:, 2].to(torch.int64),
+            "target_probs": records[:, 3],
+        }
     return tokens, intervals, copy_time, softmax_time
 
 

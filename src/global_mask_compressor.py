@@ -14,9 +14,10 @@ bitmap to reconstruct tokens from the bitstream.
 import sys
 
 from src.coding.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
+from src.coding.cuda_ac import encode_intervals_cuda
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 from src.coding.device_ac import DeviceMultistreamACDecoder
-from src.coding.paired_ac import PairedACDecoder, PairedACEncoder
+from src.coding.paired_ac import PairedACDecoder, PairedACEncoder, pack_standard_archive
 from src.prediction import NGramTokenPredictor, TokenDataPreparer, TokenPredictor
 from itertools import chain
 from collections import defaultdict
@@ -124,6 +125,19 @@ def run_global_mask_compression(args):
         args.first_n_tokens = len(data_tokens)
 
 
+    ac_backend = getattr(args, "ac_backend", "python")
+    cuda_interval_backend = (
+        args.encoding == "AC_TARGET_INTERVAL" and ac_backend == "cuda"
+    )
+    if ac_backend == "cuda" and (
+        args.encoding != "AC_TARGET_INTERVAL" or args.engine != "transformer"
+    ):
+        raise ValueError(
+            "CUDA AC encoding requires Transformer and AC_TARGET_INTERVAL"
+        )
+    if cuda_interval_backend and not torch.cuda.is_available():
+        raise ValueError("CUDA AC encoding requires an available CUDA device")
+
     if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} and not 1 <= args.batch_size <= len(data_tokens):
         raise ValueError("AC_MULTISTREAM needs one seed token per nonempty batch")
 
@@ -156,13 +170,23 @@ def run_global_mask_compression(args):
             llm_compressor = LLMCompressor(algorithm=args.encoding,
                                            frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
         elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
-            encoder_type = PairedACEncoder if getattr(args, "ac_layout", "standard") == "paired" else MultistreamACEncoder
-            llm_compressor = encoder_type(
-                args.batch_size, backend=getattr(args, "ac_backend", "python"),
-                threads=getattr(args, "ac_threads", None),
-                frequency_quantizer=getattr(args, "frequency_quantizer", "reference"),
-                target_interval=args.encoding == "AC_TARGET_INTERVAL",
-            )
+            if cuda_interval_backend:
+                llm_compressor = None
+            else:
+                encoder_type = (
+                    PairedACEncoder
+                    if getattr(args, "ac_layout", "standard") == "paired"
+                    else MultistreamACEncoder
+                )
+                llm_compressor = encoder_type(
+                    args.batch_size,
+                    backend=ac_backend,
+                    threads=getattr(args, "ac_threads", None),
+                    frequency_quantizer=getattr(
+                        args, "frequency_quantizer", "reference"
+                    ),
+                    target_interval=args.encoding == "AC_TARGET_INTERVAL",
+                )
         elif args.encoding == "PMATIC":
             delta, r = _get_pmatic_params(args)
             print(f"Using PMATIC compressor with delta={delta}, r={r}")
@@ -185,6 +209,25 @@ def run_global_mask_compression(args):
         entropy = 0.0
         rank_list = []
         probs_list = []
+        prediction_steps = max(batches_length) - 1
+        if cuda_interval_backend:
+            interval_shape = (prediction_steps, args.batch_size)
+            interval_device = token_predictor.device
+            cuda_interval_lows = torch.empty(
+                interval_shape, dtype=torch.int64, device=interval_device
+            )
+            cuda_interval_highs = torch.empty_like(cuda_interval_lows)
+            cuda_interval_totals = torch.empty_like(cuda_interval_lows)
+            cuda_target_probs = torch.empty(
+                interval_shape, dtype=torch.float64, device=interval_device
+            )
+        else:
+            cuda_interval_lows = None
+            cuda_interval_highs = None
+            cuda_interval_totals = None
+            cuda_target_probs = None
+        cuda_inference_events = []
+        cuda_ac_metrics = {}
         # Process each token in the dataset to compress it.
         # Only run steps that have at least one next symbol. When all batches have
         # equal length, the old ``range(chunk_length)`` performed one useless final
@@ -192,7 +235,6 @@ def run_global_mask_compression(args):
         interval_transfer_bytes = 0
         interval_seconds = 0.0
         token_columns = {token: index for index, token in enumerate(token_predictor.tokens_list)}
-        prediction_steps = max(batches_length) - 1
         for token_idx in tqdm(range(prediction_steps), disable=not use_tqdm):
             # Append the current token from each batch to its prompt context.
             for i in range(args.batch_size):
@@ -215,8 +257,13 @@ def run_global_mask_compression(args):
                     actual_next_tokens.append(0)
                     valid_mask.append(False)
 
-            # Run LLM inference
+            # Run LLM inference. CUDA events preserve asynchronous execution
+            # while avoiding a host synchronization at every prediction step.
             t0_inference = time.perf_counter()
+            if cuda_interval_backend:
+                inference_start = torch.cuda.Event(enable_timing=True)
+                inference_end = torch.cuda.Event(enable_timing=True)
+                inference_start.record()
             if args.encoding == "AC_TARGET_INTERVAL":
                 targets = [batches[i][token_idx + 1] if valid_mask[i] else token_predictor.tokens_list[0]
                            for i in range(args.batch_size)]
@@ -233,19 +280,49 @@ def run_global_mask_compression(args):
             )
             data_copy_time += _data_copy_time
             softmax_time += _softmax_time
-            inference_time += time.perf_counter() - t0_inference
+            if cuda_interval_backend:
+                inference_end.record()
+                cuda_inference_events.append((inference_start, inference_end))
+            else:
+                inference_time += time.perf_counter() - t0_inference
 
             if args.engine in {"transformer", "ngram", "vllm"}:
                 if args.encoding == "AC_TARGET_INTERVAL":
-                    started = time.perf_counter()
-                    records = zip(probs_values["lows"].tolist(), probs_values["highs"].tolist(),
-                                  probs_values["totals"].tolist(), probs_values["target_probs"].tolist())
-                    for idx, (low, high, total, probability) in enumerate(records):
-                        if valid_mask[idx]:
-                            llm_compressor.encode_interval(idx, low, high, total)
-                            entropy += -np.log2(max(probability, 1e-300))
-                            probs_list.append(probability)
-                    ac_time += time.perf_counter() - started
+                    if cuda_interval_backend:
+                        for name in ("lows", "highs", "totals", "target_probs"):
+                            if probs_values[name].device.type != "cuda":
+                                raise ValueError(
+                                    "CUDA interval backend received host interval data"
+                                )
+                        cuda_interval_lows[token_idx].copy_(probs_values["lows"])
+                        cuda_interval_highs[token_idx].copy_(probs_values["highs"])
+                        cuda_interval_totals[token_idx].copy_(probs_values["totals"])
+                        active = torch.as_tensor(
+                            valid_mask,
+                            dtype=torch.bool,
+                            device=probs_values["target_probs"].device,
+                        )
+                        cuda_target_probs[token_idx].copy_(torch.where(
+                            active,
+                            probs_values["target_probs"],
+                            torch.ones_like(probs_values["target_probs"]),
+                        ))
+                    else:
+                        started = time.perf_counter()
+                        records = zip(
+                            probs_values["lows"].tolist(),
+                            probs_values["highs"].tolist(),
+                            probs_values["totals"].tolist(),
+                            probs_values["target_probs"].tolist(),
+                        )
+                        for idx, (low, high, total, probability) in enumerate(records):
+                            if valid_mask[idx]:
+                                llm_compressor.encode_interval(
+                                    idx, low, high, total
+                                )
+                                entropy += -np.log2(max(probability, 1e-300))
+                                probs_list.append(probability)
+                        ac_time += time.perf_counter() - started
                 elif args.encoding in {"AC", "ANS", "AC_MULTISTREAM"}:
                     t0_ac = time.perf_counter()
                     probs_cpu = probs_values.to(torch.float32).numpy()  # [B, V]
@@ -309,7 +386,41 @@ def run_global_mask_compression(args):
             if args.encoding in {"AC", "ANS"}:
                 bit_string = llm_compressor.compress(encoding=args.encoding)
             elif args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
-                bit_string = llm_compressor.finish()
+                if cuda_interval_backend:
+                    device = token_predictor.device
+                    lows = cuda_interval_lows
+                    highs = cuda_interval_highs
+                    totals = cuda_interval_totals
+                    target_probabilities = cuda_target_probs
+                    counts = torch.tensor(
+                        [max(0, length - 1) for length in batches_length],
+                        dtype=torch.int64,
+                        device=device,
+                    )
+                    # One controlled boundary replaces one synchronization per
+                    # prediction step and makes inference/coder timings separable.
+                    torch.cuda.synchronize(device)
+                    inference_time = sum(
+                        start.elapsed_time(end) / 1000.0
+                        for start, end in cuda_inference_events
+                    )
+                    started = time.perf_counter()
+                    entropy = float((
+                        -torch.log2(target_probabilities.clamp_min(1e-300))
+                    ).sum().item())
+                    bit_string = encode_intervals_cuda(
+                        lows,
+                        highs,
+                        totals,
+                        counts,
+                        metrics=cuda_ac_metrics,
+                    )
+                    if getattr(args, "ac_layout", "standard") == "paired":
+                        bit_string = pack_standard_archive(bit_string)
+                        cuda_ac_metrics["paired_archive_bytes"] = len(bit_string)
+                    ac_time += time.perf_counter() - started
+                else:
+                    bit_string = llm_compressor.finish()
             elif args.encoding == "PMATIC":
                 bit_string = llm_compressor.compress(encoding="PMATIC")
             elif args.encoding == "bitpacked":
@@ -369,10 +480,33 @@ def run_global_mask_compression(args):
             "compression_time": compression_time,
             "inference_time": inference_time,
             "ac_time": ac_time,
-            "msac_backend": llm_compressor.backend if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} else None,
-            "msac_workers": llm_compressor.threads if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} else None,
-            "msac_quantize_seconds": llm_compressor.quantize_seconds if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} else None,
-            "msac_range_encode_seconds": llm_compressor.range_encode_seconds if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} else None,
+            "msac_backend": (
+                ac_backend
+                if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+                else None
+            ),
+            "msac_workers": (
+                None
+                if cuda_interval_backend
+                else llm_compressor.threads
+                if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+                else None
+            ),
+            "msac_quantize_seconds": (
+                interval_seconds
+                if cuda_interval_backend
+                else llm_compressor.quantize_seconds
+                if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+                else None
+            ),
+            "msac_range_encode_seconds": (
+                cuda_ac_metrics.get("kernel_seconds")
+                if cuda_interval_backend
+                else llm_compressor.range_encode_seconds
+                if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+                else None
+            ),
+            "cuda_ac_metrics": cuda_ac_metrics or None,
             "interval_transfer_bytes": interval_transfer_bytes,
             "interval_conversion_seconds": None if args.engine == "vllm" else interval_seconds,
             "data_copy_time": data_copy_time,

@@ -38,3 +38,18 @@ def test_other_cli_entrypoints_remain_independent(monkeypatch):
     monkeypatch.setattr(sys, "argv", ["quantize_model.py", "--model_id",
                                     "Qwen/Qwen2.5-0.5B", "--quantization_bits", "4"])
     assert get_quantize_model_args().quantization_bits == 4
+
+
+def test_cuda_encoder_cli_contract(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "main.py", "--mode", "compress", "--engine", "transformer",
+        "--encoding", "AC_TARGET_INTERVAL", "--ac-backend", "cuda",
+    ])
+    assert get_main_args().ac_backend == "cuda"
+
+    monkeypatch.setattr(sys, "argv", [
+        "main.py", "--mode", "compress", "--encoding", "AC",
+        "--ac-backend", "cuda",
+    ])
+    with pytest.raises(SystemExit):
+        get_main_args()

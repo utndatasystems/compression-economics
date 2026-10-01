@@ -143,7 +143,11 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--encoding", type=str, choices=["AC", "AC_MULTISTREAM", "AC_TARGET_INTERVAL", "ANS", "bitpacked", "huffman", "PMATIC"], default="AC", help="Encoding method for compression")
     parser.add_argument("--frequency-quantizer", choices=["reference", "vectorized_exact"], default="reference",
                         help="Integer frequency normalization method for probability coders")
-    parser.add_argument("--ac-backend", choices=["python", "numba_parallel"], default="python", help="MSAC encoding backend; numba_parallel needs the parallel extra")
+    parser.add_argument(
+        "--ac-backend", choices=["python", "numba_parallel", "cuda"],
+        default="python",
+        help="MSAC encoding backend; cuda requires Transformer AC_TARGET_INTERVAL compression",
+    )
     parser.add_argument("--ac-threads", type=int, default=None, help="Maximum workers for numba_parallel MSAC encoding")
     parser.add_argument("--ac-layout", choices=["standard", "paired"], default="standard", help="MSAC byte layout; paired shares compatible terminal bytes")
     parser.add_argument("--ac-decode-backend", choices=["host", "device"], default="host", help="Decode MSAC v2 beside Transformer inference on CPU/CUDA")
@@ -157,6 +161,12 @@ def get_main_args() -> argparse.Namespace:
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.8, help="vLLM GPU memory fraction")
     parser.add_argument("--tensor-parallel-size", type=int, default=1, help="vLLM tensor parallel workers")
     args = parser.parse_args()
+    if args.mode == "compress" and args.ac_backend == "cuda" and (
+        args.encoding != "AC_TARGET_INTERVAL" or args.engine != "transformer"
+    ):
+        parser.error(
+            "--ac-backend cuda requires Transformer AC_TARGET_INTERVAL compression"
+        )
     if args.ac_decode_backend == "device" and (args.mode != "decompress" or args.engine != "transformer"):
         parser.error("--ac-decode-backend device requires Transformer decompression")
     if args.encoding == "AC_TARGET_INTERVAL" and args.frequency_quantizer != "reference":
