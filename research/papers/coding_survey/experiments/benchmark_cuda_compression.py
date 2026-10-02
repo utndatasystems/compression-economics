@@ -82,11 +82,27 @@ def _warm_extension() -> None:
 
 
 def _sample(stats: dict, payload: bytes) -> dict:
+    source_bytes = stats["original_size_bytes"]
+    compression_seconds = stats["compression_time"]
+    total_seconds = stats["total_compression_time"]
     return {
-        "compression_seconds": stats["compression_time"],
-        "total_seconds": stats["total_compression_time"],
+        "source_bytes": source_bytes,
+        "compression_seconds": compression_seconds,
+        "total_seconds": total_seconds,
         "inference_seconds": stats["inference_time"],
         "ac_seconds": stats["ac_time"],
+        "compression_phase_source_mb_per_second": (
+            source_bytes / compression_seconds / 1_000_000
+        ),
+        "compression_phase_source_mib_per_second": (
+            source_bytes / compression_seconds / (1024 * 1024)
+        ),
+        "whole_call_source_mb_per_second": (
+            source_bytes / total_seconds / 1_000_000
+        ),
+        "whole_call_source_mib_per_second": (
+            source_bytes / total_seconds / (1024 * 1024)
+        ),
         "total_input_symbols_per_sec": stats["throughput_input_symbols_per_sec"],
         "compression_phase_input_symbols_per_sec": (
             stats["input_symbols_count"] / stats["compression_time"]
@@ -204,6 +220,10 @@ def main() -> None:
         "inference_seconds",
         "ac_seconds",
         "interval_conversion_seconds",
+        "compression_phase_source_mb_per_second",
+        "compression_phase_source_mib_per_second",
+        "whole_call_source_mb_per_second",
+        "whole_call_source_mib_per_second",
         "total_input_symbols_per_sec",
         "compression_phase_input_symbols_per_sec",
     )
@@ -221,6 +241,18 @@ def main() -> None:
         "input_sha256": hashlib.sha256(
             cli.benchmark_text.encode("utf-8")
         ).hexdigest(),
+        "source_bytes": warmups[variants[0]]["source_bytes"],
+        "throughput_accounting": {
+            "numerator": "UTF-8 bytes of the detokenized token prefix",
+            "decimal_mb_bytes": 1_000_000,
+            "binary_mib_bytes": 1024 * 1024,
+            "compression_phase_denominator": (
+                "live inference, interval capture, arithmetic coding, and final transfer"
+            ),
+            "whole_call_denominator": (
+                "compression phase plus tokenization and model construction"
+            ),
+        },
         "tokens": cli.tokens,
         "batch_size": cli.batch_size,
         "context_length": cli.context_length,

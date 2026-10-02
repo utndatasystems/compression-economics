@@ -110,6 +110,7 @@ def main() -> None:
     ).eval().to(device)
     with excerpt_path.open("r", encoding="utf-8", newline="") as handle:
         expected_text = handle.read()
+    source_bytes = excerpt_path.stat().st_size
     expected_tokens = tokenizer.encode(expected_text, add_special_tokens=False)
     if len(expected_tokens) != args.first_n_tokens:
         raise ValueError("source and archive token counts disagree")
@@ -153,19 +154,45 @@ def main() -> None:
         if decoded != expected_tokens or text != expected_text:
             raise AssertionError(f"{backend} failed exact token/text recovery")
         if repeat:
-            sample = {"repeat": repeat, "seconds": stats["decompression_time_sec"],
-                      "inference_seconds": stats["inference_time"],
-                      "arithmetic_seconds": stats["ac_time"],
-                      "softmax_seconds": stats["softmax_time"],
-                      "data_copy_seconds": stats["data_copy_time"],
-                      "decoded_token_transfer_bytes": stats["decoded_token_transfer_bytes"],
-                      "cuda_decode_metrics": stats.get("cuda_decode_metrics")}
+            total_seconds = stats["decompression_time_sec"]
+            arithmetic_seconds = stats["ac_time"]
+            sample = {
+                "repeat": repeat,
+                "seconds": total_seconds,
+                "inference_seconds": stats["inference_time"],
+                "arithmetic_seconds": arithmetic_seconds,
+                "end_to_end_source_mb_per_second": (
+                    source_bytes / total_seconds / 1_000_000
+                ),
+                "end_to_end_source_mib_per_second": (
+                    source_bytes / total_seconds / (1024 * 1024)
+                ),
+                "ac_stage_equivalent_source_mb_per_second": (
+                    source_bytes / arithmetic_seconds / 1_000_000
+                ),
+                "ac_stage_equivalent_source_mib_per_second": (
+                    source_bytes / arithmetic_seconds / (1024 * 1024)
+                ),
+                "softmax_seconds": stats["softmax_time"],
+                "data_copy_seconds": stats["data_copy_time"],
+                "decoded_token_transfer_bytes": stats["decoded_token_transfer_bytes"],
+                "cuda_decode_metrics": stats.get("cuda_decode_metrics"),
+            }
             results[backend].append(sample)
             print(f"{backend} repeat {repeat}: {sample['seconds']:.3f} s", flush=True)
     output = {
         "source": str(args_cli.pilot_dir), "archive_sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(),
         "excerpt_sha256": hashlib.sha256(excerpt_path.read_bytes()).hexdigest(),
-        "archive_bytes": archive_path.stat().st_size, "source_bytes": excerpt_path.stat().st_size,
+        "archive_bytes": archive_path.stat().st_size, "source_bytes": source_bytes,
+        "throughput_accounting": {
+            "numerator": "uncompressed excerpt file bytes",
+            "decimal_mb_bytes": 1_000_000,
+            "binary_mib_bytes": 1024 * 1024,
+            "end_to_end_denominator": "complete decompression function wall time",
+            "ac_stage_equivalent_denominator": (
+                "arithmetic-stage wall time; diagnostic, not end-to-end throughput"
+            ),
+        },
         "model": name, "model_revision": getattr(model.config, "_commit_hash", None),
         "dtype": str(model.dtype), "device": args_cli.device,
         "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
@@ -180,9 +207,21 @@ def main() -> None:
         "backends": backends, "timed_condition_orders": timed_orders,
         "timing_scope": "decompression function, excludes model loading and archive file I/O; includes prediction, coder, token copies and detokenization",
         "samples": results,
-        "medians": {backend: {key: statistics.median(row[key] for row in samples)
-                             for key in ("seconds", "inference_seconds", "arithmetic_seconds")}
-                    for backend, samples in results.items()},
+        "medians": {
+            backend: {
+                key: statistics.median(row[key] for row in samples)
+                for key in (
+                    "seconds",
+                    "inference_seconds",
+                    "arithmetic_seconds",
+                    "end_to_end_source_mb_per_second",
+                    "end_to_end_source_mib_per_second",
+                    "ac_stage_equivalent_source_mb_per_second",
+                    "ac_stage_equivalent_source_mib_per_second",
+                )
+            }
+            for backend, samples in results.items()
+        },
         "exact_recovery": True,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)

@@ -119,6 +119,12 @@ def main():
         "exact_recovery": True,
         "device": args.device, "steps": args.steps, "streams": args.streams,
         "alphabet": args.alphabet, "archive_bytes": len(archive),
+        "throughput_unit": "decoded symbols per second",
+        "source_byte_throughput": None,
+        "source_byte_throughput_note": (
+            "undefined for this synthetic Dirichlet trace because symbols have "
+            "no canonical uncompressed byte representation"
+        ),
         "backends": backends,
         "timed_condition_orders": timed_orders,
         "samples_seconds": samples,

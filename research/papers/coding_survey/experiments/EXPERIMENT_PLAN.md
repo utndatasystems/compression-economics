@@ -75,17 +75,18 @@ Configuration:
   compression repetitions with rotated order. Model loading, archive disk
   I/O, and verification excluded from compression timing.
 
-| Coder | Median compression (s) | Tokens/s | Median conversion + coding (s) | Full archive (bytes) |
-| --- | ---: | ---: | ---: | ---: |
-| AC | 6.166 | 166.1 | 0.130 | 2,135 |
-| AC_MULTISTREAM | 6.185 | 165.6 | 0.145 | 2,503 |
-| AC_TARGET_INTERVAL | 6.084 | 168.3 | 0.038 | 2,551 |
+| Coder | Median compression (s) | Tokens/s | Source MB/s | Median conversion + coding (s) | Full archive (bytes) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| AC | 6.166 | 166.1 | 0.000916 | 0.130 | 2,135 |
+| AC_MULTISTREAM | 6.185 | 165.6 | 0.000913 | 0.145 | 2,503 |
+| AC_TARGET_INTERVAL | 6.084 | 168.3 | 0.000928 | 0.038 | 2,551 |
 
 All persisted archives passed exact token/text recovery. Single verification
 decode times were 6.167 / 6.166 / 6.134 seconds respectively; these are not
 repeated decoder timing estimates. Conversion + coding is the median of each
 repetition's stage sum. Conversion is included in inference timing, so do not
-count it twice in total time.
+count it twice in total time. Source MB/s uses all 5,645 uncompressed bytes and
+decimal MB ($10^6$ bytes).
 
 O3 showed about a 1.4% throughput gain over AC in this small CPU pilot.
 This does not establish a general speedup or GPU transfer benefit.
@@ -159,6 +160,10 @@ Remaining work:
 - [ ] Exact decode/token/text recovery as applicable and decoder configuration.
 - [ ] Encode/decode separately, repetition variability, memory, cold/warm
   costs; logical bytes distinguished from physical traffic.
+- [ ] Report live source throughput as uncompressed source bytes divided by
+  complete wall time. Store both decimal MB/s ($10^6$ bytes/s) and binary
+  MiB/s ($2^{20}$ bytes/s); never convert synthetic symbols to bytes without
+  a defined source serialization. Label stage-equivalent rates as diagnostic.
 - [ ] Plots/tables linked to raw evidence, with interpretation limits.
 
 ## Run ledger template

@@ -92,7 +92,10 @@ separately. CUDA synchronization brackets measured decode loops.
 On CUDA the frozen runner compares `host`, `torch_device`, and `cuda_cdf`.
 The last condition retains canonical PyTorch CDF construction and uses the
 custom supplied-CDF decoder kernel. Use `--backends` to isolate one condition
-for profiling. A matched live archive can be created and benchmarked with:
+for profiling. Its throughput is reported in symbols/s only: the synthetic
+Dirichlet symbols have no canonical source-byte representation, so an MB/s
+conversion would be arbitrary. A matched live archive can be created and
+benchmarked with:
 
 ```bash
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_live_device_decode.py \
@@ -101,6 +104,14 @@ for profiling. A matched live archive can be created and benchmarked with:
   --prepare-input data/text8 --prepare-tokens 1024 --repeats 5 \
   --output artifacts/papers/coding-survey/in-engine-decoding/live-cuda-v1.json
 ```
+
+The live JSON records uncompressed-source throughput in both decimal MB/s
+($10^6$ bytes/s) and binary MiB/s ($2^{20}$ bytes/s). End-to-end throughput
+uses complete decompression wall time. The separately named AC-stage-equivalent
+rate is diagnostic and must not be compared with complete codec throughput.
+The CUDA compression benchmark records the same two units for its compression
+phase and whole call; the compression-phase value excludes model construction
+and is the relevant cross-codec rate.
 
 The live CPU baseline uses the existing E02 Qwen/text8 archive and excerpt,
 loads one cached float32 model, rotates host/device condition order after
