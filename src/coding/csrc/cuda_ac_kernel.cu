@@ -3,6 +3,7 @@
 #include <c10/cuda/CUDAException.h>
 #include <torch/extension.h>
 
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -142,6 +143,81 @@ __global__ void encode_intervals_kernel(
   errors[stream] = writer.error;
 }
 
+// The canonical MSAC v2 quantizer first widens probabilities to float64 and
+// computes each row sum with PyTorch. This kernel deliberately receives both
+// tensors: the ablation changes only frequency materialization/CDF extraction,
+// not normalization semantics or reduction order.
+__global__ void quantize_target_intervals_kernel(
+    const double* __restrict__ probabilities,
+    const double* __restrict__ probability_sums,
+    const int64_t* __restrict__ targets,
+    int64_t rows,
+    int64_t columns,
+    int64_t nominal_total,
+    int64_t* __restrict__ lows,
+    int64_t* __restrict__ highs,
+    int64_t* __restrict__ totals,
+    double* __restrict__ target_probabilities) {
+  const int64_t row = blockIdx.x;
+  if (row >= rows) {
+    return;
+  }
+  const int64_t target = targets[row];
+  const double mass = probability_sums[row];
+  if (target < 0 || target >= columns || !isfinite(mass) || mass <= 0.0) {
+    if (threadIdx.x == 0) {
+      lows[row] = 0;
+      highs[row] = 0;
+      totals[row] = 0;
+      target_probabilities[row] = 0.0;
+    }
+    return;
+  }
+
+  int64_t local_low = 0;
+  int64_t local_total = 0;
+  int64_t local_target_frequency = 0;
+  const double scale = static_cast<double>(nominal_total - columns);
+  const int64_t row_offset = row * columns;
+  for (int64_t column = threadIdx.x; column < columns; column += blockDim.x) {
+    // Explicit round-to-nearest operations match the two separate PyTorch
+    // elementwise kernels used by target_intervals_from_probs_tensor.
+    const double normalized = __ddiv_rn(probabilities[row_offset + column], mass);
+    const double scaled = __dmul_rn(normalized, scale);
+    const int64_t frequency = static_cast<int64_t>(floor(scaled)) + 1;
+    local_total += frequency;
+    if (column < target) {
+      local_low += frequency;
+    } else if (column == target) {
+      local_target_frequency = frequency;
+    }
+  }
+
+  __shared__ int64_t total_reduction[256];
+  __shared__ int64_t low_reduction[256];
+  __shared__ int64_t target_reduction[256];
+  total_reduction[threadIdx.x] = local_total;
+  low_reduction[threadIdx.x] = local_low;
+  target_reduction[threadIdx.x] = local_target_frequency;
+  __syncthreads();
+  for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+    if (threadIdx.x < stride) {
+      total_reduction[threadIdx.x] += total_reduction[threadIdx.x + stride];
+      low_reduction[threadIdx.x] += low_reduction[threadIdx.x + stride];
+      target_reduction[threadIdx.x] += target_reduction[threadIdx.x + stride];
+    }
+    __syncthreads();
+  }
+  if (threadIdx.x == 0) {
+    const int64_t low = low_reduction[0];
+    lows[row] = low;
+    highs[row] = low + target_reduction[0];
+    totals[row] = total_reduction[0];
+    target_probabilities[row] =
+        __ddiv_rn(probabilities[row_offset + target], mass);
+  }
+}
+
 void check_input(const torch::Tensor& tensor, const char* name) {
   TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor");
   TORCH_CHECK(tensor.scalar_type() == torch::kInt64, name, " must have dtype int64");
@@ -203,4 +279,55 @@ std::vector<torch::Tensor> encode_intervals_cuda(
       errors.data_ptr<int32_t>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {workspace, bit_counts, byte_counts, errors};
+}
+
+std::vector<torch::Tensor> quantize_target_intervals_cuda(
+    torch::Tensor probabilities,
+    torch::Tensor probability_sums,
+    torch::Tensor targets,
+    int64_t nominal_total) {
+  TORCH_CHECK(probabilities.is_cuda(), "probabilities must be a CUDA tensor");
+  TORCH_CHECK(probabilities.scalar_type() == torch::kFloat64,
+              "probabilities must have dtype float64");
+  TORCH_CHECK(probabilities.is_contiguous(), "probabilities must be contiguous");
+  TORCH_CHECK(probabilities.dim() == 2, "probabilities must be two-dimensional");
+  TORCH_CHECK(probability_sums.is_cuda() &&
+                  probability_sums.scalar_type() == torch::kFloat64 &&
+                  probability_sums.is_contiguous(),
+              "probability_sums must be contiguous CUDA float64");
+  TORCH_CHECK(probability_sums.dim() == 1 &&
+                  probability_sums.size(0) == probabilities.size(0),
+              "probability_sums must contain one value per row");
+  check_input(targets, "targets");
+  TORCH_CHECK(targets.dim() == 1 && targets.size(0) == probabilities.size(0),
+              "targets must contain one index per row");
+  TORCH_CHECK(probabilities.device() == probability_sums.device() &&
+                  probabilities.device() == targets.device(),
+              "all quantizer inputs must use the same CUDA device");
+  TORCH_CHECK(probabilities.size(1) >= 1 &&
+                  probabilities.size(1) < nominal_total,
+              "alphabet must be nonempty and smaller than nominal_total");
+
+  const c10::cuda::CUDAGuard device_guard(probabilities.device());
+  const int64_t rows = probabilities.size(0);
+  auto int_options = probabilities.options().dtype(torch::kInt64);
+  auto lows = torch::empty({rows}, int_options);
+  auto highs = torch::empty({rows}, int_options);
+  auto totals = torch::empty({rows}, int_options);
+  auto target_probabilities = torch::empty({rows}, probabilities.options());
+  constexpr int threads = 256;
+  quantize_target_intervals_kernel<<<
+      static_cast<int>(rows), threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+      probabilities.data_ptr<double>(),
+      probability_sums.data_ptr<double>(),
+      targets.data_ptr<int64_t>(),
+      rows,
+      probabilities.size(1),
+      nominal_total,
+      lows.data_ptr<int64_t>(),
+      highs.data_ptr<int64_t>(),
+      totals.data_ptr<int64_t>(),
+      target_probabilities.data_ptr<double>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  return {lows, highs, totals, target_probabilities};
 }

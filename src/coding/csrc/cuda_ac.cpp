@@ -11,9 +11,19 @@ std::vector<torch::Tensor> encode_intervals_cuda(
     int64_t state_bits,
     int64_t workspace_bytes);
 
+std::vector<torch::Tensor> quantize_target_intervals_cuda(
+    torch::Tensor probabilities,
+    torch::Tensor probability_sums,
+    torch::Tensor targets,
+    int64_t nominal_total);
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
   module.def(
       "encode_intervals",
       &encode_intervals_cuda,
       "Encode independent target-interval arithmetic streams (CUDA)");
+  module.def(
+      "quantize_target_intervals",
+      &quantize_target_intervals_cuda,
+      "Fuse floor-count quantization and target interval extraction (CUDA)");
 }

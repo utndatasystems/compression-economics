@@ -147,12 +147,33 @@ CUDA path retains `[steps, streams]` interval tensors until finalization, uses
 one controlled synchronization, and records kernel and final device-to-host
 transfer metrics under `cuda_ac_metrics`.
 
+Target-interval construction is a separate experimental factor. The default
+`--target-interval-quantizer torch` is the original CUDA-encoder pipeline and
+materializes normalized probabilities, integer frequencies, and full CDFs.
+`--target-interval-quantizer cuda_fused` keeps the same float64 conversion and
+row-sum reduction, then computes only the selected low/high interval, actual
+total, and target probability in one kernel. This isolates fusion from both
+model inference and arithmetic coding. Every comparison must require exact
+integer intervals and byte-identical archives before reporting timing.
+
 Kernel-only and matched live-Qwen benchmarks are:
 
 ```bash
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_cuda_encode.py \
   --output artifacts/papers/coding-survey/cuda-ac/kernel.json
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_cuda_compression.py \
-  --input data/text8 --tokens 256 --batch-size 16 \
-  --output artifacts/papers/coding-survey/cuda-ac/end-to-end.json
+  --input data/text8 --tokens 2048 --batch-size 16 --repeats 5 \
+  --variants cuda_torch cuda_fused \
+  --output artifacts/papers/coding-survey/cuda-ac/fusion-end-to-end.json
+```
+
+The dedicated fusion microbenchmark holds the probability trace and CUDA
+arithmetic encoder constant. It reports device-event time for interval
+construction alone and for interval construction plus encoding:
+
+```bash
+.venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_cuda_interval_fusion.py \
+  --steps 4096 --streams 32 --alphabet 256 --repeats 50 \
+  --output artifacts/papers/coding-survey/cuda-ac/fusion-kernel.json
 ```

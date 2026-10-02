@@ -129,6 +129,9 @@ def run_global_mask_compression(args):
     cuda_interval_backend = (
         args.encoding == "AC_TARGET_INTERVAL" and ac_backend == "cuda"
     )
+    target_interval_quantizer = getattr(
+        args, "target_interval_quantizer", "torch"
+    )
     if ac_backend == "cuda" and (
         args.encoding != "AC_TARGET_INTERVAL" or args.engine != "transformer"
     ):
@@ -137,6 +140,10 @@ def run_global_mask_compression(args):
         )
     if cuda_interval_backend and not torch.cuda.is_available():
         raise ValueError("CUDA AC encoding requires an available CUDA device")
+    if target_interval_quantizer == "cuda_fused" and not cuda_interval_backend:
+        raise ValueError(
+            "fused CUDA target intervals require the CUDA AC interval backend"
+        )
 
     if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"} and not 1 <= args.batch_size <= len(data_tokens):
         raise ValueError("AC_MULTISTREAM needs one seed token per nonempty batch")
@@ -227,6 +234,7 @@ def run_global_mask_compression(args):
             cuda_interval_totals = None
             cuda_target_probs = None
         cuda_inference_events = []
+        cuda_interval_events = []
         cuda_ac_metrics = {}
         # Process each token in the dataset to compress it.
         # Only run steps that have at least one next symbol. When all batches have
@@ -271,6 +279,9 @@ def run_global_mask_compression(args):
                     prompts, targets, args.use_kv_cache)
                 interval_transfer_bytes += getattr(token_predictor, "last_interval_transfer_bytes", 32 * len(prompts))
                 interval_seconds += getattr(token_predictor, "last_interval_seconds", 0.0)
+                interval_event = getattr(token_predictor, "last_interval_event", None)
+                if cuda_interval_backend and interval_event is not None:
+                    cuda_interval_events.append(interval_event)
             else:
                 token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
             input_token_cnt += getattr(
@@ -404,6 +415,10 @@ def run_global_mask_compression(args):
                         start.elapsed_time(end) / 1000.0
                         for start, end in cuda_inference_events
                     )
+                    interval_device_seconds = sum(
+                        start.elapsed_time(end) / 1000.0
+                        for start, end in cuda_interval_events
+                    )
                     started = time.perf_counter()
                     entropy = float((
                         -torch.log2(target_probabilities.clamp_min(1e-300))
@@ -507,8 +522,20 @@ def run_global_mask_compression(args):
                 else None
             ),
             "cuda_ac_metrics": cuda_ac_metrics or None,
+            "target_interval_quantizer": (
+                target_interval_quantizer
+                if args.encoding == "AC_TARGET_INTERVAL"
+                else None
+            ),
             "interval_transfer_bytes": interval_transfer_bytes,
-            "interval_conversion_seconds": None if args.engine == "vllm" else interval_seconds,
+            "interval_conversion_seconds": (
+                interval_device_seconds
+                if cuda_interval_backend
+                else (None if args.engine == "vllm" else interval_seconds)
+            ),
+            "interval_conversion_host_launch_seconds": (
+                interval_seconds if cuda_interval_backend else None
+            ),
             "data_copy_time": data_copy_time,
             "softmax_time": softmax_time,
             # Throughput

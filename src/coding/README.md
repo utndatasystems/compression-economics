@@ -15,4 +15,7 @@ lives in `src/coding/trace_benchmark.py`; its runnable experiments are in
 
 - `cuda_ac.py` and `csrc/cuda_ac_*`: lazy-built, byte-exact CUDA encoder for
   buffered MSAC v2 target intervals. Select it with `--ac-backend cuda` during
-  Transformer `AC_TARGET_INTERVAL` compression.
+  Transformer `AC_TARGET_INTERVAL` compression. The independent
+  `--target-interval-quantizer torch|cuda_fused` switch preserves the original
+  PyTorch interval construction as an ablation while optionally fusing integer
+  frequency calculation and target-CDF extraction in one CUDA kernel.

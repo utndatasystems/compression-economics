@@ -113,18 +113,26 @@ def test_tiny_transformer_capture_decodes_with_full_distribution(cache, mask):
     decoder.assert_complete()
 
 
-@pytest.mark.parametrize("backend", [
-    "python",
-    "numba_parallel",
+@pytest.mark.parametrize("backend,interval_quantizer", [
+    ("python", "torch"),
+    ("numba_parallel", "torch"),
     pytest.param(
-        "cuda",
+        "cuda", "torch",
+        marks=pytest.mark.skipif(
+            not torch.cuda.is_available(), reason="CUDA unavailable"
+        ),
+    ),
+    pytest.param(
+        "cuda", "cuda_fused",
         marks=pytest.mark.skipif(
             not torch.cuda.is_available(), reason="CUDA unavailable"
         ),
     ),
 ])
 @pytest.mark.parametrize("decode_backend", ["host", "device"])
-def test_local_transformer_text_archive_roundtrip(tmp_path, monkeypatch, backend, decode_backend):
+def test_local_transformer_text_archive_roundtrip(
+    tmp_path, monkeypatch, backend, interval_quantizer, decode_backend
+):
     if backend == "numba_parallel":
         pytest.importorskip("numba")
     from src.global_mask_compressor import run_global_mask_compression, run_global_mask_decompression
@@ -146,12 +154,15 @@ def test_local_transformer_text_archive_roundtrip(tmp_path, monkeypatch, backend
         engine="transformer", encoding="AC_TARGET_INTERVAL", lora_path=None,
         reduce_tokens=True, is_mamba=False, is_seq2seq=False, first_n_tokens=None,
         batch_size=3, context_length=4, retain_tokens=2, use_kv_cache=True,
-        ac_backend=backend, ac_threads=2, spec_k=None)
+        ac_backend=backend, ac_threads=2, spec_k=None,
+        target_interval_quantizer=interval_quantizer)
     seeds, payload, bitmap, stats, args = run_global_mask_compression(args)
     if backend == "cuda":
         assert stats["interval_transfer_bytes"] == 0
         assert stats["cuda_ac_metrics"]["kernel_seconds"] > 0
         assert stats["cuda_ac_metrics"]["device_to_host_bytes"] > 0
+        assert stats["target_interval_quantizer"] == interval_quantizer
+        assert stats["interval_conversion_seconds"] > 0
     else:
         assert stats["interval_transfer_bytes"] > 0
     save_global_mask_file(args, seeds, payload, bitmap)

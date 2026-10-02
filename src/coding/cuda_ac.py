@@ -106,6 +106,46 @@ def encode_intervals_cuda_raw(
     ))
 
 
+def target_intervals_from_probs_cuda(
+    probabilities: torch.Tensor,
+    targets: torch.Tensor,
+    total: int = 262144,
+    *,
+    validate: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Fuse floor-count quantization and target-CDF extraction on CUDA.
+
+    The float64 conversion and row sum intentionally remain identical to the
+    canonical PyTorch implementation. The fused kernel avoids materializing
+    normalized probabilities, integer frequencies, and a complete CDF. This
+    makes ``torch`` versus ``cuda_fused`` a single-factor ablation.
+    """
+    if probabilities.device.type != "cuda":
+        raise ValueError("fused target-interval quantization requires CUDA")
+    if probabilities.ndim != 2 or not 1 <= probabilities.shape[1] < total:
+        raise ValueError("expected a 2D alphabet smaller than the frequency total")
+    probabilities64 = probabilities.to(torch.float64).contiguous()
+    if validate and (
+        not torch.isfinite(probabilities64).all() or (probabilities64 < 0).any()
+    ):
+        raise ValueError("probabilities must be finite and nonnegative")
+    probability_sums = probabilities64.sum(dim=1).contiguous()
+    if validate and (probability_sums <= 0).any():
+        raise ValueError("probability rows must have positive mass")
+    targets = torch.as_tensor(
+        targets, device=probabilities.device, dtype=torch.int64
+    ).contiguous()
+    if targets.ndim != 1 or targets.numel() != probabilities.shape[0]:
+        raise ValueError("one target index is required per probability row")
+    if validate and (
+        (targets < 0).any() or (targets >= probabilities.shape[1]).any()
+    ):
+        raise ValueError("target outside alphabet")
+    return tuple(_load_extension().quantize_target_intervals(
+        probabilities64, probability_sums, targets, total
+    ))
+
+
 def encode_intervals_cuda(
     lows: torch.Tensor,
     highs: torch.Tensor,

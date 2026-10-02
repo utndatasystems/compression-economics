@@ -46,4 +46,5 @@ PY
 
 .venv/bin/python -m pytest -q \
   tests/test_device_ac.py tests/test_target_interval.py \
-  -k cuda -rs "$@"
+  tests/test_target_interval_cli.py \
+  -k 'cuda or fused' -rs "$@"

@@ -35,13 +35,34 @@ def _run_interval_inference(predictor, prompts, target_token_ids, enable_kv_cach
         raise ValueError("target token outside vocabulary mask") from error
     tokens, probabilities, copy_time, softmax_time = predictor.run_batched_inference(
         prompts, enable_kv_cache, scores_on_device=True)
+    interval_quantizer = getattr(
+        predictor.args, "target_interval_quantizer", "torch"
+    )
+    if interval_quantizer not in {"torch", "cuda_fused"}:
+        raise ValueError(f"unknown target interval quantizer: {interval_quantizer}")
+    if interval_quantizer == "cuda_fused":
+        from src.coding.cuda_ac import target_intervals_from_probs_cuda
+
+        interval_function = target_intervals_from_probs_cuda
+    else:
+        interval_function = target_intervals_from_probs_tensor
+    record_device_time = probabilities.device.type == "cuda"
+    if record_device_time:
+        interval_start = torch.cuda.Event(enable_timing=True)
+        interval_end = torch.cuda.Event(enable_timing=True)
+        interval_start.record()
     started = time.perf_counter()
-    low, high, total, probability = target_intervals_from_probs_tensor(
+    low, high, total, probability = interval_function(
         probabilities,
         targets,
         validate=getattr(predictor.args, "ac_backend", "python") != "cuda",
     )
     predictor.last_interval_seconds = time.perf_counter() - started
+    if record_device_time:
+        interval_end.record()
+        predictor.last_interval_event = (interval_start, interval_end)
+    else:
+        predictor.last_interval_event = None
     if getattr(predictor.args, "ac_backend", "python") == "cuda":
         predictor.last_interval_transfer_bytes = 0
         intervals = {
