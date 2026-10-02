@@ -31,7 +31,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 import src.global_mask_compressor as pipeline
 from src.prediction import TokenPredictor
-from src.utils import load_global_mask_file
+from src.utils import load_global_mask_file, save_global_mask_file
 
 DEFAULT_PILOT = REPO_ROOT / "artifacts/papers/cidr-2027/target-interval/Qwen2.5-0.5B-text8-1024-cpu"
 DEFAULT_OUTPUT = REPO_ROOT / "artifacts/papers/coding-survey/in-engine-decoding/live-cpu.json"
@@ -45,6 +45,13 @@ def main() -> None:
     parser.add_argument("--dtype", choices=["float32", "auto"], default="float32")
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--threads", type=int, default=8)
+    parser.add_argument(
+        "--prepare-input", type=Path,
+        help="Create a missing matched CUDA pilot from this text file",
+    )
+    parser.add_argument("--prepare-tokens", type=int, default=1024)
+    parser.add_argument("--prepare-characters", type=int, default=1048576)
+    parser.add_argument("--model", default="Qwen/Qwen2.5-0.5B")
     args_cli = parser.parse_args()
     if args_cli.repeats < 1 or args_cli.threads < 1:
         parser.error("repeats and threads must be positive")
@@ -57,6 +64,38 @@ def main() -> None:
     torch.set_num_interop_threads(1)
     archive_path = args_cli.pilot_dir / "ac_target_interval.bin"
     excerpt_path = args_cli.pilot_dir / "excerpt.txt"
+    if (not archive_path.is_file() or not excerpt_path.is_file()) and args_cli.prepare_input:
+        if device.type != "cuda":
+            parser.error("matched pilot creation requires --device cuda")
+        if not args_cli.prepare_input.is_file():
+            parser.error("prepare-input does not exist")
+        args_cli.pilot_dir.mkdir(parents=True, exist_ok=True)
+        with args_cli.prepare_input.open("r", encoding="utf-8", newline="") as handle:
+            source_prefix = handle.read(args_cli.prepare_characters)
+        pilot_tokenizer = AutoTokenizer.from_pretrained(
+            args_cli.model, cache_dir=str(REPO_ROOT / ".cache"), local_files_only=True
+        )
+        token_ids = pilot_tokenizer.encode(
+            source_prefix, add_special_tokens=False
+        )[:args_cli.prepare_tokens]
+        excerpt = pilot_tokenizer.decode(token_ids)
+        excerpt_path.write_text(excerpt, encoding="utf-8", newline="")
+        prepare_args = SimpleNamespace(
+            mode="compress", input_path=str(excerpt_path), text_input=None,
+            output_path=str(archive_path), model_name=args_cli.model,
+            model_revision=None, tokenizer_name=None, tokenizer_revision=None,
+            trust_remote_code=False, lora_path=None, is_mamba=False,
+            is_seq2seq=False, engine="transformer",
+            encoding="AC_TARGET_INTERVAL", frequency_quantizer="reference",
+            ac_backend="cuda", target_interval_quantizer="cuda_fused",
+            ac_threads=None, ac_layout="standard", reduce_tokens=True,
+            first_n_tokens=len(token_ids), batch_size=16, context_length=128,
+            retain_tokens=64, use_kv_cache=True, spec_k=None,
+        )
+        seeds, payload, pilot_bitmap, _, prepare_args = (
+            pipeline.run_global_mask_compression(prepare_args)
+        )
+        save_global_mask_file(prepare_args, seeds, payload, pilot_bitmap)
     if not archive_path.is_file() or not excerpt_path.is_file():
         parser.error("pilot archive and excerpt are required")
     args = SimpleNamespace(input_path=str(archive_path), encoding="AC_TARGET_INTERVAL",
@@ -90,11 +129,19 @@ def main() -> None:
     pipeline._make_token_predictor = predictor_factory
     with torch.inference_mode():
         model(torch.tensor([expected_tokens[:8]] * args.batch_size, device=device), use_cache=True)
-    results = {"host": [], "device": []}
-    runs = [("host", 0), ("device", 0)]
+    backends = ["host", "device"]
+    if device.type == "cuda":
+        backends.append("cuda")
+    results = {backend: [] for backend in backends}
+    runs = [(backend, 0) for backend in backends]
+    timed_orders = []
     for repeat in range(1, args_cli.repeats + 1):
-        runs.extend((("host", repeat), ("device", repeat)) if repeat % 2 else
-                    (("device", repeat), ("host", repeat)))
+        offset = (repeat - 1) % len(backends)
+        order = backends[offset:] + backends[:offset]
+        if ((repeat - 1) // len(backends)) % 2:
+            order.reverse()
+        timed_orders.append(order)
+        runs.extend((backend, repeat) for backend in order)
     for backend, repeat in runs:
         args.ac_decode_backend = backend
         if device.type == "cuda":
@@ -111,7 +158,8 @@ def main() -> None:
                       "arithmetic_seconds": stats["ac_time"],
                       "softmax_seconds": stats["softmax_time"],
                       "data_copy_seconds": stats["data_copy_time"],
-                      "decoded_token_transfer_bytes": stats["decoded_token_transfer_bytes"]}
+                      "decoded_token_transfer_bytes": stats["decoded_token_transfer_bytes"],
+                      "cuda_decode_metrics": stats.get("cuda_decode_metrics")}
             results[backend].append(sample)
             print(f"{backend} repeat {repeat}: {sample['seconds']:.3f} s", flush=True)
     output = {
@@ -129,6 +177,7 @@ def main() -> None:
         "batch_size": args.batch_size, "masked_alphabet": len(BitMap.deserialize(bitmap)),
         "context_length": args.context_length, "retain_tokens": args.retain_tokens,
         "kv_cache": args.use_kv_cache, "warmups_per_backend": 1,
+        "backends": backends, "timed_condition_orders": timed_orders,
         "timing_scope": "decompression function, excludes model loading and archive file I/O; includes prediction, coder, token copies and detokenization",
         "samples": results,
         "medians": {backend: {key: statistics.median(row[key] for row in samples)

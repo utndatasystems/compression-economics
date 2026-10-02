@@ -8,7 +8,10 @@ from src.coding.cuda_ac import (
     encode_intervals_cuda,
     target_intervals_from_probs_cuda,
 )
-from src.coding.device_ac import DeviceMultistreamACDecoder
+from src.coding.device_ac import (
+    CudaCDFMultistreamACDecoder,
+    DeviceMultistreamACDecoder,
+)
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 from src.coding.paired_ac import pack_standard_archive
 from src.coding.target_interval import target_intervals_from_probs_tensor
@@ -46,6 +49,44 @@ def test_device_decoder_matches_host_with_inactive_rows(device, paired):
     coder.assert_complete()
     with pytest.raises(ValueError, match="no more symbols"):
         coder.decode(torch.tensor(rows[-1], device=device), [True, False, False])
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("paired", [False, True])
+def test_cuda_cdf_decoder_matches_host_with_inactive_rows(paired):
+    rng = np.random.default_rng(78)
+    rows = rng.dirichlet(np.ones(29), size=(31, 5)).astype(np.float32)
+    targets = rng.integers(0, 29, size=(31, 5))
+    lengths = [31, 25, 17, 3, 0]
+    encoder = MultistreamACEncoder(5, target_interval=True)
+    rows_device = torch.tensor(rows, device="cuda")
+    for step in range(31):
+        low, high, total, _ = target_intervals_from_probs_tensor(
+            rows_device[step], torch.tensor(targets[step], device="cuda")
+        )
+        for stream, length in enumerate(lengths):
+            if step < length:
+                encoder.encode_interval(
+                    stream, int(low[stream]), int(high[stream]), int(total[stream])
+                )
+    standard = encoder.finish()
+    archive = pack_standard_archive(standard) if paired else standard
+    host = MultistreamACDecoder(standard)
+    coder = CudaCDFMultistreamACDecoder(archive, "cuda", paired=paired)
+    for step in range(31):
+        active = [step < length for length in lengths]
+        actual = coder.decode(rows_device[step], active).cpu().tolist()
+        for stream, is_active in enumerate(active):
+            if is_active:
+                assert host.decode(stream, rows[step, stream]) == actual[stream]
+                assert actual[stream] == targets[step, stream]
+    host.assert_complete()
+    coder.assert_complete()
+    assert coder.metrics["kernel_seconds"] > 0
+    assert coder.metrics["quantization_seconds"] > 0
+    coder.decode(rows_device[-1], [True, False, False, False, False])
+    with pytest.raises(ValueError, match="no more symbols"):
+        coder.assert_complete()
 
 
 def _cuda_interval_trace(steps=19, streams=4, alphabet=17):

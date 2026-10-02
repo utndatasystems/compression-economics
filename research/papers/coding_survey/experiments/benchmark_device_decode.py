@@ -15,7 +15,10 @@ if str(REPO_ROOT) not in sys.path:
 import numpy as np
 import torch
 
-from src.coding.device_ac import DeviceMultistreamACDecoder
+from src.coding.device_ac import (
+    CudaCDFMultistreamACDecoder,
+    DeviceMultistreamACDecoder,
+)
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 from src.coding.target_interval import target_intervals_from_probs_tensor
 
@@ -27,6 +30,11 @@ def main():
     parser.add_argument("--streams", type=int, default=4)
     parser.add_argument("--alphabet", type=int, default=64)
     parser.add_argument("--repeats", type=int, default=5)
+    parser.add_argument(
+        "--backends", nargs="+",
+        choices=["host", "torch_device", "cuda_cdf"],
+        help="Optional subset for isolated profiling; defaults to all valid backends",
+    )
     parser.add_argument("--output", type=Path, help="Optional JSON result path")
     args = parser.parse_args()
     if args.steps < 1 or args.streams < 1 or not 2 <= args.alphabet < 262144 or args.repeats < 1:
@@ -51,14 +59,29 @@ def main():
             encoder.encode_interval(stream, int(low[stream]), int(high[stream]), int(total[stream]))
     archive = encoder.finish()
     active = [True] * args.streams
-    samples = {"host": [], "device": []}
-    runs = [("host", 0), ("device", 0)]
+    backends = args.backends or ["host", "torch_device"]
+    if args.backends is None and device.type == "cuda":
+        backends.append("cuda_cdf")
+    if device.type != "cuda" and "cuda_cdf" in backends:
+        parser.error("cuda_cdf requires --device cuda")
+    samples = {backend: [] for backend in backends}
+    cuda_stage_samples = []
+    runs = [(backend, 0) for backend in backends]
+    timed_orders = []
     for repeat in range(1, args.repeats + 1):
-        runs.extend((("host", repeat), ("device", repeat)) if repeat % 2 else
-                    (("device", repeat), ("host", repeat)))
+        offset = (repeat - 1) % len(backends)
+        order = backends[offset:] + backends[:offset]
+        if ((repeat - 1) // len(backends)) % 2:
+            order.reverse()
+        timed_orders.append(order)
+        runs.extend((backend, repeat) for backend in order)
     for backend, repeat in runs:
-        decoder = (MultistreamACDecoder(archive) if backend == "host"
-                   else DeviceMultistreamACDecoder(archive, device))
+        if backend == "host":
+            decoder = MultistreamACDecoder(archive)
+        elif backend == "torch_device":
+            decoder = DeviceMultistreamACDecoder(archive, device)
+        else:
+            decoder = CudaCDFMultistreamACDecoder(archive, device)
         if device.type == "cuda":
             torch.cuda.synchronize()
         start = time.perf_counter()
@@ -79,6 +102,15 @@ def main():
             raise AssertionError("decoder disagrees with source trace")
         if repeat:
             samples[backend].append(elapsed)
+            if backend == "cuda_cdf":
+                cuda_stage_samples.append(decoder.metrics)
+    medians = {
+        backend: {
+            "seconds": statistics.median(values),
+            "symbols_per_second": args.steps * args.streams / statistics.median(values),
+        }
+        for backend, values in samples.items()
+    }
     result = {
         "seed": 2027, "dtype": "float32", "torch_version": torch.__version__,
         "cpu": next((line.split(":", 1)[1].strip() for line in Path("/proc/cpuinfo").read_text().splitlines()
@@ -87,10 +119,24 @@ def main():
         "exact_recovery": True,
         "device": args.device, "steps": args.steps, "streams": args.streams,
         "alphabet": args.alphabet, "archive_bytes": len(archive),
-        "host_seconds": samples["host"], "device_seconds": samples["device"],
-        "host_median_symbols_per_sec": args.steps * args.streams / statistics.median(samples["host"]),
-        "device_median_symbols_per_sec": args.steps * args.streams / statistics.median(samples["device"]),
+        "backends": backends,
+        "timed_condition_orders": timed_orders,
+        "samples_seconds": samples,
+        "medians": medians,
+        "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
     }
+    if "cuda_cdf" in medians:
+        result["cuda_cdf_stage_medians"] = {
+            key: statistics.median(sample[key] for sample in cuda_stage_samples)
+            for key in ("quantization_seconds", "kernel_seconds", "decode_steps")
+        }
+        if "torch_device" in medians:
+            result["cuda_cdf_vs_torch_device"] = {
+                "speedup": (
+                    medians["torch_device"]["seconds"]
+                    / medians["cuda_cdf"]["seconds"]
+                )
+            }
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")

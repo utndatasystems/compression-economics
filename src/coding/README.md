@@ -11,7 +11,7 @@ Import these modules through `src.coding.*`. The frozen-trace comparison
 lives in `src/coding/trace_benchmark.py`; its runnable experiments are in
 `research/papers/cidr_2027/experiments/`.
 
-- `device_ac.py`: opt-in MSAC v2 target-interval decoder. `--ac-decode-backend device` keeps floor quantization, inverse-CDF lookup, and arithmetic states on the Transformer device (CPU or CUDA) and copies only decoded token IDs to host prompt buffers. It supports standard and paired layouts. The torch implementation synchronizes during renormalization; GPU throughput and physical transfer savings require profiling on CUDA hardware. The default remains `host`.
+- `device_ac.py`: opt-in MSAC v2 target-interval decoders. `--ac-decode-backend device` is the PyTorch reference; `--ac-decode-backend cuda` retains PyTorch CDF construction but fuses binary inverse lookup, arithmetic state update, bit consumption, and renormalization in one CUDA kernel. Both copy only decoded token IDs to host prompt buffers and support standard and paired layouts. The default remains `host`.
 
 - `cuda_ac.py` and `csrc/cuda_ac_*`: lazy-built, byte-exact CUDA encoder for
   buffered MSAC v2 target intervals. Select it with `--ac-backend cuda` during

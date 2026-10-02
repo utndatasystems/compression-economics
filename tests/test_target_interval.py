@@ -129,7 +129,16 @@ def test_tiny_transformer_capture_decodes_with_full_distribution(cache, mask):
         ),
     ),
 ])
-@pytest.mark.parametrize("decode_backend", ["host", "device"])
+@pytest.mark.parametrize("decode_backend", [
+    "host",
+    "device",
+    pytest.param(
+        "cuda",
+        marks=pytest.mark.skipif(
+            not torch.cuda.is_available(), reason="CUDA unavailable"
+        ),
+    ),
+])
 def test_local_transformer_text_archive_roundtrip(
     tmp_path, monkeypatch, backend, interval_quantizer, decode_backend
 ):

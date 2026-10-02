@@ -26,6 +26,12 @@ _ERROR_MESSAGES = {
     3: "CUDA output workspace overflow",
     4: "invalid arithmetic coder state",
 }
+_DECODE_ERROR_MESSAGES = {
+    4: "invalid arithmetic decoder state",
+    5: "stream has no more symbols",
+    6: "invalid cumulative frequency row",
+    7: "arithmetic code selects a symbol outside the alphabet",
+}
 
 
 def _load_extension():
@@ -144,6 +150,51 @@ def target_intervals_from_probs_cuda(
     return tuple(_load_extension().quantize_target_intervals(
         probabilities64, probability_sums, targets, total
     ))
+
+
+def decode_cdfs_cuda_raw(
+    cdfs: torch.Tensor,
+    active: torch.Tensor,
+    payload: torch.Tensor,
+    bit_counts: torch.Tensor,
+    counts: torch.Tensor,
+    lows: torch.Tensor,
+    highs: torch.Tensor,
+    codes: torch.Tensor,
+    positions: torch.Tensor,
+    decoded: torch.Tensor,
+    symbols: torch.Tensor,
+    errors: torch.Tensor,
+    *,
+    nominal_total: int = 262144,
+    state_bits: int = 32,
+) -> None:
+    """Update persistent decoder state from supplied integer CDF rows.
+
+    The launch is asynchronous on PyTorch's current CUDA stream. Device error
+    flags are intentionally checked at a caller-controlled boundary instead of
+    synchronizing after every autoregressive symbol.
+    """
+    _load_extension().decode_cdfs(
+        cdfs,
+        active,
+        payload,
+        bit_counts,
+        counts,
+        lows,
+        highs,
+        codes,
+        positions,
+        decoded,
+        symbols,
+        errors,
+        nominal_total,
+        state_bits,
+    )
+
+
+def decode_error_message(code: int) -> str:
+    return _DECODE_ERROR_MESSAGES.get(code, f"unknown CUDA decoder error {code}")
 
 
 def encode_intervals_cuda(

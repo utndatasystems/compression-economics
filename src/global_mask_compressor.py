@@ -16,7 +16,10 @@ import sys
 from src.coding.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
 from src.coding.cuda_ac import encode_intervals_cuda
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
-from src.coding.device_ac import DeviceMultistreamACDecoder
+from src.coding.device_ac import (
+    CudaCDFMultistreamACDecoder,
+    DeviceMultistreamACDecoder,
+)
 from src.coding.paired_ac import PairedACDecoder, PairedACEncoder, pack_standard_archive
 from src.prediction import NGramTokenPredictor, TokenDataPreparer, TokenPredictor
 from itertools import chain
@@ -588,9 +591,12 @@ def run_global_mask_decompression(
     # Initialize the token predictor.
     token_predictor = _make_token_predictor(args, bitmap)
     try:
-        device_decode = getattr(args, "ac_decode_backend", "host") == "device"
+        decode_backend = getattr(args, "ac_decode_backend", "host")
+        device_decode = decode_backend in {"device", "cuda"}
         if device_decode and (args.encoding != "AC_TARGET_INTERVAL" or args.engine != "transformer"):
             raise ValueError("device decoding requires Transformer and AC_TARGET_INTERVAL")
+        if decode_backend == "cuda" and token_predictor.device.type != "cuda":
+            raise ValueError("CUDA CDF decoding requires a CUDA Transformer")
         if device_decode:
             token_ids_on_device = torch.tensor(token_predictor.tokens_list, dtype=torch.long,
                                                device=token_predictor.device)
@@ -598,12 +604,25 @@ def run_global_mask_decompression(
         # The MSAC directory assigns one independent stream to each token batch.
         if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
             decoder_type = PairedACDecoder if getattr(args, "ac_layout", "standard") == "paired" else MultistreamACDecoder
-            decompressor = (
-                DeviceMultistreamACDecoder(bit_string, token_predictor.device,
-                                           paired=getattr(args, "ac_layout", "standard") == "paired")
-                if device_decode else decoder_type(bit_string,
-                    frequency_quantizer=getattr(args, "frequency_quantizer", "reference"))
-            )
+            if decode_backend == "cuda":
+                decompressor = CudaCDFMultistreamACDecoder(
+                    bit_string,
+                    token_predictor.device,
+                    paired=getattr(args, "ac_layout", "standard") == "paired",
+                )
+            elif device_decode:
+                decompressor = DeviceMultistreamACDecoder(
+                    bit_string,
+                    token_predictor.device,
+                    paired=getattr(args, "ac_layout", "standard") == "paired",
+                )
+            else:
+                decompressor = decoder_type(
+                    bit_string,
+                    frequency_quantizer=getattr(
+                        args, "frequency_quantizer", "reference"
+                    ),
+                )
             if not device_decode and decompressor.target_interval != (args.encoding == "AC_TARGET_INTERVAL"):
                 raise ValueError("archive encoding does not match MSAC quantization version")
             if decompressor.stream_count != args.batch_size:
@@ -725,7 +744,8 @@ def run_global_mask_decompression(
             "detokenize_time": detokenize_time,
             "inference_time": inference_time,
             "ac_time": ac_time,
-            "ac_decode_backend": "device" if device_decode else "host",
+            "ac_decode_backend": decode_backend,
+            "cuda_decode_metrics": getattr(decompressor, "metrics", None),
             "decoded_token_transfer_bytes": decoded_token_transfer_bytes,
             "data_copy_time": data_copy_time,
             "softmax_time": softmax_time,

@@ -159,7 +159,15 @@ def get_main_args() -> argparse.Namespace:
     )
     parser.add_argument("--ac-threads", type=int, default=None, help="Maximum workers for numba_parallel MSAC encoding")
     parser.add_argument("--ac-layout", choices=["standard", "paired"], default="standard", help="MSAC byte layout; paired shares compatible terminal bytes")
-    parser.add_argument("--ac-decode-backend", choices=["host", "device"], default="host", help="Decode MSAC v2 beside Transformer inference on CPU/CUDA")
+    parser.add_argument(
+        "--ac-decode-backend",
+        choices=["host", "device", "cuda"],
+        default="host",
+        help=(
+            "MSAC v2 decoder: host reference, PyTorch device state, or "
+            "PyTorch CDF plus fused CUDA state update"
+        ),
+    )
     parser.add_argument("--spec_k", type=int, default=None, help="Number of speculative tokens to generate for speculative compression/decompression")
     parser.add_argument("--draft_model_name", type=str, choices=model_list, default=None, help="Draft model name for speculative decompression (if different from teacher)")
     
@@ -186,8 +194,12 @@ def get_main_args() -> argparse.Namespace:
             "--target-interval-quantizer cuda_fused requires Transformer "
             "AC_TARGET_INTERVAL compression with --ac-backend cuda"
         )
-    if args.ac_decode_backend == "device" and (args.mode != "decompress" or args.engine != "transformer"):
-        parser.error("--ac-decode-backend device requires Transformer decompression")
+    if args.ac_decode_backend in {"device", "cuda"} and (
+        args.mode != "decompress" or args.engine != "transformer"
+    ):
+        parser.error(
+            "--ac-decode-backend device/cuda requires Transformer decompression"
+        )
     if args.encoding == "AC_TARGET_INTERVAL" and args.frequency_quantizer != "reference":
         parser.error("AC_TARGET_INTERVAL uses its versioned floor-count quantizer; fixed-total quantizer options do not apply")
     if args.engine == "vllm" and args.spec_k is not None:

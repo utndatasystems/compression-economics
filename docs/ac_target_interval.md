@@ -72,7 +72,8 @@ CPU output offers no GPU-to-host transfer saving.
 Compression stats include `interval_transfer_bytes` (record payload bytes,
 including inactive tail rows) and `interval_conversion_seconds` for the local
 predictor. CPU record bytes are logical payload size, not physical device traffic.
-GPU timing is currently based on host timers and is not CUDA-event profiling.
+CUDA encoding and CUDA-CDF decoding report device stages with CUDA events;
+complete pipeline time remains synchronized wall time.
 vLLM worker softmax/quantization is included in inference time; its interval
 conversion timing is not separately instrumented.
 
@@ -83,3 +84,10 @@ when comparing compression size.
 
 Design choices and possible ablations are tracked in
 [ac_target_interval_todos.txt](ac_target_interval_todos.txt).
+
+For Transformer decompression, `--ac-decode-backend device` selects the
+PyTorch state-machine reference and `--ac-decode-backend cuda` selects the
+supplied-CDF CUDA v1 kernel. The latter preserves canonical float64 CDF
+construction and fuses inverse lookup, arithmetic update, bit consumption,
+and renormalization. Quantization-plus-lookup fusion remains a separate
+follow-up ablation.

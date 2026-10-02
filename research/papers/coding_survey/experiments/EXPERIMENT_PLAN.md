@@ -137,7 +137,7 @@ Remaining work:
 | A02 | Prefix scan vs masked reduction vs fused mask/softmax/quantization/interval kernel. | Alternative kernels needed; measure launches, device memory traffic, and total time. |
 | A03 | Batched records, pinned buffers, asynchronous copies, shared-memory allocation/reuse. | Profile existing capture first; alternatives need implementation. Charge synchronization/allocation. |
 | A04 | Inactive final-batch rows vs active-row compaction. | Alternative needed; measure tail utilization and result parity. |
-| A05 | In-engine arithmetic decoding and batched inverse CDF. | Opt-in torch device-state decoder implemented for MSAC v2 and paired layout; exact CPU and end-to-end tests pass. CUDA tests and live GPU profiling remain. Run `benchmark_device_decode.py` for a frozen-trace host/device comparison. |
+| A05 | In-engine arithmetic decoding and batched inverse CDF. | PyTorch device-state and supplied-CDF CUDA v1 decoders implemented for MSAC v2 and paired layout. Frozen and matched live H100 runs recover exactly; CUDA v1 fuses lookup/state/renormalization while retaining PyTorch CDF construction. |
 | A06 | vLLM attention backends, tensor parallel layouts, vocabulary padding, worker vs dense probabilities. | Live GPU required; pin validated version and test count-level agreement before performance claims. |
 | A07 | Speculative decompression/coding and early exit. | Exploratory; define lossless fallback, charge rejected work/helper data, compare multistream decoding. |
 | A08 | More models, datasets, and adaptation. | After Qwen/text8, select additional model sizes/source types. Other architectures/LoRA only if supported and retained in scope; vLLM LoRA is not currently validated. |
@@ -190,8 +190,8 @@ controls, and current results. The implementation is opt-in with
 | --- | --- | --- |
 | D1 | Frozen MSAC-v2 host versus batched torch decoder; stream/alphabet sweep. | **CPU complete.** Four 128-step conditions, seed 2027, five timed repeats after warmup, exact recovery. Raw JSON: `artifacts/papers/coding-survey/in-engine-decoding/frozen-cpu-*.json`. Run GPU equivalents with probability rows preloaded on device. |
 | D2 | Live host versus torch decode of identical Qwen/text8 archive. | **CPU complete.** Five rotated repeats after one warmup per path; 1,024 tokens, exact text recovery. Medians: host 6.187 s, torch 6.215 s. Raw JSON: `artifacts/papers/coding-survey/in-engine-decoding/live-cpu.json`. |
-| D3 | Matched live CUDA decode, full archive and physical transfer. | **Pending GPU.** First verify the same archive; if GPU probabilities produce different counts, create a matched GPU archive and report cross-device failure separately. |
-| D4 | Device decode stage ablations and fused kernel. | **Pending GPU.** Separate full-row host copy, device CDF with host state, current torch device state, and fused device state. Measure synchronization and memory. |
+| D3 | Matched live CUDA decode, full archive and physical transfer. | **H100 timing complete.** Matched 1,024-token GPU archive; host, PyTorch-device, and CUDA-CDF v1 recover exact text. Physical PCIe counters and peak memory remain. |
+| D4 | Device decode stage ablations and fused kernel. | **CUDA v1 complete.** Supplied-CDF kernel fuses binary lookup, state update, and renormalization; CUDA events and Nsight process profiles recorded. Quantization+lookup fusion remains. |
 | D5 | Cross-device/engine exactness and mismatch. | **CPU tests complete; GPU/engine work pending.** Never time failed decodes as successful conditions. |
 
 D1 reproduction (from the repository root):

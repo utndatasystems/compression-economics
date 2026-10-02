@@ -70,3 +70,19 @@ def test_fused_target_interval_cli_contract(monkeypatch):
     ])
     with pytest.raises(SystemExit):
         get_main_args()
+
+
+@pytest.mark.parametrize("backend", ["device", "cuda"])
+def test_device_decoder_cli_contract(monkeypatch, backend):
+    monkeypatch.setattr(sys, "argv", [
+        "main.py", "--mode", "decompress", "--engine", "transformer",
+        "--ac-decode-backend", backend,
+    ])
+    assert get_main_args().ac_decode_backend == backend
+
+    monkeypatch.setattr(sys, "argv", [
+        "main.py", "--mode", "compress", "--engine", "transformer",
+        "--ac-decode-backend", backend,
+    ])
+    with pytest.raises(SystemExit):
+        get_main_args()

@@ -116,3 +116,90 @@ class DeviceMultistreamACDecoder:
     def assert_complete(self) -> None:
         if self.decoded.cpu().tolist() != self.symbol_counts:
             raise ValueError("not all MSAC stream symbols were decoded")
+
+
+class CudaCDFMultistreamACDecoder(DeviceMultistreamACDecoder):
+    """CUDA v1 decoder: PyTorch CDF construction plus fused AC state update."""
+
+    def __init__(self, archive: bytes, device: torch.device | str = "cuda", *, paired: bool = False):
+        super().__init__(archive, device, paired=paired)
+        if self.device.type != "cuda":
+            raise ValueError("CUDA CDF decoding requires a CUDA device")
+        self.symbols = torch.zeros_like(self.low)
+        self.errors = torch.zeros(
+            self.stream_count, dtype=torch.int32, device=self.device
+        )
+        self._quantization_events = []
+        self._kernel_events = []
+        self.metrics = None
+
+    def decode(self, probabilities: torch.Tensor, active: torch.Tensor | list[bool]) -> torch.Tensor:
+        """Decode one symbol per active stream without host-visible state loops."""
+        from src.coding.cuda_ac import decode_cdfs_cuda_raw
+
+        if probabilities.device != self.device:
+            raise ValueError("probabilities and arithmetic state must share a device")
+        if probabilities.ndim != 2 or probabilities.shape[0] != self.stream_count:
+            raise ValueError("one probability row is required per stream")
+        active = torch.as_tensor(
+            active, dtype=torch.bool, device=self.device
+        ).contiguous()
+        if active.shape != (self.stream_count,):
+            raise ValueError("active mask must contain one value per stream")
+
+        quantization_start = torch.cuda.Event(enable_timing=True)
+        quantization_end = torch.cuda.Event(enable_timing=True)
+        kernel_end = torch.cuda.Event(enable_timing=True)
+        quantization_start.record()
+        frequencies, _ = floor_frequencies(
+            probabilities, self.total, validate=False
+        )
+        cdfs = torch.cat((
+            torch.zeros(
+                (self.stream_count, 1), dtype=torch.int64, device=self.device
+            ),
+            frequencies.cumsum(dim=1),
+        ), dim=1).contiguous()
+        quantization_end.record()
+        decode_cdfs_cuda_raw(
+            cdfs,
+            active,
+            self.payload,
+            self.bit_counts,
+            self.counts,
+            self.low,
+            self.high,
+            self.code,
+            self.positions,
+            self.decoded,
+            self.symbols,
+            self.errors,
+            nominal_total=self.total,
+            state_bits=self.state_bits,
+        )
+        kernel_end.record()
+        self._quantization_events.append((quantization_start, quantization_end))
+        self._kernel_events.append((quantization_end, kernel_end))
+        return self.symbols
+
+    def assert_complete(self) -> None:
+        from src.coding.cuda_ac import decode_error_message
+
+        host_errors = self.errors.cpu().tolist()
+        if any(host_errors):
+            code = next(code for code in host_errors if code)
+            raise ValueError(decode_error_message(code))
+        host_decoded = self.decoded.cpu().tolist()
+        if host_decoded != self.symbol_counts:
+            raise ValueError("not all MSAC stream symbols were decoded")
+        self.metrics = {
+            "quantization_seconds": sum(
+                start.elapsed_time(end) / 1000.0
+                for start, end in self._quantization_events
+            ),
+            "kernel_seconds": sum(
+                start.elapsed_time(end) / 1000.0
+                for start, end in self._kernel_events
+            ),
+            "decode_steps": len(self._kernel_events),
+        }

@@ -89,6 +89,19 @@ Use `--device cuda` on a CUDA machine. This benchmark excludes model inference,
 archive I/O, and prompt transfer; live archive timings must be reported
 separately. CUDA synchronization brackets measured decode loops.
 
+On CUDA the frozen runner compares `host`, `torch_device`, and `cuda_cdf`.
+The last condition retains canonical PyTorch CDF construction and uses the
+custom supplied-CDF decoder kernel. Use `--backends` to isolate one condition
+for profiling. A matched live archive can be created and benchmarked with:
+
+```bash
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_live_device_decode.py \
+  --device cuda --dtype auto \
+  --pilot-dir artifacts/papers/coding-survey/in-engine-decoding/matched-cuda-qwen-1024 \
+  --prepare-input data/text8 --prepare-tokens 1024 --repeats 5 \
+  --output artifacts/papers/coding-survey/in-engine-decoding/live-cuda-v1.json
+```
+
 The live CPU baseline uses the existing E02 Qwen/text8 archive and excerpt,
 loads one cached float32 model, rotates host/device condition order after
 warmup, and writes every exact-recovery timing sample:

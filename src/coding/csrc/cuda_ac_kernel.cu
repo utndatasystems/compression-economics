@@ -15,6 +15,9 @@ enum ErrorCode : int32_t {
   kInvalidInterval = 2,
   kWorkspaceOverflow = 3,
   kInvalidState = 4,
+  kDecodeExhausted = 5,
+  kInvalidCdf = 6,
+  kInvalidSymbol = 7,
 };
 
 struct BitWriter {
@@ -218,6 +221,126 @@ __global__ void quantize_target_intervals_kernel(
   }
 }
 
+__device__ int64_t read_payload_bit(
+    const int64_t* __restrict__ payload,
+    int64_t payload_width,
+    int64_t stream,
+    int64_t bit_count,
+    int64_t* position) {
+  const int64_t current = *position;
+  ++(*position);
+  if (current >= bit_count) {
+    return 0;
+  }
+  const int64_t byte = payload[stream * payload_width + current / 8];
+  return (byte >> (7 - current % 8)) & 1;
+}
+
+__global__ void decode_cdfs_kernel(
+    const int64_t* __restrict__ cdfs,
+    const bool* __restrict__ active,
+    const int64_t* __restrict__ payload,
+    const int64_t* __restrict__ bit_counts,
+    const int64_t* __restrict__ counts,
+    int64_t streams,
+    int64_t cdf_columns,
+    int64_t payload_width,
+    int64_t nominal_total,
+    int64_t state_bits,
+    int64_t* __restrict__ lows,
+    int64_t* __restrict__ highs,
+    int64_t* __restrict__ codes,
+    int64_t* __restrict__ positions,
+    int64_t* __restrict__ decoded,
+    int64_t* __restrict__ symbols,
+    int32_t* __restrict__ errors) {
+  const int64_t stream = blockIdx.x * blockDim.x + threadIdx.x;
+  if (stream >= streams || !active[stream] || errors[stream] != kSuccess) {
+    return;
+  }
+  if (decoded[stream] >= counts[stream]) {
+    errors[stream] = kDecodeExhausted;
+    return;
+  }
+
+  const int64_t* cdf = cdfs + stream * cdf_columns;
+  const int64_t alphabet = cdf_columns - 1;
+  const int64_t total = cdf[alphabet];
+  if (cdf[0] != 0 || total <= 0 || total > nominal_total) {
+    errors[stream] = kInvalidCdf;
+    return;
+  }
+  int64_t low = lows[stream];
+  int64_t high = highs[stream];
+  int64_t code = codes[stream];
+  int64_t position = positions[stream];
+  const int64_t current_range = high - low + 1;
+  if (current_range <= 0 || code < low || code > high) {
+    errors[stream] = kInvalidState;
+    return;
+  }
+  const int64_t value = ((code - low + 1) * total - 1) / current_range;
+
+  // upper_bound(cdf, value) - 1. Every positive floor-count frequency
+  // makes the CDF strictly increasing for valid archives.
+  int64_t left = 0;
+  int64_t right = cdf_columns;
+  while (left < right) {
+    const int64_t middle = left + (right - left) / 2;
+    if (cdf[middle] <= value) {
+      left = middle + 1;
+    } else {
+      right = middle;
+    }
+  }
+  const int64_t symbol = left - 1;
+  if (symbol < 0 || symbol >= alphabet) {
+    errors[stream] = kInvalidSymbol;
+    return;
+  }
+  const int64_t interval_low = cdf[symbol];
+  const int64_t interval_high = cdf[symbol + 1];
+  if (interval_low < 0 || interval_low >= interval_high ||
+      interval_high > total) {
+    errors[stream] = kInvalidCdf;
+    return;
+  }
+
+  const int64_t base_low = low;
+  low = base_low + interval_low * current_range / total;
+  high = base_low + interval_high * current_range / total - 1;
+  const int64_t max_range = int64_t{1} << state_bits;
+  const int64_t mask = max_range - 1;
+  const int64_t top_mask = max_range >> 1;
+  const int64_t second_mask = top_mask >> 1;
+  if (low < 0 || high < low || high > mask) {
+    errors[stream] = kInvalidState;
+    return;
+  }
+
+  while (((low ^ high) & top_mask) == 0) {
+    const int64_t bit = read_payload_bit(
+        payload, payload_width, stream, bit_counts[stream], &position);
+    code = ((code << 1) & mask) | bit;
+    low = (low << 1) & mask;
+    high = ((high << 1) & mask) | 1;
+  }
+  while ((low & ~high & second_mask) != 0) {
+    const int64_t bit = read_payload_bit(
+        payload, payload_width, stream, bit_counts[stream], &position);
+    code = (code & top_mask) | ((code << 1) & (mask >> 1)) | bit;
+    low = (low << 1) & (mask >> 1);
+    high = ((high << 1) & (mask >> 1)) | top_mask | 1;
+  }
+
+  lows[stream] = low;
+  highs[stream] = high;
+  codes[stream] = code;
+  positions[stream] = position;
+  ++decoded[stream];
+  symbols[stream] = symbol;
+}
+
 void check_input(const torch::Tensor& tensor, const char* name) {
   TORCH_CHECK(tensor.is_cuda(), name, " must be a CUDA tensor");
   TORCH_CHECK(tensor.scalar_type() == torch::kInt64, name, " must have dtype int64");
@@ -330,4 +453,79 @@ std::vector<torch::Tensor> quantize_target_intervals_cuda(
       target_probabilities.data_ptr<double>());
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return {lows, highs, totals, target_probabilities};
+}
+
+void decode_cdfs_cuda(
+    torch::Tensor cdfs,
+    torch::Tensor active,
+    torch::Tensor payload,
+    torch::Tensor bit_counts,
+    torch::Tensor counts,
+    torch::Tensor lows,
+    torch::Tensor highs,
+    torch::Tensor codes,
+    torch::Tensor positions,
+    torch::Tensor decoded,
+    torch::Tensor symbols,
+    torch::Tensor errors,
+    int64_t nominal_total,
+    int64_t state_bits) {
+  check_input(cdfs, "cdfs");
+  check_input(payload, "payload");
+  check_input(bit_counts, "bit_counts");
+  check_input(counts, "counts");
+  check_input(lows, "lows");
+  check_input(highs, "highs");
+  check_input(codes, "codes");
+  check_input(positions, "positions");
+  check_input(decoded, "decoded");
+  check_input(symbols, "symbols");
+  TORCH_CHECK(active.is_cuda() && active.scalar_type() == torch::kBool &&
+                  active.is_contiguous(),
+              "active must be contiguous CUDA bool");
+  TORCH_CHECK(errors.is_cuda() && errors.scalar_type() == torch::kInt32 &&
+                  errors.is_contiguous(),
+              "errors must be contiguous CUDA int32");
+  TORCH_CHECK(cdfs.dim() == 2 && cdfs.size(1) >= 3,
+              "cdfs must have shape [streams, alphabet + 1]");
+  const int64_t streams = cdfs.size(0);
+  TORCH_CHECK(payload.dim() == 2 && payload.size(0) == streams,
+              "payload must contain one row per stream");
+  for (const auto& tensor : {active, bit_counts, counts, lows, highs, codes,
+                             positions, decoded, symbols, errors}) {
+    TORCH_CHECK(tensor.dim() == 1 && tensor.size(0) == streams,
+                "decoder state tensors must contain one value per stream");
+    TORCH_CHECK(tensor.device() == cdfs.device(),
+                "all decoder tensors must use the same CUDA device");
+  }
+  TORCH_CHECK(state_bits >= 16 && state_bits <= 56,
+              "state_bits must be between 16 and 56");
+  TORCH_CHECK(nominal_total > cdfs.size(1) - 1,
+              "nominal_total must exceed the alphabet size");
+  TORCH_CHECK((int64_t{1} << state_bits) <=
+                  ((INT64_MAX / nominal_total) + 1),
+              "decoder arithmetic exceeds signed 64-bit intermediates");
+
+  const c10::cuda::CUDAGuard device_guard(cdfs.device());
+  constexpr int threads = 128;
+  const int blocks = static_cast<int>((streams + threads - 1) / threads);
+  decode_cdfs_kernel<<<blocks, threads, 0, at::cuda::getCurrentCUDAStream()>>>(
+      cdfs.data_ptr<int64_t>(),
+      active.data_ptr<bool>(),
+      payload.data_ptr<int64_t>(),
+      bit_counts.data_ptr<int64_t>(),
+      counts.data_ptr<int64_t>(),
+      streams,
+      cdfs.size(1),
+      payload.size(1),
+      nominal_total,
+      state_bits,
+      lows.data_ptr<int64_t>(),
+      highs.data_ptr<int64_t>(),
+      codes.data_ptr<int64_t>(),
+      positions.data_ptr<int64_t>(),
+      decoded.data_ptr<int64_t>(),
+      symbols.data_ptr<int64_t>(),
+      errors.data_ptr<int32_t>());
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
