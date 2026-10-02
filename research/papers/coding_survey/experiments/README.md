@@ -163,9 +163,15 @@ Kernel-only and matched live-Qwen benchmarks are:
   --output artifacts/papers/coding-survey/cuda-ac/kernel.json
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_cuda_compression.py \
   --input data/text8 --tokens 2048 --batch-size 16 --repeats 5 \
-  --variants cuda_torch cuda_fused \
-  --output artifacts/papers/coding-survey/cuda-ac/fusion-end-to-end.json
+  --variants python cuda_v1 cuda_v2 \
+  --output artifacts/papers/coding-survey/cuda-ac/unified-end-to-end.json
 ```
+
+This is the manuscript comparison: it records one full-workload warm-up per
+condition, excludes warm-ups from the five-run medians, rotates and reverses
+timed condition order, and requires byte-identical archives after every run.
+The legacy names `cuda_torch` and `cuda_fused` remain accepted as aliases for
+`cuda_v1` and `cuda_v2`.
 
 The dedicated fusion microbenchmark holds the probability trace and CUDA
 arithmetic encoder constant. It reports device-event time for interval
