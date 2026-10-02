@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "description": "Matched H100 encoding optimization data for the compression-ratio/throughput figure",
+  "provenance_artifact": "artifacts/papers/coding-survey/cuda-ac/unified-python-cuda-v1-v2-h100.json",
+  "input_sha256": "f9635e4ae4e252df008db14870d2fef6ff6ba90be1c9f64032861fb9dc9d90cb",
+  "model": "Qwen/Qwen2.5-0.5B",
+  "engine": "transformers",
+  "gpu": "NVIDIA H100",
+  "torch_version": "2.10.0+cu128",
+  "cuda_runtime": "12.8",
+  "tokens": 2048,
+  "source_bytes": 11228,
+  "source_definition": "UTF-8 bytes after detokenizing the first 2,048 Qwen tokens from the fixed 1-MiB text8 prefix",
+  "compressed_representation": {
+    "payload_bytes": 1659,
+    "payload_sha256": "e2381713b2e8dbd0eba3580ac9739d0b2ff662b727937563cb2f5758c001c6be",
+    "vocabulary_bitmap_bytes": 1562,
+    "seed_token_count": 16,
+    "seed_bytes_per_token": 4,
+    "charged_compressed_bytes": 3285,
+    "definition": "MSAC payload including its framing, serialized observed-vocabulary bitmap, and 16 uint32 stream seeds",
+    "excluded_shared_state": [
+      "external model weights",
+      "tokenizer files",
+      "experiment configuration metadata"
+    ]
+  },
+  "warmups_per_variant": 1,
+  "timed_repetitions": 5,
+  "timing_scope": "compression phase excluding model construction; includes live inference, interval capture, arithmetic coding, and final host transfer",
+  "exact_payload_match": true,
+  "variants": [
+    {
+      "id": "python",
+      "label": "Python baseline",
+      "optimization": "Host target-interval transfer and host arithmetic coder",
+      "compression_seconds": [
+        1.4571176260069478,
+        1.4540477919799741,
+        1.4595126000058372,
+        1.4564803650137037,
+        1.4555567470088135
+      ]
+    },
+    {
+      "id": "cuda_v1",
+      "label": "CUDA v1",
+      "optimization": "Device interval buffer and CUDA arithmetic coder",
+      "compression_seconds": [
+        1.4195437080052216,
+        1.420323777012527,
+        1.4263643739977852,
+        1.4248383179947268,
+        1.420355776004726
+      ]
+    },
+    {
+      "id": "cuda_v2",
+      "label": "CUDA v2",
+      "optimization": "CUDA v1 plus fused probability quantization and target-interval extraction",
+      "compression_seconds": [
+        1.4138791400182527,
+        1.4080488909967244,
+        1.412510061985813,
+        1.4115855229902081,
+        1.4115357040136587
+      ]
+    }
+  ]
+}

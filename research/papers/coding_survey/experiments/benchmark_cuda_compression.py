@@ -81,12 +81,19 @@ def _warm_extension() -> None:
     target_intervals_from_probs_cuda(probabilities, targets)
 
 
-def _sample(stats: dict, payload: bytes) -> dict:
+def _sample(stats: dict, seeds: list[int], payload: bytes, bitmap: bytes) -> dict:
     source_bytes = stats["original_size_bytes"]
     compression_seconds = stats["compression_time"]
     total_seconds = stats["total_compression_time"]
+    seed_bytes = len(seeds) * 4
+    coded_representation_bytes = len(payload) + len(bitmap) + seed_bytes
     return {
         "source_bytes": source_bytes,
+        "payload_bytes": len(payload),
+        "vocabulary_bitmap_bytes": len(bitmap),
+        "seed_bytes": seed_bytes,
+        "coded_representation_bytes": coded_representation_bytes,
+        "compression_ratio": source_bytes / coded_representation_bytes,
         "compression_seconds": compression_seconds,
         "total_seconds": total_seconds,
         "inference_seconds": stats["inference_time"],
@@ -124,7 +131,7 @@ def _run_condition(cli, variant: str):
     seeds, payload, bitmap, stats, _ = run_global_mask_compression(
         _args(cli, variant)
     )
-    sample = _sample(stats, payload)
+    sample = _sample(stats, seeds, payload, bitmap)
     gc.collect()
     torch.cuda.empty_cache()
     return (seeds, payload, bitmap), sample

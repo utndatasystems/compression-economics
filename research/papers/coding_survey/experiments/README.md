@@ -113,6 +113,18 @@ The CUDA compression benchmark records the same two units for its compression
 phase and whole call; the compression-phase value excludes model construction
 and is the relevant cross-codec rate.
 
+Regenerate the paper's compression-ratio/throughput figure from the versioned
+five-run H100 data with:
+
+```bash
+.venv/bin/python research/papers/coding_survey/experiments/plot_optimization_pareto.py
+```
+
+This writes a vector PDF and a 600-DPI PNG under the manuscript's `figures/`
+directory. The charged compressed size includes the framed MSAC payload,
+serialized vocabulary bitmap, and uint32 stream seeds. The shared external
+model and tokenizer are excluded and disclosed in the figure.
+
 The live CPU baseline uses the existing E02 Qwen/text8 archive and excerpt,
 loads one cached float32 model, rotates host/device condition order after
 warmup, and writes every exact-recovery timing sample:
