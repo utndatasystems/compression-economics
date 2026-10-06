@@ -38,12 +38,19 @@ def _run_interval_inference(predictor, prompts, target_token_ids, enable_kv_cach
     interval_quantizer = getattr(
         predictor.args, "target_interval_quantizer", "torch"
     )
-    if interval_quantizer not in {"torch", "cuda_fused"}:
+    if interval_quantizer not in {"torch", "cuda_fused", "cuda_v3"}:
         raise ValueError(f"unknown target interval quantizer: {interval_quantizer}")
-    if interval_quantizer == "cuda_fused":
-        from src.coding.cuda_ac import target_intervals_from_probs_cuda
+    if interval_quantizer in {"cuda_fused", "cuda_v3"}:
+        from src.coding.cuda_ac import (
+            target_intervals_from_probs_cuda,
+            target_intervals_from_probs_cuda_v3,
+        )
 
-        interval_function = target_intervals_from_probs_cuda
+        interval_function = (
+            target_intervals_from_probs_cuda_v3
+            if interval_quantizer == "cuda_v3"
+            else target_intervals_from_probs_cuda
+        )
     else:
         interval_function = target_intervals_from_probs_tensor
     record_device_time = probabilities.device.type == "cuda"

@@ -17,6 +17,12 @@ std::vector<torch::Tensor> quantize_target_intervals_cuda(
     torch::Tensor targets,
     int64_t nominal_total);
 
+std::vector<torch::Tensor> quantize_target_intervals_compact_cuda(
+    torch::Tensor probabilities,
+    torch::Tensor probability_sums,
+    torch::Tensor targets,
+    int64_t nominal_total);
+
 void decode_cdfs_cuda(
     torch::Tensor cdfs,
     torch::Tensor active,
@@ -42,6 +48,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
       "quantize_target_intervals",
       &quantize_target_intervals_cuda,
       "Fuse floor-count quantization and target interval extraction (CUDA)");
+  module.def(
+      "quantize_target_intervals_compact",
+      &quantize_target_intervals_compact_cuda,
+      "Fuse source-dtype conversion, floor-count quantization, and target "
+      "interval extraction (CUDA v3)");
   module.def(
       "decode_cdfs",
       &decode_cdfs_cuda,

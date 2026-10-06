@@ -77,6 +77,13 @@ complete pipeline time remains synchronized wall time.
 vLLM worker softmax/quantization is included in inference time; its interval
 conversion timing is not separately instrumented.
 
+For Transformer/CUDA compression,
+`--target-interval-quantizer cuda_v3` selects compact fused interval
+construction. Unlike `cuda_fused` (CUDA v2), it does not materialize a full
+float64 copy of every probability row. Both modes retain the
+`floor_float64_v1` archive contract and are required to produce identical
+integer intervals and archive bytes.
+
 The frozen-trace `evaluate_coders.py` benchmark continues to use its matched
 fixed-total coders. It has no live inference and cannot measure O3 transfer savings.
 Compare O3 via live compression runs, and report its different quantization rule

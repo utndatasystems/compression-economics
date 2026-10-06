@@ -152,6 +152,45 @@ def target_intervals_from_probs_cuda(
     ))
 
 
+def target_intervals_from_probs_cuda_v3(
+    probabilities: torch.Tensor,
+    targets: torch.Tensor,
+    total: int = 262144,
+    *,
+    validate: bool = True,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Construct target intervals without materializing float64 probability rows.
+
+    CUDA v3 preserves the v1/v2 floor-count contract.  It casts values while
+    reducing row sums and again inside the interval kernel, avoiding v2's
+    vocabulary-sized float64 conversion tensor and its extra memory pass.
+    """
+    if probabilities.device.type != "cuda":
+        raise ValueError("CUDA v3 target-interval quantization requires CUDA")
+    if probabilities.ndim != 2 or not 1 <= probabilities.shape[1] < total:
+        raise ValueError("expected a 2D alphabet smaller than the frequency total")
+    probabilities = probabilities.contiguous()
+    if validate and (
+        not torch.isfinite(probabilities).all() or (probabilities < 0).any()
+    ):
+        raise ValueError("probabilities must be finite and nonnegative")
+    probability_sums = probabilities.sum(dim=1, dtype=torch.float64).contiguous()
+    if validate and (probability_sums <= 0).any():
+        raise ValueError("probability rows must have positive mass")
+    targets = torch.as_tensor(
+        targets, device=probabilities.device, dtype=torch.int64
+    ).contiguous()
+    if targets.ndim != 1 or targets.numel() != probabilities.shape[0]:
+        raise ValueError("one target index is required per probability row")
+    if validate and (
+        (targets < 0).any() or (targets >= probabilities.shape[1]).any()
+    ):
+        raise ValueError("target outside alphabet")
+    return tuple(_load_extension().quantize_target_intervals_compact(
+        probabilities, probability_sums, targets, total
+    ))
+
+
 def decode_cdfs_cuda_raw(
     cdfs: torch.Tensor,
     active: torch.Tensor,

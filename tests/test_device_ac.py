@@ -7,6 +7,7 @@ import torch
 from src.coding.cuda_ac import (
     encode_intervals_cuda,
     target_intervals_from_probs_cuda,
+    target_intervals_from_probs_cuda_v3,
 )
 from src.coding.device_ac import (
     CudaCDFMultistreamACDecoder,
@@ -120,6 +121,23 @@ def test_fused_cuda_target_intervals_match_torch(dtype, alphabet):
     targets = torch.arange(73, dtype=torch.int64, device="cuda") % alphabet
     expected = target_intervals_from_probs_tensor(probabilities, targets)
     actual = target_intervals_from_probs_cuda(probabilities, targets)
+    for expected_tensor, actual_tensor in zip(expected, actual):
+        assert torch.equal(actual_tensor, expected_tensor)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64, torch.bfloat16])
+@pytest.mark.parametrize("alphabet", [2, 17, 257])
+def test_cuda_v3_target_intervals_match_v2(dtype, alphabet):
+    generator = torch.Generator(device="cuda").manual_seed(2031 + alphabet)
+    probabilities = torch.rand(
+        (73, alphabet), dtype=dtype, device="cuda", generator=generator
+    )
+    probabilities[0].zero_()
+    probabilities[0, 0] = 1
+    targets = torch.arange(73, dtype=torch.int64, device="cuda") % alphabet
+    expected = target_intervals_from_probs_cuda(probabilities, targets)
+    actual = target_intervals_from_probs_cuda_v3(probabilities, targets)
     for expected_tensor, actual_tensor in zip(expected, actual):
         assert torch.equal(actual_tensor, expected_tensor)
 

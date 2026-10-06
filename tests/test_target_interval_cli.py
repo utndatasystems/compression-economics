@@ -55,18 +55,19 @@ def test_cuda_encoder_cli_contract(monkeypatch):
         get_main_args()
 
 
-def test_fused_target_interval_cli_contract(monkeypatch):
+@pytest.mark.parametrize("quantizer", ["cuda_fused", "cuda_v3"])
+def test_fused_target_interval_cli_contract(monkeypatch, quantizer):
     monkeypatch.setattr(sys, "argv", [
         "main.py", "--mode", "compress", "--engine", "transformer",
         "--encoding", "AC_TARGET_INTERVAL", "--ac-backend", "cuda",
-        "--target-interval-quantizer", "cuda_fused",
+        "--target-interval-quantizer", quantizer,
     ])
-    assert get_main_args().target_interval_quantizer == "cuda_fused"
+    assert get_main_args().target_interval_quantizer == quantizer
 
     monkeypatch.setattr(sys, "argv", [
         "main.py", "--mode", "compress", "--engine", "transformer",
         "--encoding", "AC_TARGET_INTERVAL",
-        "--target-interval-quantizer", "cuda_fused",
+        "--target-interval-quantizer", quantizer,
     ])
     with pytest.raises(SystemExit):
         get_main_args()

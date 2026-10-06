@@ -150,11 +150,12 @@ def get_main_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--target-interval-quantizer",
-        choices=["torch", "cuda_fused"],
+        choices=["torch", "cuda_fused", "cuda_v3"],
         default="torch",
         help=(
             "Target-interval construction ablation: canonical PyTorch operators "
-            "or fused CUDA frequency/CDF extraction"
+            "or fused CUDA frequency/CDF extraction; cuda_v3 additionally "
+            "avoids materializing float64 probability rows"
         ),
     )
     parser.add_argument("--ac-threads", type=int, default=None, help="Maximum workers for numba_parallel MSAC encoding")
@@ -184,14 +185,14 @@ def get_main_args() -> argparse.Namespace:
         parser.error(
             "--ac-backend cuda requires Transformer AC_TARGET_INTERVAL compression"
         )
-    if args.target_interval_quantizer == "cuda_fused" and (
+    if args.target_interval_quantizer in {"cuda_fused", "cuda_v3"} and (
         args.mode != "compress"
         or args.ac_backend != "cuda"
         or args.encoding != "AC_TARGET_INTERVAL"
         or args.engine != "transformer"
     ):
         parser.error(
-            "--target-interval-quantizer cuda_fused requires Transformer "
+            "--target-interval-quantizer cuda_fused/cuda_v3 requires Transformer "
             "AC_TARGET_INTERVAL compression with --ac-backend cuda"
         )
     if args.ac_decode_backend in {"device", "cuda"} and (

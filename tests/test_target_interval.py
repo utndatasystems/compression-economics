@@ -128,6 +128,12 @@ def test_tiny_transformer_capture_decodes_with_full_distribution(cache, mask):
             not torch.cuda.is_available(), reason="CUDA unavailable"
         ),
     ),
+    pytest.param(
+        "cuda", "cuda_v3",
+        marks=pytest.mark.skipif(
+            not torch.cuda.is_available(), reason="CUDA unavailable"
+        ),
+    ),
 ])
 @pytest.mark.parametrize("decode_backend", [
     "host",

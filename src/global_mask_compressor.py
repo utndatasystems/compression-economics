@@ -143,7 +143,10 @@ def run_global_mask_compression(args):
         )
     if cuda_interval_backend and not torch.cuda.is_available():
         raise ValueError("CUDA AC encoding requires an available CUDA device")
-    if target_interval_quantizer == "cuda_fused" and not cuda_interval_backend:
+    if (
+        target_interval_quantizer in {"cuda_fused", "cuda_v3"}
+        and not cuda_interval_backend
+    ):
         raise ValueError(
             "fused CUDA target intervals require the CUDA AC interval backend"
         )
