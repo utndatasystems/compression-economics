@@ -19,6 +19,7 @@ from src.coding.cuda_ac import (
     encode_intervals_cuda,
     encode_intervals_cuda_raw,
     target_intervals_from_probs_cuda,
+    target_intervals_from_probs_cuda_v3,
 )
 from src.coding.target_interval import target_intervals_from_probs_tensor
 
@@ -79,11 +80,19 @@ def main() -> None:
             probabilities, targets, validate=False
         )
 
+    def compact_intervals():
+        return target_intervals_from_probs_cuda_v3(
+            probabilities, targets, validate=False
+        )
+
     expected = torch_intervals()
     actual = fused_intervals()
+    compact = compact_intervals()
     torch.cuda.synchronize()
     if any(not torch.equal(left, right) for left, right in zip(expected, actual)):
         raise AssertionError("fused intervals differ from the PyTorch baseline")
+    if any(not torch.equal(left, right) for left, right in zip(expected, compact)):
+        raise AssertionError("CUDA v3 intervals differ from the PyTorch baseline")
 
     def reshape(intervals):
         return tuple(
@@ -93,14 +102,20 @@ def main() -> None:
 
     baseline_lows, baseline_highs, baseline_totals = reshape(expected)
     fused_lows, fused_highs, fused_totals = reshape(actual)
+    compact_lows, compact_highs, compact_totals = reshape(compact)
     baseline_archive = encode_intervals_cuda(
         baseline_lows, baseline_highs, baseline_totals, counts
     )
     fused_archive = encode_intervals_cuda(
         fused_lows, fused_highs, fused_totals, counts
     )
+    compact_archive = encode_intervals_cuda(
+        compact_lows, compact_highs, compact_totals, counts
+    )
     if baseline_archive != fused_archive:
         raise AssertionError("fused path changed the encoded archive")
+    if baseline_archive != compact_archive:
+        raise AssertionError("CUDA v3 changed the encoded archive")
 
     def combined(interval_function):
         lows, highs, totals = reshape(interval_function())
@@ -111,13 +126,16 @@ def main() -> None:
     # Warm both allocation/operator paths before timing.
     torch_intervals()
     fused_intervals()
+    compact_intervals()
     combined(torch_intervals)
     combined(fused_intervals)
+    combined(compact_intervals)
     torch.cuda.synchronize()
 
     interval_samples = {
         "cuda_torch": _time_cuda(torch_intervals, args.repeats),
         "cuda_fused": _time_cuda(fused_intervals, args.repeats),
+        "cuda_v3": _time_cuda(compact_intervals, args.repeats),
     }
     combined_samples = {
         "cuda_torch": _time_cuda(
@@ -125,6 +143,9 @@ def main() -> None:
         ),
         "cuda_fused": _time_cuda(
             lambda: combined(fused_intervals), args.repeats
+        ),
+        "cuda_v3": _time_cuda(
+            lambda: combined(compact_intervals), args.repeats
         ),
     }
 
@@ -151,6 +172,14 @@ def main() -> None:
         combined_summaries["cuda_torch"]["median_seconds"]
         / combined_summaries["cuda_fused"]["median_seconds"]
     )
+    v3_interval_ratio = (
+        interval_summaries["cuda_fused"]["median_seconds"]
+        / interval_summaries["cuda_v3"]["median_seconds"]
+    )
+    v3_combined_ratio = (
+        combined_summaries["cuda_fused"]["median_seconds"]
+        / combined_summaries["cuda_v3"]["median_seconds"]
+    )
     result = {
         "seed": 2029,
         "steps": args.steps,
@@ -171,6 +200,16 @@ def main() -> None:
             "interval_construction_time_reduction_fraction": 1 - 1 / interval_ratio,
             "construction_plus_encoding_speedup": combined_ratio,
             "construction_plus_encoding_time_reduction_fraction": 1 - 1 / combined_ratio,
+        },
+        "cuda_v3_vs_cuda_fused": {
+            "interval_construction_speedup": v3_interval_ratio,
+            "interval_construction_time_reduction_fraction": (
+                1 - 1 / v3_interval_ratio
+            ),
+            "construction_plus_encoding_speedup": v3_combined_ratio,
+            "construction_plus_encoding_time_reduction_fraction": (
+                1 - 1 / v3_combined_ratio
+            ),
         },
         "gpu": torch.cuda.get_device_name(),
         "torch_version": torch.__version__,

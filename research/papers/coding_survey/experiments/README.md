@@ -192,6 +192,12 @@ total, and target probability in one kernel. This isolates fusion from both
 model inference and arithmetic coding. Every comparison must require exact
 integer intervals and byte-identical archives before reporting timing.
 
+`--target-interval-quantizer cuda_v3` keeps the same floor-count contract and
+the same CUDA arithmetic encoder while avoiding CUDA v2's vocabulary-sized
+float64 probability tensor. It casts source probabilities inside the float64
+row reduction and interval-extraction kernel. This is a separately selectable
+ablation; CUDA v1, v2, and v3 must produce identical intervals and archives.
+
 Kernel-only and matched live-Qwen benchmarks are:
 
 ```bash
@@ -199,7 +205,7 @@ Kernel-only and matched live-Qwen benchmarks are:
   --output artifacts/papers/coding-survey/cuda-ac/kernel.json
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_cuda_compression.py \
   --input data/text8 --tokens 2048 --batch-size 16 --repeats 5 \
-  --variants python cuda_v1 cuda_v2 \
+  --variants python cuda_v1 cuda_v2 cuda_v3 \
   --output artifacts/papers/coding-survey/cuda-ac/unified-end-to-end.json
 ```
 
@@ -208,6 +214,25 @@ condition, excludes warm-ups from the five-run medians, rotates and reverses
 timed condition order, and requires byte-identical archives after every run.
 The legacy names `cuda_torch` and `cuda_fused` remain accepted as aliases for
 `cuda_v1` and `cuda_v2`.
+
+The 10 MiB text8 round-trip comparison additionally includes the preserved
+pre-CUDA Python encoder and host decoder. The paper-matched quality setting is
+batch 256, context 256, and retain 100:
+
+```bash
+.venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_text8_cuda_roundtrip.py \
+  --input-bytes 10485760 --batch-size 256 --context-length 256 \
+  --retain-tokens 100 --repeats 3 \
+  --output artifacts/papers/coding-survey/cuda-ac/\
+text8-first-10MiB-roundtrip-b256-c256-r100.json
+.venv/bin/python \
+  research/papers/coding_survey/experiments/plot_text8_roundtrip_timing.py
+```
+
+The runner requires identical archives across all encoders and exact recovery
+from all decoders. The plot uses non-overlapping timing components: interval
+construction is subtracted from its enclosing inference timer before stacking.
 
 The dedicated fusion microbenchmark holds the probability trace and CUDA
 arithmetic encoder constant. It reports device-event time for interval

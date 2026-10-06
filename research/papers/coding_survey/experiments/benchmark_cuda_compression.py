@@ -1,4 +1,4 @@
-"""Compare Python, CUDA v1, and CUDA v2 on one matched live workload."""
+"""Compare Python and CUDA v1/v2/v3 on one matched live workload."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ import torch
 from src.coding.cuda_ac import (
     encode_intervals_cuda,
     target_intervals_from_probs_cuda,
+    target_intervals_from_probs_cuda_v3,
 )
 from src.global_mask_compressor import run_global_mask_compression
 
@@ -29,6 +30,7 @@ _VARIANT_ALIASES = {
     "python": "python",
     "cuda_v1": "cuda_v1",
     "cuda_v2": "cuda_v2",
+    "cuda_v3": "cuda_v3",
     # Preserve commands used by the earlier two-condition experiment.
     "cuda_torch": "cuda_v1",
     "cuda_fused": "cuda_v2",
@@ -55,9 +57,10 @@ def _args(cli, variant: str) -> SimpleNamespace:
         encoding="AC_TARGET_INTERVAL",
         frequency_quantizer="reference",
         ac_backend=backend,
-        target_interval_quantizer=(
-            "cuda_fused" if variant == "cuda_v2" else "torch"
-        ),
+        target_interval_quantizer={
+            "cuda_v2": "cuda_fused",
+            "cuda_v3": "cuda_v3",
+        }.get(variant, "torch"),
         ac_threads=None,
         ac_layout="standard",
         reduce_tokens=True,
@@ -79,6 +82,7 @@ def _warm_extension() -> None:
     probabilities = torch.tensor([[0.25, 0.75]], device="cuda")
     targets = torch.ones((1,), dtype=torch.int64, device="cuda")
     target_intervals_from_probs_cuda(probabilities, targets)
+    target_intervals_from_probs_cuda_v3(probabilities, targets)
 
 
 def _sample(stats: dict, seeds: list[int], payload: bytes, bitmap: bytes) -> dict:
@@ -169,7 +173,7 @@ def main() -> None:
         "--variants",
         nargs="+",
         choices=list(_VARIANT_ALIASES),
-        default=["python", "cuda_v1", "cuda_v2"],
+        default=["python", "cuda_v1", "cuda_v2", "cuda_v3"],
         help="Matched conditions; cuda_torch/cuda_fused are legacy aliases",
     )
     parser.add_argument("--output", type=Path)
@@ -270,8 +274,12 @@ def main() -> None:
             "python": "host Python interval encoder with per-step transfer",
             "cuda_v1": "PyTorch interval construction plus buffered CUDA encoder",
             "cuda_v2": "fused interval construction plus the same CUDA encoder",
+            "cuda_v3": (
+                "compact fused interval construction without a full float64 "
+                "probability tensor, plus the same CUDA encoder"
+            ),
         },
-        "experimental_factor": "incremental CUDA implementation",
+        "experimental_factor": "target_interval_quantizer",
         "warmup_policy": (
             "extension operators, then one full-workload run per condition; "
             "warm-ups are recorded but excluded from medians"
@@ -307,6 +315,27 @@ def main() -> None:
             ),
             "total_throughput_ratio": (
                 fused["total_input_symbols_per_sec"]
+                / baseline["total_input_symbols_per_sec"]
+            ),
+        }
+    if "cuda_v2" in medians and "cuda_v3" in medians:
+        baseline = medians["cuda_v2"]
+        compact = medians["cuda_v3"]
+        result["cuda_v3_vs_cuda_v2"] = {
+            "interval_conversion_speedup": (
+                baseline["interval_conversion_seconds"]
+                / compact["interval_conversion_seconds"]
+            ),
+            "compression_phase_speedup": (
+                baseline["compression_seconds"]
+                / compact["compression_seconds"]
+            ),
+            "compression_phase_throughput_ratio": (
+                compact["compression_phase_input_symbols_per_sec"]
+                / baseline["compression_phase_input_symbols_per_sec"]
+            ),
+            "total_throughput_ratio": (
+                compact["total_input_symbols_per_sec"]
                 / baseline["total_input_symbols_per_sec"]
             ),
         }
