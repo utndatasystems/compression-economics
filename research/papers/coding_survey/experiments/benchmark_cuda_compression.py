@@ -1,4 +1,4 @@
-"""Compare Python and CUDA v1/v2/v3 on one matched live workload."""
+"""Compare Python and CUDA v1/v2/v3/v4 on one matched live workload."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from src.coding.cuda_ac import (
     encode_intervals_cuda,
     target_intervals_from_probs_cuda,
     target_intervals_from_probs_cuda_v3,
+    target_intervals_from_probs_cuda_v4,
 )
 from src.global_mask_compressor import run_global_mask_compression
 
@@ -31,6 +32,7 @@ _VARIANT_ALIASES = {
     "cuda_v1": "cuda_v1",
     "cuda_v2": "cuda_v2",
     "cuda_v3": "cuda_v3",
+    "cuda_v4": "cuda_v4",
     # Preserve commands used by the earlier two-condition experiment.
     "cuda_torch": "cuda_v1",
     "cuda_fused": "cuda_v2",
@@ -60,6 +62,7 @@ def _args(cli, variant: str) -> SimpleNamespace:
         target_interval_quantizer={
             "cuda_v2": "cuda_fused",
             "cuda_v3": "cuda_v3",
+            "cuda_v4": "cuda_v4",
         }.get(variant, "torch"),
         ac_threads=None,
         ac_layout="standard",
@@ -83,6 +86,7 @@ def _warm_extension() -> None:
     targets = torch.ones((1,), dtype=torch.int64, device="cuda")
     target_intervals_from_probs_cuda(probabilities, targets)
     target_intervals_from_probs_cuda_v3(probabilities, targets)
+    target_intervals_from_probs_cuda_v4(probabilities, targets)
 
 
 def _sample(stats: dict, seeds: list[int], payload: bytes, bitmap: bytes) -> dict:
@@ -173,7 +177,7 @@ def main() -> None:
         "--variants",
         nargs="+",
         choices=list(_VARIANT_ALIASES),
-        default=["python", "cuda_v1", "cuda_v2", "cuda_v3"],
+        default=["python", "cuda_v1", "cuda_v2", "cuda_v3", "cuda_v4"],
         help="Matched conditions; cuda_torch/cuda_fused are legacy aliases",
     )
     parser.add_argument("--output", type=Path)
@@ -211,9 +215,16 @@ def main() -> None:
         archive, sample = _run_condition(cli, variant)
         warmup_archives[variant] = archive
         warmups[variant] = sample
-    warmup_reference = warmup_archives[variants[0]]
-    if any(candidate != warmup_reference for candidate in warmup_archives.values()):
-        raise AssertionError("warm-up variants produced different archives")
+    matched_floor_variants = [
+        variant for variant in variants if variant != "cuda_v4"
+    ]
+    if matched_floor_variants:
+        warmup_reference = warmup_archives[matched_floor_variants[0]]
+        if any(
+            warmup_archives[variant] != warmup_reference
+            for variant in matched_floor_variants[1:]
+        ):
+            raise AssertionError("warm-up variants produced different archives")
 
     conditions = {variant: [] for variant in variants}
     orders = _balanced_orders(variants, cli.repeats)
@@ -222,9 +233,13 @@ def main() -> None:
         for variant in order:
             matched[variant], sample = _run_condition(cli, variant)
             conditions[variant].append(sample)
-        reference = matched[variants[0]]
-        if any(candidate != reference for candidate in matched.values()):
-            raise AssertionError("ablation variants produced different archives")
+        if matched_floor_variants:
+            reference = matched[matched_floor_variants[0]]
+            if any(
+                matched[variant] != reference
+                for variant in matched_floor_variants[1:]
+            ):
+                raise AssertionError("ablation variants produced different archives")
 
     median_keys = (
         "compression_seconds",
@@ -278,6 +293,11 @@ def main() -> None:
                 "compact fused interval construction without a full float64 "
                 "probability tensor, plus the same CUDA encoder"
             ),
+            "cuda_v4": (
+                "custom fused exact fixed-total normalization, residual "
+                "selection, target-only bounds, and persistent arithmetic "
+                "coding overlapped with subsequent inference"
+            ),
         },
         "experimental_factor": "target_interval_quantizer",
         "warmup_policy": (
@@ -290,6 +310,7 @@ def main() -> None:
         "torch_version": torch.__version__,
         "torch_cuda_runtime": torch.version.cuda,
         "exact_archive_match": True,
+        "archive_match_scope": matched_floor_variants,
         "samples": conditions,
         "medians": medians,
         "timing_scope": (
@@ -336,6 +357,27 @@ def main() -> None:
             ),
             "total_throughput_ratio": (
                 compact["total_input_symbols_per_sec"]
+                / baseline["total_input_symbols_per_sec"]
+            ),
+        }
+    if "cuda_v3" in medians and "cuda_v4" in medians:
+        baseline = medians["cuda_v3"]
+        exact = medians["cuda_v4"]
+        result["cuda_v4_vs_cuda_v3"] = {
+            "interval_conversion_speedup": (
+                baseline["interval_conversion_seconds"]
+                / exact["interval_conversion_seconds"]
+            ),
+            "compression_phase_speedup": (
+                baseline["compression_seconds"]
+                / exact["compression_seconds"]
+            ),
+            "compression_phase_throughput_ratio": (
+                exact["compression_phase_input_symbols_per_sec"]
+                / baseline["compression_phase_input_symbols_per_sec"]
+            ),
+            "total_throughput_ratio": (
+                exact["total_input_symbols_per_sec"]
                 / baseline["total_input_symbols_per_sec"]
             ),
         }

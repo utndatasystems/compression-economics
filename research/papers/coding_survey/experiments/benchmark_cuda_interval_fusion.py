@@ -20,6 +20,7 @@ from src.coding.cuda_ac import (
     encode_intervals_cuda_raw,
     target_intervals_from_probs_cuda,
     target_intervals_from_probs_cuda_v3,
+    target_intervals_from_probs_cuda_v4,
 )
 from src.coding.target_interval import target_intervals_from_probs_tensor
 
@@ -85,14 +86,22 @@ def main() -> None:
             probabilities, targets, validate=False
         )
 
+    def exact_fixed_intervals():
+        return target_intervals_from_probs_cuda_v4(
+            probabilities, targets, validate=False
+        )
+
     expected = torch_intervals()
     actual = fused_intervals()
     compact = compact_intervals()
+    exact_fixed = exact_fixed_intervals()
     torch.cuda.synchronize()
     if any(not torch.equal(left, right) for left, right in zip(expected, actual)):
         raise AssertionError("fused intervals differ from the PyTorch baseline")
     if any(not torch.equal(left, right) for left, right in zip(expected, compact)):
         raise AssertionError("CUDA v3 intervals differ from the PyTorch baseline")
+    if not torch.all(exact_fixed[2] == 262144):
+        raise AssertionError("CUDA v4 did not produce fixed-total intervals")
 
     def reshape(intervals):
         return tuple(
@@ -103,6 +112,7 @@ def main() -> None:
     baseline_lows, baseline_highs, baseline_totals = reshape(expected)
     fused_lows, fused_highs, fused_totals = reshape(actual)
     compact_lows, compact_highs, compact_totals = reshape(compact)
+    exact_lows, exact_highs, exact_totals = reshape(exact_fixed)
     baseline_archive = encode_intervals_cuda(
         baseline_lows, baseline_highs, baseline_totals, counts
     )
@@ -111,6 +121,13 @@ def main() -> None:
     )
     compact_archive = encode_intervals_cuda(
         compact_lows, compact_highs, compact_totals, counts
+    )
+    exact_archive = encode_intervals_cuda(
+        exact_lows,
+        exact_highs,
+        exact_totals,
+        counts,
+        exact_fixed=True,
     )
     if baseline_archive != fused_archive:
         raise AssertionError("fused path changed the encoded archive")
@@ -127,15 +144,18 @@ def main() -> None:
     torch_intervals()
     fused_intervals()
     compact_intervals()
+    exact_fixed_intervals()
     combined(torch_intervals)
     combined(fused_intervals)
     combined(compact_intervals)
+    combined(exact_fixed_intervals)
     torch.cuda.synchronize()
 
     interval_samples = {
         "cuda_torch": _time_cuda(torch_intervals, args.repeats),
         "cuda_fused": _time_cuda(fused_intervals, args.repeats),
         "cuda_v3": _time_cuda(compact_intervals, args.repeats),
+        "cuda_v4": _time_cuda(exact_fixed_intervals, args.repeats),
     }
     combined_samples = {
         "cuda_torch": _time_cuda(
@@ -146,6 +166,9 @@ def main() -> None:
         ),
         "cuda_v3": _time_cuda(
             lambda: combined(compact_intervals), args.repeats
+        ),
+        "cuda_v4": _time_cuda(
+            lambda: combined(exact_fixed_intervals), args.repeats
         ),
     }
 
@@ -191,8 +214,11 @@ def main() -> None:
         "controlled_encoder": "encode_intervals_cuda_raw",
         "exact_interval_match": True,
         "exact_archive_match": True,
+        "archive_match_scope": ["cuda_torch", "cuda_fused", "cuda_v3"],
         "archive_bytes": len(fused_archive),
         "archive_sha256": hashlib.sha256(fused_archive).hexdigest(),
+        "cuda_v4_archive_bytes": len(exact_archive),
+        "cuda_v4_archive_sha256": hashlib.sha256(exact_archive).hexdigest(),
         "interval_construction": interval_summaries,
         "interval_construction_plus_encoding": combined_summaries,
         "fused_vs_cuda_torch": {

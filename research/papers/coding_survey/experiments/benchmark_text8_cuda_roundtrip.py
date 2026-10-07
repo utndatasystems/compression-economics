@@ -30,11 +30,19 @@ from src.coding.cuda_ac import (
     encode_intervals_cuda,
     target_intervals_from_probs_cuda,
     target_intervals_from_probs_cuda_v3,
+    target_intervals_from_probs_cuda_v4,
 )
 from src.prediction import TokenPredictor
 
 
-ENCODERS = ("python_full_logits", "python", "cuda_v1", "cuda_v2", "cuda_v3")
+ENCODERS = (
+    "python_full_logits",
+    "python",
+    "cuda_v1",
+    "cuda_v2",
+    "cuda_v3",
+    "cuda_v4",
+)
 DECODERS = ("host", "device", "cuda")
 
 
@@ -71,6 +79,7 @@ def _compression_args(cli: argparse.Namespace, source: str, token_count: int, va
         target_interval_quantizer={
             "cuda_v2": "cuda_fused",
             "cuda_v3": "cuda_v3",
+            "cuda_v4": "cuda_v4",
         }.get(variant, "torch"),
         ac_threads=None,
         ac_layout="standard",
@@ -94,6 +103,7 @@ def _warm_extension() -> None:
     targets = torch.ones((1,), dtype=torch.int64, device="cuda")
     target_intervals_from_probs_cuda(probabilities, targets)
     target_intervals_from_probs_cuda_v3(probabilities, targets)
+    target_intervals_from_probs_cuda_v4(probabilities, targets)
 
 
 def _encoding_sample(stats: dict, seeds: list[int], payload: bytes, bitmap: bytes) -> dict:
@@ -255,7 +265,9 @@ def main() -> None:
     for variant in encoders:
         warm_archives[variant], encoding_warmups[variant] = run_encoder(variant)
     matched_encoders = tuple(
-        variant for variant in encoders if variant != "python_full_logits"
+        variant
+        for variant in encoders
+        if variant not in {"python_full_logits", "cuda_v4"}
     )
     reference = warm_archives[matched_encoders[0]][:3] if matched_encoders else None
     if any(
@@ -266,21 +278,31 @@ def main() -> None:
     encoding_samples = {variant: [] for variant in encoders}
     encoding_orders = _balanced_orders(encoders, cli.repeats)
     optimized_archive = warm_archives.get(
-        "cuda_v3", warm_archives.get("cuda_v2", warm_archives[encoders[-1]])
+        "cuda_v4",
+        warm_archives.get(
+            "cuda_v3", warm_archives.get("cuda_v2", warm_archives[encoders[-1]])
+        ),
     )
     for repeat, order in enumerate(encoding_orders, start=1):
         matched = {}
+        timed_archives = {}
         for variant in order:
             archive, sample = run_encoder(variant)
+            timed_archives[variant] = archive
             matched[variant] = archive[:3]
             encoding_samples[variant].append(sample)
             print(
                 f"encode {variant} repeat {repeat}: {sample['seconds']:.3f} s",
                 flush=True,
             )
-        optimized_archive = matched.get(
-            "cuda_v3",
-            matched.get("cuda_v2", matched.get("cuda_v1", optimized_archive)),
+        optimized_archive = timed_archives.get(
+            "cuda_v4",
+            timed_archives.get(
+                "cuda_v3",
+                timed_archives.get(
+                    "cuda_v2", timed_archives.get("cuda_v1", optimized_archive)
+                ),
+            ),
         )
         if matched_encoders and any(
             matched[variant] != matched[matched_encoders[0]]
@@ -385,6 +407,7 @@ def main() -> None:
                 "cuda_v1": "PyTorch target-interval construction plus buffered CUDA arithmetic encoder",
                 "cuda_v2": "fused target-interval construction plus the same CUDA arithmetic encoder",
                 "cuda_v3": "compact fused target-interval construction without a full float64 probability tensor, plus the same CUDA arithmetic encoder",
+                "cuda_v4": "custom fused exact fixed-total normalization, residual selection, target-only bounds, and persistent arithmetic coding overlapped with subsequent inference",
             },
             "full_logits_baseline_provenance": "preserved AC_MULTISTREAM path from revision 5a91a3f (the parent of c1cc347, which introduced target-interval capture)",
             "python_baseline_provenance": "preserved pre-CUDA target-interval path from revision 009936d (immediately before d1dd294 added the first CUDA interval encoder)",
@@ -433,9 +456,19 @@ def main() -> None:
                 if {"cuda_v2", "cuda_v3"}.issubset(encoding_medians)
                 else None
             ),
+            "cuda_v4_vs_cuda_v3": (
+                {
+                    "speedup": encoding_medians["cuda_v3"]["seconds"]
+                    / encoding_medians["cuda_v4"]["seconds"],
+                    "throughput_ratio": encoding_medians["cuda_v4"]["source_mib_per_second"]
+                    / encoding_medians["cuda_v3"]["source_mib_per_second"],
+                }
+                if {"cuda_v3", "cuda_v4"}.issubset(encoding_medians)
+                else None
+            ),
             "exact_archive_match": True,
             "archive_match_scope": list(matched_encoders),
-            "note": "The full-logits MSAC-v1 baseline uses a different quantizer/archive version and is validated by exact round-trip rather than byte equality with target-interval MSAC-v2.",
+            "note": "The full-logits MSAC-v1 baseline and CUDA-v4 MSAC-v3 use fixed-total normalization; CUDA v1-v3 use the variable-total MSAC-v2 floor-count contract. Cross-version conditions are validated by exact round-trip rather than whole-archive equality.",
         },
         "decoding": {
             "conditions": list(decoders),
@@ -444,7 +477,7 @@ def main() -> None:
                 "device": "PyTorch device-state and inverse-CDF baseline",
                 "cuda": "PyTorch CDF construction plus fused CUDA state update",
             },
-            "note": "CUDA v2 and v3 are encoder optimizations; CUDA-CDF v1 is the newest implemented decoder",
+            "note": "CUDA v2-v4 are encoder quantizer variants; the CUDA decoder performs batched inverse-CDF lookup using the quantizer declared by the MSAC archive",
             "timing_scope": "complete decompression function including inference, arithmetic decoding, token copies, and detokenization; excludes model loading and archive I/O",
             "warmups": decoding_warmups,
             "orders": decoding_orders,

@@ -198,6 +198,17 @@ float64 probability tensor. It casts source probabilities inside the float64
 row reduction and interval-extraction kernel. This is a separately selectable
 ablation; CUDA v1, v2, and v3 must produce identical intervals and archives.
 
+`--target-interval-quantizer cuda_v4` is the advanced encoding path. Its custom
+kernel fuses deterministic exact fixed-total normalization, residual
+calculation, stable residual-symbol selection, and target-only bound emission.
+It writes MSAC v3 and incrementally updates persistent multistream arithmetic
+state on a dedicated CUDA stream, allowing coding at step `t` to overlap the
+next inference step rather than retaining the complete interval trace. Its
+decoder reconstructs the same fixed-total CDF before the existing batched CUDA
+inverse-CDF/state-update kernel. Because v4 changes the quantized distribution,
+it is round-trip checked separately from the byte-identical MSAC-v2 v1--v3
+ablation group. Model masking and softmax remain outside the custom kernel.
+
 Kernel-only and matched live-Qwen benchmarks are:
 
 ```bash
@@ -205,13 +216,15 @@ Kernel-only and matched live-Qwen benchmarks are:
   --output artifacts/papers/coding-survey/cuda-ac/kernel.json
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_cuda_compression.py \
   --input data/text8 --tokens 2048 --batch-size 16 --repeats 5 \
-  --variants python cuda_v1 cuda_v2 cuda_v3 \
+  --variants python cuda_v1 cuda_v2 cuda_v3 cuda_v4 \
   --output artifacts/papers/coding-survey/cuda-ac/unified-end-to-end.json
 ```
 
 This is the manuscript comparison: it records one full-workload warm-up per
 condition, excludes warm-ups from the five-run medians, rotates and reverses
 timed condition order, and requires byte-identical archives after every run.
+Byte identity applies within the MSAC-v2 v1--v3 group; CUDA v4 uses the
+separately versioned fixed-total contract and must pass exact round-trip checks.
 The legacy names `cuda_torch` and `cuda_fused` remain accepted as aliases for
 `cuda_v1` and `cuda_v2`.
 
