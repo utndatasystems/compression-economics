@@ -217,13 +217,32 @@ def main() -> None:
         }
     )
     fig, axes = plt.subplots(1, 2, figsize=(7.15, 3.15))
+    encoding_medians = data["encoding"]["medians"]
+    decoding_medians = data["decoding"]["medians"]
+    encoding_total_speedup = (
+        encoding_medians["python"]["seconds"]
+        / encoding_medians["cuda_v2"]["seconds"]
+    )
+    encoding_ac_speedup = (
+        encoding_medians["python"]["arithmetic_coding_seconds"]
+        / encoding_medians["cuda_v2"]["arithmetic_coding_seconds"]
+    )
+    decoding_total_speedup = (
+        decoding_medians["host"]["seconds"]
+        / decoding_medians["cuda"]["seconds"]
+    )
+    decoding_ac_speedup = (
+        decoding_medians["host"]["arithmetic_seconds"]
+        / decoding_medians["cuda"]["arithmetic_seconds"]
+    )
     _panel(
         axes[0],
         data,
         "encoding",
         data["encoding"]["conditions"],
         _encoding_parts,
-        "(a) Encoding",
+        f"(a) Encoding — {encoding_total_speedup:.2f}× end-to-end\n"
+        f"Arithmetic stage: {encoding_ac_speedup:.0f}× faster",
     )
     _panel(
         axes[1],
@@ -231,7 +250,8 @@ def main() -> None:
         "decoding",
         data["decoding"]["conditions"],
         _decoding_parts,
-        "(b) Decoding",
+        f"(b) Decoding — {decoding_total_speedup:.2f}× end-to-end\n"
+        f"Arithmetic stage: {decoding_ac_speedup:.1f}× faster",
     )
 
     handles_by_label = {}
@@ -253,7 +273,7 @@ def main() -> None:
     fig.suptitle(
         "text8 (10 MiB), Qwen2.5-0.5B, batch 256, context 256/retain 100, "
         f"MSAC-v2 ratio {data['representation']['compression_ratio']:.3f}×; median of "
-        f"{data['repeats']} runs",
+        f"{data['repeats']} runs; exact round trip",
         x=0.075,
         y=1.01,
         ha="left",

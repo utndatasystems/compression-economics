@@ -18,8 +18,9 @@ design decisions and possible implementation ablations.
 - **Needs implementation:** a necessary path or measurement is missing.
 - **Exploratory:** pursue after core results, or if retained in the paper.
 
-Prioritize E02–E04 next. The sweep sizes below are proposed starting points;
-record changes here before expanding them.
+Prioritize E03 instrumentation, E04, and E05 replication next. The sweep
+sizes below are proposed starting points; record changes here before expanding
+them.
 
 ## Core experiment inventory
 
@@ -27,15 +28,15 @@ record changes here before expanding them.
 | --- | --- | --- | --- |
 | E01 | Matched frozen traces: compare AC, multistream AC, rANS (`ANS`), PMATIC, rank Huffman, and bitpacked ranks. | Same symbols and probabilities; synthetic and model traces; serialized bits/token, payload bits, encode/decode time, memory, exact recovery. Use each family's appropriate entropy reference. | Synthetic figure workflow exists; model-trace replication pending. |
 | E02 | Live Qwen/text8 CPU: does target interval capture improve complete compression? | AC vs AC_MULTISTREAM vs AC_TARGET_INTERVAL with matched source/model/inference settings and coder backend; full archive sizes and exact recovery. | **Pilot complete**; longer runs and decoder timing repetitions pending. Details below. |
-| E03 | Repeat E02 on GPU: does compact capture reduce transfer and wall time? | Matched CUDA Transformers run first; measure physical transfer, synchronization, conversion, coding, total time, and memory. | **Pending GPU access and instrumentation.** Protocol below. |
-| E04 | Floor counts vs fixed-total count distribution. | Reference fixed-total vs exact vectorized fixed-total vs floor/variable-total; frequency-budget sweep; quantized log-loss, archive bits, conversion time, and cumulative-count parity where expected. | Existing quantizers available; matched study pending. Equivalent fixed-total device capture needs implementation. |
-| E05 | Stream count, batch size, and boundary overhead. | Frozen-trace stream sweep, then live batch/context sweep; charge seeds, directories, padding, checksums, and changed boundary context; encode/decode speed and memory. | Paths exist; systematic sweep pending. |
-| E06 | Python vs compiled coders and parallelism. | Same quantizer, streams, and targets; available Numba paths, thread sweep; separate encoder/decoder timing; exclude and report JIT warmup. | Compiled encoding exists; establish decoder coverage before symmetric comparisons. |
+| E03 | Repeat E02 on GPU: does compact capture reduce transfer and wall time? | Matched CUDA Transformers run first; measure physical transfer, synchronization, conversion, coding, total time, and memory. | **H100 timing pilot complete.** Complete 10 MiB encoding/decoding runs recover exactly; physical PCIe and peak-memory instrumentation and strict E02-configuration replication remain. |
+| E04 | Floor counts vs fixed-total count distribution. | Reference fixed-total vs exact vectorized fixed-total vs floor/variable-total; frequency-budget sweep; quantized log-loss, archive bits, conversion time, and cumulative-count parity where expected. | Equivalent fixed-total CUDA capture is implemented in v4; the matched frequency-budget study remains pending. |
+| E05 | Stream count, batch size, and boundary overhead. | Frozen-trace stream sweep, then live batch/context sweep; charge seeds, directories, padding, checksums, and changed boundary context; encode/decode speed and memory. | **Two complete 10 MiB operating points measured.** Batch 256/context 256 gives a 7.682x ratio; batch 16,384/context 128 gives a 5.498x ratio and higher throughput. Systematic repeated sweep remains. |
+| E06 | Python vs compiled coders and parallelism. | Same quantizer, streams, and targets; available Numba paths, thread sweep; separate encoder/decoder timing; exclude and report JIT warmup. | **CUDA encoder and decoder comparisons complete** for the main H100 operating point; symmetric Numba/thread sweeps remain. |
 | E07 | rANS block/lane tradeoffs. | Blocks 64/256/1024, lanes 1/4/16 where supported; state flushes, headers, finite-precision excess bits, buffering memory, and encode/decode speed. | Runner settings exist; sweep pending. |
 | E08 | Probability mismatch and robust decoding. | Controlled encoder/decoder perturbations, seeds/scales, PMATIC helper budget and bits; exact recovery/failure rates. Study actual engine/device disagreement separately. | Synthetic perturbation machinery exists; systematic study pending. |
 | E09 | Full vocabulary vs observed-token mask. | Charge mask bytes; compare entropy, archive size, inference/conversion/coding cost. Separate post-logit masking from restricted output projection. | Mask path exists; sweep pending. Restricted projection needs implementation. |
-| E10 | Inference engine performance and reproducibility. | Transformers CPU/CUDA and optional vLLM CUDA; pin model/tokenizer, versions, dtype, attention backend, tensor parallel layout; verify complete archives. | CPU pilot complete; live CUDA/vLLM validation pending. TensorRT-LLM would require a separate port. |
-| E11 | O1/O2/O3 interactions. | Teacher-forced windows (O1), inference/coder overlap (O2), target interval capture (O3); 2×2×2 factorial with matched effective contexts and quantization. | **Needs implementation** for O1/O2. Compiled interval buffering alone is not pipelining. |
+| E10 | Inference engine performance and reproducibility. | Transformers CPU/CUDA and optional vLLM CUDA; pin model/tokenizer, versions, dtype, attention backend, tensor parallel layout; verify complete archives. | CPU and live H100 Transformers paths validated; vLLM validation pending. TensorRT-LLM would require a separate port. |
+| E11 | O1/O2/O3 interactions. | Teacher-forced windows (O1), inference/coder overlap (O2), target interval capture (O3); 2×2×2 factorial with matched effective contexts and quantization. | O2/O3 are integrated in CUDA v4 with event-ordered inference/coder streams; O1 and the complete factorial ablation remain pending. |
 | E12 | KV cache and parallel sequence scoring. | Cache on/off; incremental vs teacher-forced/prefill scoring; identical context truncation/retention; verify distribution equivalence where claimed. | Cache path exists; matched study pending. Parallel scoring/window semantics need validation. |
 
 ### Suggested sweep sizes
