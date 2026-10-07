@@ -80,6 +80,12 @@ def _save_multistream_global_mask_file(path, header, seeds, payload, bitmap):
     decoder = (PairedACDecoder if paired else MultistreamACDecoder)(payload)
     if decoder.target_interval != (header["encoding"] == "AC_TARGET_INTERVAL"):
         raise ValueError("archive encoding does not match MSAC quantization version")
+    if decoder.target_interval:
+        from src.coding.target_interval import EXACT_INTERVAL_QUANTIZER
+        if decoder.exact_fixed_interval != (
+            header.get("interval_quantizer") == EXACT_INTERVAL_QUANTIZER
+        ):
+            raise ValueError("archive interval quantizer does not match MSAC version")
     if len(seeds) != header["batch_size"]:
         raise ValueError("seed count does not match batch size")
     header_bytes = json.dumps(header, separators=(",", ":")).encode("utf-8")
@@ -130,6 +136,12 @@ def _load_multistream_global_mask_file(path):
     header["ac_layout"] = layout
     if decoder.target_interval != (header["encoding"] == "AC_TARGET_INTERVAL"):
         raise ValueError("archive encoding does not match MSAC quantization version")
+    if decoder.target_interval:
+        from src.coding.target_interval import EXACT_INTERVAL_QUANTIZER
+        if decoder.exact_fixed_interval != (
+            header.get("interval_quantizer") == EXACT_INTERVAL_QUANTIZER
+        ):
+            raise ValueError("archive interval quantizer does not match MSAC version")
     if decoder.stream_count != seed_count:
         raise ValueError("MSAC stream count does not match seed count")
     return header, seeds, payload, bitmap
@@ -191,7 +203,15 @@ def save_global_mask_file(
         header["ac_backend"] = getattr(args, "ac_backend", "python")
         header["ac_threads"] = getattr(args, "ac_threads", None)
         if header["encoding"] == "AC_TARGET_INTERVAL":
-            header["interval_quantizer"] = "floor_float64_v1"
+            from src.coding.target_interval import (
+                EXACT_INTERVAL_QUANTIZER,
+                FLOOR_INTERVAL_QUANTIZER,
+            )
+            header["interval_quantizer"] = (
+                EXACT_INTERVAL_QUANTIZER
+                if getattr(args, "target_interval_quantizer", "torch") == "cuda_v4"
+                else FLOOR_INTERVAL_QUANTIZER
+            )
         _save_multistream_global_mask_file(
             file_path, header, first_token, bit_string, bitmask_data
         )
@@ -252,8 +272,16 @@ def load_global_mask_file(args):
             bitmask_data = f.read(bitmask_len)
 
 
-    if header.get("encoding") == "AC_TARGET_INTERVAL" and header.get("interval_quantizer") != "floor_float64_v1":
-        raise ValueError("unsupported target-interval quantizer")
+    if header.get("encoding") == "AC_TARGET_INTERVAL":
+        from src.coding.target_interval import (
+            EXACT_INTERVAL_QUANTIZER,
+            FLOOR_INTERVAL_QUANTIZER,
+        )
+        if header.get("interval_quantizer") not in {
+            FLOOR_INTERVAL_QUANTIZER,
+            EXACT_INTERVAL_QUANTIZER,
+        }:
+            raise ValueError("unsupported target-interval quantizer")
     # Update args with loaded header values (ensures decompression settings match).
     args.model_name = header["model_name"]
     args.model_revision = header.get("model_revision")
@@ -270,6 +298,7 @@ def load_global_mask_file(args):
     args.ac_backend = header.get("ac_backend", "python")
     args.ac_threads = header.get("ac_threads")
     args.ac_layout = header.get("ac_layout", "standard")
+    args.interval_quantizer = header.get("interval_quantizer")
     args.reduce_tokens = header.get("reduce_tokens", args.reduce_tokens)
     args.engine = header.get("engine", args.engine)
     if args.engine == "vllm":
@@ -318,6 +347,16 @@ def make_key(args):
     key = f"{filename}:{args.model_name}|ctx={args.context_length}|ret={args.retain_tokens}|n={args.first_n_tokens}|kv={args.use_kv_cache}|batch={args.batch_size}|reduce={args.reduce_tokens}|engine={args.engine}|enc={args.encoding}|lora={args.lora_path}"
     if args.engine == "vllm":
         key += f"|tp={getattr(args, 'tensor_parallel_size', 1)}"
+    if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}:
+        key += (
+            f"|ac_backend={getattr(args, 'ac_backend', 'python')}"
+            f"|ac_layout={getattr(args, 'ac_layout', 'standard')}"
+        )
+    if args.encoding == "AC_TARGET_INTERVAL":
+        key += (
+            "|intervalq="
+            f"{getattr(args, 'target_interval_quantizer', 'torch')}"
+        )
     method = getattr(args, "frequency_quantizer", "reference")
     return key if method == "reference" else f"{key}|freqq={method}"
 

@@ -5,9 +5,11 @@ import pytest
 import torch
 
 from src.coding.cuda_ac import (
+    CudaPipelinedACEncoder,
     encode_intervals_cuda,
     target_intervals_from_probs_cuda,
     target_intervals_from_probs_cuda_v3,
+    target_intervals_from_probs_cuda_v4,
 )
 from src.coding.device_ac import (
     CudaCDFMultistreamACDecoder,
@@ -143,6 +145,38 @@ def test_cuda_v3_target_intervals_match_v2(dtype, alphabet):
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64, torch.bfloat16])
+@pytest.mark.parametrize("alphabet", [2, 17, 257])
+def test_cuda_v4_target_intervals_match_fixed_total_reference(dtype, alphabet):
+    generator = torch.Generator(device="cuda").manual_seed(2037 + alphabet)
+    probabilities = torch.rand(
+        (73, alphabet), dtype=dtype, device="cuda", generator=generator
+    )
+    probabilities /= probabilities.sum(dim=1, keepdim=True)
+    targets = torch.arange(73, dtype=torch.int64, device="cuda") % alphabet
+    actual = target_intervals_from_probs_cuda_v4(probabilities, targets)
+    probabilities32 = probabilities.to(torch.float32).cpu().numpy()
+    targets_host = targets.cpu().numpy()
+    expected_lows = []
+    expected_highs = []
+    for row, target in zip(probabilities32, targets_host):
+        row = row.astype(np.float64)
+        row = row / row.sum(dtype=np.float64)
+        frequencies = np.floor(row * (262144 - row.size)).astype(np.int64) + 1
+        difference = int(262144 - frequencies.sum())
+        passes, remainder = divmod(difference, row.size)
+        frequencies += passes
+        order = np.argsort(-row, kind="stable")
+        frequencies[order[:remainder]] += 1
+        cumulative = np.concatenate(([0], frequencies.cumsum()))
+        expected_lows.append(cumulative[target])
+        expected_highs.append(cumulative[target + 1])
+    assert actual[0].cpu().tolist() == expected_lows
+    assert actual[1].cpu().tolist() == expected_highs
+    assert actual[2].cpu().tolist() == [262144] * len(expected_lows)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
 @pytest.mark.parametrize("workspace_bytes", [None, 1])
 def test_cuda_interval_encoder_matches_python_archive(workspace_bytes):
     probabilities, lows, highs, totals, targets = _cuda_interval_trace()
@@ -183,6 +217,41 @@ def test_cuda_interval_encoder_matches_python_archive(workspace_bytes):
                     == targets[step, stream]
                 )
     decoder.assert_complete()
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_cuda_v4_pipelined_encoder_matches_buffered_archive():
+    steps, streams, alphabet = 23, 5, 31
+    generator = torch.Generator(device="cuda").manual_seed(2041)
+    probabilities = torch.rand(
+        (steps, streams, alphabet), device="cuda", generator=generator
+    )
+    probabilities /= probabilities.sum(dim=2, keepdim=True)
+    targets = torch.randint(
+        alphabet, (steps, streams), device="cuda", generator=generator
+    )
+    lows = torch.empty((steps, streams), dtype=torch.int64, device="cuda")
+    highs = torch.empty_like(lows)
+    totals = torch.empty_like(lows)
+    for step in range(steps):
+        lows[step], highs[step], totals[step], _ = (
+            target_intervals_from_probs_cuda_v4(probabilities[step], targets[step])
+        )
+    counts = torch.tensor([23, 19, 11, 1, 0], dtype=torch.int64, device="cuda")
+    expected = encode_intervals_cuda(
+        lows, highs, totals, counts, exact_fixed=True
+    )
+
+    metrics = {}
+    encoder = CudaPipelinedACEncoder(streams, steps, "cuda")
+    for step in range(steps):
+        active = (counts > step).contiguous()
+        encoder.encode_step(lows[step], highs[step], totals[step], active)
+    actual = encoder.finish(counts, metrics=metrics)
+    assert actual == expected
+    assert metrics["pipeline_overlap_enabled"]
+    assert metrics["pipeline_step_launches"] == steps
+    assert metrics["kernel_seconds"] > 0
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")

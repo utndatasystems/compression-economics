@@ -84,6 +84,28 @@ float64 copy of every probability row. Both modes retain the
 `floor_float64_v1` archive contract and are required to produce identical
 integer intervals and archive bytes.
 
+`--target-interval-quantizer cuda_v4` is the advanced encoding path. One custom
+CUDA kernel performs deterministic fixed-total frequency normalization,
+computes the residual, assigns residual counts in stable descending-probability
+order (token-column order breaks ties), and emits only the known target's lower
+and upper bounds, nominal total, and probability. It never materializes a full
+frequency or CDF tensor. Rows of at most 1,024 symbols use a block radix sort;
+larger rows use an exact radix-cutoff selection. The resulting MSAC-v3 payload
+is marked `fixed_total_stable_v2`.
+
+V4 also keeps one arithmetic-coder state per stream on the GPU. Target-interval
+production records an event on the inference stream, and a dedicated coding
+stream consumes each step asynchronously. Thus coding step *t* can overlap
+inference step *t+1*, and only the final framed byte payload is copied to the
+host. On decompression, both device backends reconstruct the same fixed-total
+CDF; the CUDA backend then performs batched inverse-CDF lookup and arithmetic
+state updates across streams.
+
+The fusion boundary starts at the reduced-vocabulary probability tensor. Model
+masking and softmax remain PyTorch operations, so this path should be described
+as fused probability normalization/quantization/selection rather than a fused
+logits-to-softmax implementation.
+
 The frozen-trace `evaluate_coders.py` benchmark continues to use its matched
 fixed-total coders. It has no live inference and cannot measure O3 transfer savings.
 Compare O3 via live compression runs, and report its different quantization rule

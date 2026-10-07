@@ -2,12 +2,14 @@
 
 import numpy as np
 import pytest
+import torch
 
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
 from src.coding.paired_ac import (
     PairedACDecoder, PairedACEncoder, _pack_pair, _unpack_pair,
     pack_standard_archive, unpack_paired_archive,
 )
+from src.coding.target_interval import target_intervals_from_probs_exact
 
 
 def test_terminal_byte_is_shared_when_fixed_bits_fit():
@@ -66,3 +68,34 @@ def test_target_interval_v2_converts_to_paired():
     paired = pack_standard_archive(baseline)
     assert unpack_paired_archive(paired) == baseline
     assert PairedACDecoder(paired).target_interval
+
+
+def test_exact_fixed_target_interval_v3_converts_to_paired():
+    probabilities = np.array([
+        [0.1, 0.2, 0.3, 0.4],
+        [0.4, 0.3, 0.2, 0.1],
+    ], dtype=np.float32)
+    lows, highs, totals, _ = target_intervals_from_probs_exact(
+        torch.tensor(probabilities),
+        torch.tensor([3, 0]),
+    )
+    encoder = MultistreamACEncoder(
+        2,
+        target_interval=True,
+        exact_fixed_interval=True,
+    )
+    for stream in range(2):
+        encoder.encode_interval(
+            stream,
+            int(lows[stream]),
+            int(highs[stream]),
+            int(totals[stream]),
+        )
+    baseline = encoder.finish()
+    paired = pack_standard_archive(baseline)
+    assert unpack_paired_archive(paired) == baseline
+    decoder = PairedACDecoder(paired)
+    assert decoder.exact_fixed_interval
+    assert decoder.decode(0, probabilities[0]) == 3
+    assert decoder.decode(1, probabilities[1]) == 0
+    decoder.assert_complete()

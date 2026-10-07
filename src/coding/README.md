@@ -11,12 +11,18 @@ Import these modules through `src.coding.*`. The frozen-trace comparison
 lives in `src/coding/trace_benchmark.py`; its runnable experiments are in
 `research/papers/cidr_2027/experiments/`.
 
-- `device_ac.py`: opt-in MSAC v2 target-interval decoders. `--ac-decode-backend device` is the PyTorch reference; `--ac-decode-backend cuda` retains PyTorch CDF construction but fuses binary inverse lookup, arithmetic state update, bit consumption, and renormalization in one CUDA kernel. Both copy only decoded token IDs to host prompt buffers and support standard and paired layouts. The default remains `host`.
+- `device_ac.py`: opt-in MSAC v2/v3 target-interval decoders. `--ac-decode-backend device` is the PyTorch reference; `--ac-decode-backend cuda` retains PyTorch CDF construction but fuses binary inverse lookup, arithmetic state update, bit consumption, and renormalization in one CUDA kernel. Both copy only decoded token IDs to host prompt buffers and support standard and paired layouts. The default remains `host`.
 
-- `cuda_ac.py` and `csrc/cuda_ac_*`: lazy-built, byte-exact CUDA encoder for
-  buffered MSAC v2 target intervals. Select it with `--ac-backend cuda` during
+- `cuda_ac.py` and `csrc/cuda_ac_*`: lazy-built, byte-exact CUDA encoders for
+  MSAC target intervals. Select them with `--ac-backend cuda` during
   Transformer `AC_TARGET_INTERVAL` compression. The independent
-  `--target-interval-quantizer torch|cuda_fused|cuda_v3` switch preserves the
+  `--target-interval-quantizer torch|cuda_fused|cuda_v3|cuda_v4` switch preserves the
   original PyTorch interval construction as an ablation. CUDA v2 fuses integer
   frequency calculation and target-CDF extraction; CUDA v3 additionally avoids
-  materializing a vocabulary-sized float64 probability tensor.
+  materializing a vocabulary-sized float64 probability tensor. CUDA v4 is the
+  advanced encoding path: one custom kernel performs exact fixed-total
+  normalization, residual assignment, stable symbol selection, and target-only
+  bound emission. A persistent multistream encoder then updates arithmetic
+  state on a dedicated CUDA stream, overlapping step `t` with subsequent model
+  inference and avoiding the complete interval trace. It uses the separately
+  versioned MSAC-v3 contract and reuses the batched CUDA inverse-CDF decoder.

@@ -2,6 +2,7 @@
 
 import numpy as np
 import pytest
+import torch
 
 from src.coding.trace_benchmark import (
     benchmark_coder,
@@ -12,6 +13,7 @@ from src.coding.trace_benchmark import (
     synthetic_probability_trace,
 )
 from src.coding.encoding_utils import build_cumul
+from src.coding.target_interval import exact_fixed_frequencies
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
@@ -38,6 +40,41 @@ def test_exact_cdf_parity_on_full_passes_and_negative_fallback():
             build_cumul(row, 32, method="reference"),
             build_cumul(row, 32, method="vectorized_exact"),
         )
+
+
+@pytest.mark.parametrize("alphabet,total", [(2, 16), (8, 256), (257, 1024)])
+def test_tensor_exact_fixed_frequencies_match_numpy(alphabet, total):
+    rng = np.random.default_rng(44)
+    rows = [rng.dirichlet(np.ones(alphabet)).astype(np.float32) for _ in range(30)]
+    rows += [np.full(alphabet, 1 / alphabet, dtype=np.float32)]
+    probabilities = torch.tensor(np.stack(rows))
+    actual, _ = exact_fixed_frequencies(probabilities, total)
+    expected_rows = []
+    for row in rows:
+        row = row.astype(np.float64)
+        row = row / row.sum(dtype=np.float64)
+        frequencies = np.floor(row * (total - alphabet)).astype(np.int64) + 1
+        difference = int(total - frequencies.sum())
+        passes, remainder = divmod(difference, alphabet)
+        frequencies += passes
+        order = np.argsort(-row, kind="stable")
+        frequencies[order[:remainder]] += 1
+        expected_rows.append(frequencies)
+    expected = np.stack(expected_rows)
+    assert np.array_equal(actual.numpy(), expected)
+
+
+def test_tensor_exact_fixed_frequencies_rejects_overfull_rows():
+    row = np.array([[0.6, 0.6]], dtype=np.float32)
+    with pytest.raises(ValueError, match="sum to one"):
+        exact_fixed_frequencies(torch.tensor(row), 32, validate=True)
+
+
+def test_tensor_exact_fixed_frequencies_accepts_bfloat16_rounding():
+    probabilities = torch.tensor([[0.4961, 0.5039]], dtype=torch.bfloat16)
+    frequencies, normalized = exact_fixed_frequencies(probabilities, 32)
+    assert frequencies.sum().item() == 32
+    assert torch.isclose(normalized.sum(), torch.tensor(1.0, dtype=torch.float64))
 
 
 def test_unknown_method_is_rejected():

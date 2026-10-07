@@ -8,7 +8,14 @@ from __future__ import annotations
 
 import struct
 
-from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
+from src.coding.multistream_ac import (
+    EXACT_TARGET_FLAG,
+    EXACT_TARGET_VERSION,
+    FLOOR_TARGET_FLAG,
+    FLOOR_TARGET_VERSION,
+    MultistreamACDecoder,
+    MultistreamACEncoder,
+)
 
 _HEADER = struct.Struct(">4sBBHII")
 _STREAM = struct.Struct(">QQI")
@@ -79,7 +86,11 @@ def unpack_paired_archive(archive: bytes) -> bytes:
     if len(archive) < _HEADER.size:
         raise ValueError("truncated MSAP header")
     magic, version, state_bits, flags, total, count = _HEADER.unpack_from(archive)
-    if magic != _MAGIC or version != 1 or flags not in (0, 1) or count < 1:
+    if magic != _MAGIC or version != 1 or flags not in (
+        0,
+        FLOOR_TARGET_FLAG,
+        EXACT_TARGET_FLAG,
+    ) or count < 1:
         raise ValueError("invalid MSAP header")
     directory_end = _HEADER.size + count * _STREAM.size
     if len(archive) < directory_end:
@@ -113,7 +124,20 @@ def unpack_paired_archive(archive: bytes) -> bytes:
     if offset != len(archive):
         raise ValueError("trailing MSAP bytes")
     standard = b"".join((
-        _HEADER.pack(b"MSAC", 2 if flags else 1, state_bits, flags, total, count),
+        _HEADER.pack(
+            b"MSAC",
+            (
+                EXACT_TARGET_VERSION
+                if flags == EXACT_TARGET_FLAG
+                else FLOOR_TARGET_VERSION
+                if flags == FLOOR_TARGET_FLAG
+                else 1
+            ),
+            state_bits,
+            flags,
+            total,
+            count,
+        ),
         *(_STREAM.pack(*entry) for entry in entries),
         *streams,
     ))

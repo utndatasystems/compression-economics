@@ -11,7 +11,7 @@ import torch
 
 from src.coding.multistream_ac import MultistreamACDecoder
 from src.coding.paired_ac import unpack_paired_archive
-from src.coding.target_interval import floor_frequencies
+from src.coding.target_interval import exact_fixed_frequencies, floor_frequencies
 
 
 class DeviceMultistreamACDecoder:
@@ -30,6 +30,7 @@ class DeviceMultistreamACDecoder:
         self.symbol_counts = checked.symbol_counts
         self.total = checked.total
         self.state_bits = checked.state_bits
+        self.exact_fixed_interval = checked.exact_fixed_interval
         if (1 << self.state_bits) * self.total > (1 << 63) - 1:
             raise ValueError("arithmetic state times frequency total exceeds int64")
         self.mask = (1 << self.state_bits) - 1
@@ -71,7 +72,12 @@ class DeviceMultistreamACDecoder:
             raise ValueError("active mask must contain one value per stream")
         if bool((self.decoded + active.to(torch.int64) > self.counts).any()):
             raise ValueError("stream has no more symbols")
-        frequencies, _ = floor_frequencies(probabilities, self.total)
+        frequency_function = (
+            exact_fixed_frequencies
+            if self.exact_fixed_interval
+            else floor_frequencies
+        )
+        frequencies, _ = frequency_function(probabilities, self.total)
         cumulative = torch.cat((torch.zeros((self.stream_count, 1), dtype=torch.int64,
                                              device=self.device), frequencies.cumsum(dim=1)), dim=1)
         totals = cumulative[:, -1]
@@ -151,7 +157,12 @@ class CudaCDFMultistreamACDecoder(DeviceMultistreamACDecoder):
         quantization_end = torch.cuda.Event(enable_timing=True)
         kernel_end = torch.cuda.Event(enable_timing=True)
         quantization_start.record()
-        frequencies, _ = floor_frequencies(
+        frequency_function = (
+            exact_fixed_frequencies
+            if self.exact_fixed_interval
+            else floor_frequencies
+        )
+        frequencies, _ = frequency_function(
             probabilities, self.total, validate=False
         )
         cdfs = torch.cat((

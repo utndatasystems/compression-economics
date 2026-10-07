@@ -8,7 +8,10 @@ import torch
 from transformers import GPT2Config, GPT2LMHeadModel
 
 from src.coding.multistream_ac import MultistreamACEncoder, MultistreamACDecoder
-from src.coding.target_interval import target_intervals_from_probs_tensor
+from src.coding.target_interval import (
+    target_intervals_from_probs_exact,
+    target_intervals_from_probs_tensor,
+)
 from src.prediction import TokenPredictor
 
 
@@ -40,6 +43,75 @@ def test_intervals_match_independent_floor_cdf_and_decode(device, dtype):
     for index, row in enumerate(probabilities.cpu().numpy()):
         assert decoder.decode(index % 3, row) == index % 17
     decoder.assert_complete()
+
+
+def test_exact_fixed_target_archive_roundtrip():
+    rng = np.random.default_rng(92)
+    probabilities = rng.dirichlet(np.ones(19), size=41).astype(np.float32)
+    targets = np.arange(41) % 19
+    lows, highs, totals, _ = target_intervals_from_probs_exact(
+        torch.tensor(probabilities),
+        torch.tensor(targets),
+    )
+    encoder = MultistreamACEncoder(
+        3,
+        target_interval=True,
+        exact_fixed_interval=True,
+    )
+    for index in range(len(probabilities)):
+        encoder.encode_interval(
+            index % 3,
+            int(lows[index]),
+            int(highs[index]),
+            int(totals[index]),
+        )
+    archive = encoder.finish()
+    assert archive[4] == 3
+    decoder = MultistreamACDecoder(archive)
+    assert decoder.target_interval
+    assert decoder.exact_fixed_interval
+    for index, row in enumerate(probabilities):
+        assert decoder.decode(index % 3, row) == targets[index]
+    decoder.assert_complete()
+
+
+def test_exact_fixed_archive_metadata_roundtrip(tmp_path):
+    from src.coding.target_interval import EXACT_INTERVAL_QUANTIZER
+    from src.utils import load_global_mask_file, save_global_mask_file
+
+    encoder = MultistreamACEncoder(
+        2,
+        target_interval=True,
+        exact_fixed_interval=True,
+    )
+    encoder.encode_interval(0, 0, 1, 2)
+    encoder.encode_interval(1, 1, 2, 2)
+    args = SimpleNamespace(
+        input_path=str(tmp_path / "source.txt"),
+        output_path=str(tmp_path / "archive.bin"),
+        model_name="test",
+        context_length=8,
+        first_n_tokens=4,
+        retain_tokens=4,
+        use_kv_cache=False,
+        batch_size=2,
+        encoding="AC_TARGET_INTERVAL",
+        reduce_tokens=True,
+        engine="transformer",
+        lora_path=None,
+        ac_backend="cuda",
+        ac_threads=None,
+        ac_layout="standard",
+        target_interval_quantizer="cuda_v4",
+    )
+    payload = encoder.finish()
+    save_global_mask_file(args, [1, 2], payload, b"bitmap")
+    args.input_path = args.output_path
+    loaded, seeds, loaded_payload, bitmap = load_global_mask_file(args)
+    assert loaded.interval_quantizer == EXACT_INTERVAL_QUANTIZER
+    assert seeds == [1, 2]
+    assert loaded_payload == payload
+    assert bitmap == b"bitmap"
 
 
 @pytest.mark.parametrize("backend", ["python", "numba_parallel"])
@@ -130,6 +202,12 @@ def test_tiny_transformer_capture_decodes_with_full_distribution(cache, mask):
     ),
     pytest.param(
         "cuda", "cuda_v3",
+        marks=pytest.mark.skipif(
+            not torch.cuda.is_available(), reason="CUDA unavailable"
+        ),
+    ),
+    pytest.param(
+        "cuda", "cuda_v4",
         marks=pytest.mark.skipif(
             not torch.cuda.is_available(), reason="CUDA unavailable"
         ),

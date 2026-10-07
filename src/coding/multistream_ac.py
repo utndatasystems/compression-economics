@@ -6,7 +6,8 @@ initial tokens and model settings. The model remains an external dependency.
 MSAC v1 stores stream lengths and
 checksums in big-endian fields. It uses the same probability quantizer as the
 existing single-stream arithmetic coder. MSAC v2 flag 1 identifies normalized
-float64 floor counts with per-symbol totals for target-interval capture.
+float64 floor counts with per-symbol totals for target-interval capture. MSAC
+v3 flag 2 identifies deterministic fixed-total target intervals.
 """
 
 from __future__ import annotations
@@ -28,6 +29,10 @@ from src.coding.parallel_ac import encode_intervals_packed, prepare_parallel_enc
 
 MAGIC = b"MSAC"
 VERSION = 1
+FLOOR_TARGET_VERSION = 2
+FLOOR_TARGET_FLAG = 1
+EXACT_TARGET_VERSION = 3
+EXACT_TARGET_FLAG = 2
 _HEADER = struct.Struct(">4sBBHII")  # magic, version, state bits, flags, total, streams
 _STREAM = struct.Struct(">QQI")  # symbol count, payload bit count, CRC32
 
@@ -62,7 +67,8 @@ class MultistreamACEncoder:
 
     def __init__(self, stream_count: int, *, total: int = 262144, state_bits: int = 32,
                  backend: str = "python", threads: int | None = None,
-                 frequency_quantizer: str = "reference", target_interval: bool = False):
+                 frequency_quantizer: str = "reference", target_interval: bool = False,
+                 exact_fixed_interval: bool = False):
         _validate_settings(stream_count, state_bits, total)
         if backend not in {"python", "numba_parallel"}:
             raise ValueError("backend must be python or numba_parallel")
@@ -85,8 +91,11 @@ class MultistreamACEncoder:
         self.quantize_seconds = 0.0
         self.range_encode_seconds = 0.0
         if target_interval and frequency_quantizer != "reference":
-            raise ValueError("target intervals use floor counts, not fixed-total quantizers")
+            raise ValueError("target intervals select their quantizer from the MSAC version")
+        if exact_fixed_interval and not target_interval:
+            raise ValueError("exact fixed intervals require target-interval mode")
         self.target_interval = target_interval
+        self.exact_fixed_interval = exact_fixed_interval
         self._totals = [[] for _ in range(stream_count)]
 
     def encode_interval(self, stream_id: int, low: int, high: int, total: int) -> None:
@@ -160,22 +169,46 @@ class MultistreamACEncoder:
         for (data, bit_count), count in zip(encoded, self._counts):
             descriptors.append(_STREAM.pack(count, bit_count, zlib.crc32(data)))
             payloads.append(data)
+        version = (
+            EXACT_TARGET_VERSION
+            if self.exact_fixed_interval
+            else FLOOR_TARGET_VERSION
+            if self.target_interval
+            else VERSION
+        )
+        flags = (
+            EXACT_TARGET_FLAG
+            if self.exact_fixed_interval
+            else FLOOR_TARGET_FLAG
+            if self.target_interval
+            else 0
+        )
         return b"".join((
-            _HEADER.pack(MAGIC, 2 if self.target_interval else VERSION, self.state_bits,
-                         int(self.target_interval), self.total, self.stream_count),
+            _HEADER.pack(
+                MAGIC,
+                version,
+                self.state_bits,
+                flags,
+                self.total,
+                self.stream_count,
+            ),
             *descriptors,
             *payloads,
         ))
 
 
 class MultistreamACDecoder:
-    """Validate MSAC v1/v2 and decode each stream independently."""
+    """Validate MSAC v1/v2/v3 and decode each stream independently."""
 
     def __init__(self, archive: bytes, *, frequency_quantizer: str = "reference"):
         if len(archive) < _HEADER.size:
             raise ValueError("truncated MSAC header")
         magic, version, state_bits, flags, total, stream_count = _HEADER.unpack_from(archive)
-        if magic != MAGIC or (version, flags) not in {(VERSION, 0), (2, 1)}:
+        if magic != MAGIC or (version, flags) not in {
+            (VERSION, 0),
+            (FLOOR_TARGET_VERSION, FLOOR_TARGET_FLAG),
+            (EXACT_TARGET_VERSION, EXACT_TARGET_FLAG),
+        }:
             raise ValueError("invalid or unsupported MSAC header")
         _validate_settings(stream_count, state_bits, total)
         descriptor_end = _HEADER.size + stream_count * _STREAM.size
@@ -186,9 +219,13 @@ class MultistreamACDecoder:
         self.total = total
         self.state_bits = state_bits
         self.frequency_quantizer = validate_frequency_quantizer(frequency_quantizer)
-        self.target_interval = version == 2
+        self.target_interval = version in {
+            FLOOR_TARGET_VERSION,
+            EXACT_TARGET_VERSION,
+        }
+        self.exact_fixed_interval = version == EXACT_TARGET_VERSION
         if self.target_interval and frequency_quantizer != "reference":
-            raise ValueError("target intervals use floor counts, not fixed-total quantizers")
+            raise ValueError("target-interval quantization is declared by the MSAC version")
         self.symbol_counts = []
         self.bit_counts = []
         self.payload_bytes = []
@@ -231,8 +268,19 @@ class MultistreamACDecoder:
             raise ValueError("stream has no more symbols")
         if self.target_interval:
             import torch
-            from src.coding.target_interval import floor_frequencies
-            frequencies, _ = floor_frequencies(torch.as_tensor(np.asarray(probabilities))[None], self.total)
+            from src.coding.target_interval import (
+                exact_fixed_frequencies,
+                floor_frequencies,
+            )
+            frequency_function = (
+                exact_fixed_frequencies
+                if self.exact_fixed_interval
+                else floor_frequencies
+            )
+            frequencies, _ = frequency_function(
+                torch.as_tensor(np.asarray(probabilities))[None],
+                self.total,
+            )
             cumulative = np.concatenate(([0], frequencies[0].cumsum(0).numpy()))
         else:
             cumulative = _cumulative(probabilities, self.total, self.frequency_quantizer)
