@@ -132,6 +132,7 @@ def _encoding_sample(stats: dict, seeds: list[int], payload: bytes, bitmap: byte
         "archive_sha256": hashlib.sha256(payload).hexdigest(),
         "target_interval_quantizer": stats["target_interval_quantizer"],
         "cuda_ac_metrics": stats["cuda_ac_metrics"],
+        "stage_timing": stats.get("stage_timing"),
     }
 
 
@@ -146,6 +147,7 @@ def _decode_sample(stats: dict, source_bytes: int) -> dict:
         "detokenize_seconds": stats["detokenize_time"],
         "decoded_token_transfer_bytes": stats["decoded_token_transfer_bytes"],
         "cuda_decode_metrics": stats.get("cuda_decode_metrics"),
+        "stage_timing": stats.get("stage_timing"),
     }
 
 
@@ -182,6 +184,11 @@ def main() -> None:
         default=list(DECODERS),
         help="Decoding paths to benchmark",
     )
+    parser.add_argument(
+        "--decoder-archive-encoder",
+        choices=ENCODERS,
+        help="Use this encoder's archive for all decoder comparisons",
+    )
     parser.add_argument("--output", type=Path, required=True)
     cli = parser.parse_args()
     if not torch.cuda.is_available():
@@ -192,6 +199,8 @@ def main() -> None:
         parser.error("retain-tokens must be smaller than context-length")
     if len(set(cli.encoders)) != len(cli.encoders) or len(set(cli.decoders)) != len(cli.decoders):
         parser.error("encoder and decoder selections must not contain duplicates")
+    if cli.decoder_archive_encoder and cli.decoder_archive_encoder not in cli.encoders:
+        parser.error("decoder-archive-encoder must also be selected in --encoders")
 
     encoders = tuple(cli.encoders)
     decoders = tuple(cli.decoders)
@@ -309,6 +318,9 @@ def main() -> None:
             for variant in matched_encoders[1:]
         ):
             raise AssertionError("timed encoders produced different archives")
+
+    if cli.decoder_archive_encoder:
+        optimized_archive = timed_archives[cli.decoder_archive_encoder]
 
     seeds, payload, bitmap, decode_args = optimized_archive
     decode_args.mode = "decompress"
@@ -472,6 +484,7 @@ def main() -> None:
         },
         "decoding": {
             "conditions": list(decoders),
+            "archive_encoder": cli.decoder_archive_encoder or "best available CUDA encoder",
             "definitions": {
                 "host": "pre-CUDA host Python inverse-CDF and arithmetic decoder",
                 "device": "PyTorch device-state and inverse-CDF baseline",

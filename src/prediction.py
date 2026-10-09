@@ -7,17 +7,25 @@ This module provides:
 - TokenPredictor: runs batched, one-step LLM inference with optional KV caching and
   returns logits or probabilities depending on the encoding scheme.
 """
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM, MambaForCausalLM
+import inspect
 import os
 from pathlib import Path
 import tarfile
 import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSeq2SeqLM, MambaForCausalLM
 from pyroaring import BitMap
 import time
 from peft import PeftModel
 
 from src.models import NGramPredictor
 from src.predictors import load_ngram_predictor, save_ngram_predictor, train_ngram_predictor
+
+
+def _forward_for_last_logits(model, **kwargs):
+    """Avoid materializing unused prefill logits when the model supports it."""
+    if "logits_to_keep" in inspect.signature(model.forward).parameters:
+        kwargs["logits_to_keep"] = 1
+    return model(**kwargs)
 
 def _run_interval_inference(predictor, prompts, target_token_ids, enable_kv_cache=True):
     """Capture only four values per row after device-local quantization."""
@@ -73,6 +81,7 @@ def _run_interval_inference(predictor, prompts, target_token_ids, enable_kv_cach
         predictor.last_interval_event = None
     if getattr(predictor.args, "ac_backend", "python") == "cuda":
         predictor.last_interval_transfer_bytes = 0
+        predictor.last_interval_copy_seconds = 0.0
         intervals = {
             "lows": low.detach().contiguous(),
             "highs": high.detach().contiguous(),
@@ -82,8 +91,9 @@ def _run_interval_inference(predictor, prompts, target_token_ids, enable_kv_cach
     else:
         started = time.perf_counter()
         records = torch.stack((low, high, total, probability), dim=1).detach().cpu()
+        predictor.last_interval_copy_seconds = time.perf_counter() - started
         predictor.last_interval_transfer_bytes = records.numel() * records.element_size()
-        copy_time += time.perf_counter() - started
+        copy_time += predictor.last_interval_copy_seconds
         intervals = {
             "lows": records[:, 0].to(torch.int64),
             "highs": records[:, 1].to(torch.int64),
@@ -473,20 +483,44 @@ class TokenPredictor:
         #print(f"Logits shape: {logits.shape}, expected (batch_size, vocab_size) where vocab_size is {self.model.config.vocab_size}")
         assert logits.dim() == 2, f"Expected logits of shape (batch_size, vocab_size), got {logits.shape}"
 
+        record_device_time = logits.device.type == "cuda"
+        self.last_vocab_event = None
+        self.last_softmax_event = None
+        self.last_score_copy_seconds = 0.0
+        if record_device_time:
+            vocab_start = torch.cuda.Event(enable_timing=True)
+            vocab_end = torch.cuda.Event(enable_timing=True)
+            vocab_start.record()
         if getattr(self, "reduce_tokens", False):
             logits = logits.index_select(1, self.index_tensor.to(logits.device))
+        if record_device_time:
+            vocab_end.record()
+            self.last_vocab_event = (vocab_start, vocab_end)
 
         softmax_time = 0.0
         if self.args.encoding in {"AC", "AC_MULTISTREAM", "AC_TARGET_INTERVAL", "ANS", "PMATIC"}:
+            if record_device_time:
+                softmax_start = torch.cuda.Event(enable_timing=True)
+                softmax_end = torch.cuda.Event(enable_timing=True)
+                softmax_start.record()
             t0_softmax = time.perf_counter()
-            probs = torch.softmax(logits, dim=-1)
+            # Compute probabilities in float32 even when model logits are
+            # bfloat16/float16.  The host reference quantizer requires a
+            # distribution whose accumulated mass is accurate enough to
+            # validate, and all compared pipelines should receive the same
+            # softmax contract.
+            probs = torch.softmax(logits, dim=-1, dtype=torch.float32)
             softmax_time = time.perf_counter() - t0_softmax
+            if record_device_time:
+                softmax_end.record()
+                self.last_softmax_event = (softmax_start, softmax_end)
 
             if scores_on_device:
                 return self.tokens_list, probs, data_copy_time, softmax_time
             t0_data_copy = time.perf_counter()
             probs_cpu = probs.cpu()
-            data_copy_time += time.perf_counter() - t0_data_copy
+            self.last_score_copy_seconds = time.perf_counter() - t0_data_copy
+            data_copy_time += self.last_score_copy_seconds
 
             return self.tokens_list, probs_cpu, data_copy_time, softmax_time
 
@@ -528,7 +562,9 @@ class TokenPredictor:
                 started = time.perf_counter()
                 input_ids = torch.tensor(prompts, dtype=torch.long, device=self.device)
                 data_copy_time += time.perf_counter() - started
-                outputs = self.model(input_ids=input_ids, use_cache=False)
+                outputs = _forward_for_last_logits(
+                    self.model, input_ids=input_ids, use_cache=False
+                )
                 logits = outputs.logits[:, -1, :]
             else:
                 # Match the cached path: each uneven row has its own unpadded
@@ -538,7 +574,9 @@ class TokenPredictor:
                     started = time.perf_counter()
                     input_ids = torch.tensor([prompt], dtype=torch.long, device=self.device)
                     data_copy_time += time.perf_counter() - started
-                    outputs = self.model(input_ids=input_ids, use_cache=False)
+                    outputs = _forward_for_last_logits(
+                        self.model, input_ids=input_ids, use_cache=False
+                    )
                     rows.append(outputs.logits[0, -1, :])
                 logits = torch.stack(rows)
 
@@ -591,7 +629,9 @@ class TokenPredictor:
                     data_copy_time += time.perf_counter() - started
                     model_input_tokens = int(input_ids.numel())
                     kwargs = {"past_key_values": self._past_kv} if reuse else {}
-                    outputs = self.model(input_ids=input_ids, use_cache=True, **kwargs)
+                    outputs = _forward_for_last_logits(
+                        self.model, input_ids=input_ids, use_cache=True, **kwargs
+                    )
                     logits = outputs.logits[:, -1, :]
                     self._past_kv = outputs.past_key_values
                     self._row_past_kv = None
@@ -614,7 +654,9 @@ class TokenPredictor:
                         data_copy_time += time.perf_counter() - started
                         model_input_tokens += int(input_ids.numel())
                         kwargs = {"past_key_values": old_rows[index]} if reuse else {}
-                        outputs = self.model(input_ids=input_ids, use_cache=True, **kwargs)
+                        outputs = _forward_for_last_logits(
+                            self.model, input_ids=input_ids, use_cache=True, **kwargs
+                        )
                         row_caches.append(outputs.past_key_values)
                         row_logits.append(outputs.logits[0, -1, :])
                     logits = torch.stack(row_logits)

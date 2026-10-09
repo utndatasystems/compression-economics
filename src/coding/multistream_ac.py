@@ -231,6 +231,9 @@ class MultistreamACDecoder:
         self.payload_bytes = []
         self._decoders = []
         self._decoded = [0] * stream_count
+        self.quantization_seconds = 0.0
+        self.range_decode_seconds = 0.0
+        self.metrics = None
         offset = descriptor_end
         for stream_id in range(stream_count):
             count, bit_count, checksum = _STREAM.unpack_from(
@@ -266,6 +269,7 @@ class MultistreamACDecoder:
             raise ValueError("stream_id outside archive")
         if self._decoded[stream_id] >= self.symbol_counts[stream_id]:
             raise ValueError("stream has no more symbols")
+        started = time.perf_counter()
         if self.target_interval:
             import torch
             from src.coding.target_interval import (
@@ -284,7 +288,10 @@ class MultistreamACDecoder:
             cumulative = np.concatenate(([0], frequencies[0].cumsum(0).numpy()))
         else:
             cumulative = _cumulative(probabilities, self.total, self.frequency_quantizer)
+        self.quantization_seconds += time.perf_counter() - started
+        started = time.perf_counter()
         symbol = self._decoders[stream_id].read(cumulative, len(cumulative) - 1)
+        self.range_decode_seconds += time.perf_counter() - started
         self._decoded[stream_id] += 1
         return symbol
 
@@ -292,3 +299,8 @@ class MultistreamACDecoder:
         """Reject a decode that did not consume every declared symbol."""
         if self._decoded != self.symbol_counts:
             raise ValueError("not all MSAC stream symbols were decoded")
+        self.metrics = {
+            "quantization_seconds": self.quantization_seconds,
+            "kernel_seconds": self.range_decode_seconds,
+            "decode_steps": sum(self._decoded),
+        }

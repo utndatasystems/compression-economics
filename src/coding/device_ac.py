@@ -7,6 +7,7 @@ one device. Only decoded token IDs cross back to the host for prompt assembly.
 
 from __future__ import annotations
 
+import time
 import torch
 
 from src.coding.multistream_ac import MultistreamACDecoder
@@ -52,6 +53,10 @@ class DeviceMultistreamACDecoder:
         width = max(map(len, checked.payload_bytes))
         padded = [list(data) + [0] * (width - len(data)) for data in checked.payload_bytes]
         self.payload = torch.tensor(padded, dtype=torch.int64, device=self.device)
+        self._quantization_events = []
+        self._quantization_wall_seconds = 0.0
+        self._decode_wall_seconds = 0.0
+        self.metrics = None
 
     def _next_bits(self, active: torch.Tensor) -> torch.Tensor:
         byte_positions = (self.positions // 8).clamp(max=self.payload.shape[1] - 1)
@@ -63,6 +68,7 @@ class DeviceMultistreamACDecoder:
 
     def decode(self, probabilities: torch.Tensor, active: torch.Tensor | list[bool]) -> torch.Tensor:
         """Return vocabulary column indices; inactive rows keep their coder state."""
+        decode_started = time.perf_counter()
         if probabilities.device != self.device:
             raise ValueError("probabilities and arithmetic state must share a device")
         if probabilities.ndim != 2 or probabilities.shape[0] != self.stream_count:
@@ -77,9 +83,19 @@ class DeviceMultistreamACDecoder:
             if self.exact_fixed_interval
             else floor_frequencies
         )
+        quantization_started = time.perf_counter()
+        if self.device.type == "cuda":
+            quantization_start = torch.cuda.Event(enable_timing=True)
+            quantization_end = torch.cuda.Event(enable_timing=True)
+            quantization_start.record()
         frequencies, _ = frequency_function(probabilities, self.total)
         cumulative = torch.cat((torch.zeros((self.stream_count, 1), dtype=torch.int64,
                                              device=self.device), frequencies.cumsum(dim=1)), dim=1)
+        if self.device.type == "cuda":
+            quantization_end.record()
+            self._quantization_events.append((quantization_start, quantization_end))
+        else:
+            self._quantization_wall_seconds += time.perf_counter() - quantization_started
         totals = cumulative[:, -1]
         current_range = self.high - self.low + 1
         value = ((self.code - self.low + 1) * totals - 1) // current_range
@@ -117,11 +133,21 @@ class DeviceMultistreamACDecoder:
                 self.high,
             )
         self.decoded += active.to(torch.int64)
+        self._decode_wall_seconds += time.perf_counter() - decode_started
         return symbol
 
     def assert_complete(self) -> None:
         if self.decoded.cpu().tolist() != self.symbol_counts:
             raise ValueError("not all MSAC stream symbols were decoded")
+        quantization_seconds = self._quantization_wall_seconds + sum(
+            start.elapsed_time(end) / 1000.0
+            for start, end in self._quantization_events
+        )
+        self.metrics = {
+            "quantization_seconds": quantization_seconds,
+            "kernel_seconds": max(0.0, self._decode_wall_seconds - quantization_seconds),
+            "decode_steps": len(self._quantization_events),
+        }
 
 
 class CudaCDFMultistreamACDecoder(DeviceMultistreamACDecoder):

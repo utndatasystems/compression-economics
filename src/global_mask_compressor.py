@@ -41,6 +41,35 @@ def _rate(amount, seconds):
     return amount / seconds if seconds else 0.0
 
 
+def _cuda_events_seconds(events):
+    return sum(start.elapsed_time(end) / 1000.0 for start, end in events)
+
+
+def _exclusive_stage_timing(total_seconds, components, *, overlapped=None):
+    """Reconcile measured components into an exclusive end-to-end decomposition.
+
+    CUDA event durations describe device work, while transfers and CPU coder work
+    use wall time.  Small timer-boundary discrepancies are scaled only if their
+    sum exceeds the enclosing wall-clock phase; the residual is deliberately
+    reported instead of being attributed to a stage that was not measured.
+    """
+    raw = {name: max(0.0, float(value or 0.0)) for name, value in components.items()}
+    measured_sum = sum(raw.values())
+    scale = min(1.0, total_seconds / measured_sum) if measured_sum else 1.0
+    exclusive = {name: value * scale for name, value in raw.items()}
+    exclusive["framework_residual"] = max(0.0, total_seconds - sum(exclusive.values()))
+    return {
+        "total_seconds": float(total_seconds),
+        "exclusive_seconds": exclusive,
+        "raw_measured_seconds": raw,
+        "reconciliation_scale": scale,
+        "overlapped_seconds": {
+            name: max(0.0, float(value or 0.0))
+            for name, value in (overlapped or {}).items()
+        },
+    }
+
+
 def _make_token_predictor(args, bitmap_data):
     """Select the Transformer, n-gram, or optional vLLM predictor adapter."""
     if args.engine == "ngram":
@@ -261,6 +290,10 @@ def run_global_mask_compression(args):
             cuda_target_probs = None
         cuda_inference_events = []
         cuda_interval_events = []
+        cuda_vocab_events = []
+        cuda_softmax_events = []
+        score_copy_seconds = 0.0
+        interval_copy_seconds = 0.0
         cuda_ac_metrics = {}
         # Process each token in the dataset to compress it.
         # Only run steps that have at least one next symbol. When all batches have
@@ -306,7 +339,7 @@ def run_global_mask_compression(args):
                 interval_transfer_bytes += getattr(token_predictor, "last_interval_transfer_bytes", 32 * len(prompts))
                 interval_seconds += getattr(token_predictor, "last_interval_seconds", 0.0)
                 interval_event = getattr(token_predictor, "last_interval_event", None)
-                if cuda_interval_backend and interval_event is not None:
+                if interval_event is not None:
                     cuda_interval_events.append(interval_event)
             else:
                 token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_inference(prompts, args.use_kv_cache)
@@ -317,6 +350,14 @@ def run_global_mask_compression(args):
             )
             data_copy_time += _data_copy_time
             softmax_time += _softmax_time
+            score_copy_seconds += getattr(token_predictor, "last_score_copy_seconds", 0.0)
+            interval_copy_seconds += getattr(token_predictor, "last_interval_copy_seconds", 0.0)
+            vocab_event = getattr(token_predictor, "last_vocab_event", None)
+            softmax_event = getattr(token_predictor, "last_softmax_event", None)
+            if vocab_event is not None:
+                cuda_vocab_events.append(vocab_event)
+            if softmax_event is not None:
+                cuda_softmax_events.append(softmax_event)
             if cuda_interval_backend:
                 inference_end.record()
                 cuda_inference_events.append((inference_start, inference_end))
@@ -495,6 +536,55 @@ def run_global_mask_compression(args):
 
         compression_time = time.perf_counter() - compression_time
 
+        # These events have completed at the score-transfer boundary on host
+        # variants and at the explicit final synchronization on CUDA variants.
+        vocab_device_seconds = _cuda_events_seconds(cuda_vocab_events)
+        softmax_device_seconds = _cuda_events_seconds(cuda_softmax_events)
+        interval_device_seconds = _cuda_events_seconds(cuda_interval_events)
+        host_quantize_seconds = (
+            llm_compressor.quantize_seconds
+            if not cuda_interval_backend
+            and args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+            else 0.0
+        )
+        host_range_seconds = (
+            llm_compressor.range_encode_seconds
+            if not cuda_interval_backend
+            and args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
+            else 0.0
+        )
+        cuda_range_seconds = float(cuda_ac_metrics.get("kernel_seconds", 0.0))
+        stage_timing = _exclusive_stage_timing(
+            compression_time,
+            {
+                "model_inference": max(
+                    0.0,
+                    inference_time
+                    - vocab_device_seconds
+                    - softmax_device_seconds
+                    - score_copy_seconds
+                    - interval_copy_seconds
+                    - interval_device_seconds,
+                ),
+                "vocabulary_selection": vocab_device_seconds,
+                "softmax": softmax_device_seconds,
+                "score_or_interval_transfer": score_copy_seconds + interval_copy_seconds,
+                "frequency_or_interval_construction": (
+                    interval_device_seconds
+                    if args.encoding == "AC_TARGET_INTERVAL"
+                    else host_quantize_seconds
+                ),
+                "range_coding": (
+                    0.0
+                    if cuda_pipeline_encoder is not None
+                    else cuda_range_seconds if cuda_interval_backend else host_range_seconds
+                ),
+            },
+            overlapped={
+                "range_coding": cuda_range_seconds if cuda_pipeline_encoder is not None else 0.0
+            },
+        )
+
         total_compression_time = time.perf_counter() - t0_tokenize
         # Bitstream length (in bits) plus bitmap size yields the final compressed size.
         total_arithmetic_code_size = len(bit_string) * (8 if isinstance(bit_string, bytes) else 1)
@@ -580,6 +670,7 @@ def run_global_mask_compression(args):
             ),
             "data_copy_time": data_copy_time,
             "softmax_time": softmax_time,
+            "stage_timing": stage_timing,
             # Throughput
             "throughput_input_symbols_per_sec": len(data_tokens) / total_compression_time,
             "throughput_model_input_tokens_per_sec": input_token_cnt / total_compression_time,
@@ -697,6 +788,10 @@ def run_global_mask_decompression(
         data_copy_time = 0
         softmax_time = 0
         decoded_token_transfer_bytes = 0
+        decoded_token_transfer_seconds = 0.0
+        score_copy_seconds = 0.0
+        cuda_vocab_events = []
+        cuda_softmax_events = []
 
         # Determine max tokens to decode, set to first_n_tokens if not specified
         max_tokens = args.first_n_tokens
@@ -729,6 +824,13 @@ def run_global_mask_decompression(
             )
             data_copy_time += _data_copy_time
             softmax_time += _softmax_time
+            score_copy_seconds += getattr(token_predictor, "last_score_copy_seconds", 0.0)
+            vocab_event = getattr(token_predictor, "last_vocab_event", None)
+            softmax_event = getattr(token_predictor, "last_softmax_event", None)
+            if vocab_event is not None:
+                cuda_vocab_events.append(vocab_event)
+            if softmax_event is not None:
+                cuda_softmax_events.append(softmax_event)
             inference_time += time.perf_counter() - t0_inference
 
             t0_ac = time.perf_counter()
@@ -736,7 +838,9 @@ def run_global_mask_decompression(
             if device_decode:
                 active = [token_idx + 1 < length for length in batches_length]
                 columns = decompressor.decode(probs_values, active)
+                transfer_started = time.perf_counter()
                 decoded_tokens = token_ids_on_device[columns].cpu().tolist()
+                decoded_token_transfer_seconds += time.perf_counter() - transfer_started
                 decoded_token_transfer_bytes += len(decoded_tokens) * token_ids_on_device.element_size()
                 for idx, next_token in enumerate(decoded_tokens):
                     if active[idx]:
@@ -771,6 +875,30 @@ def run_global_mask_decompression(
         detokenize_time = time.perf_counter() - t0_detokenize
 
         decompression_time = time.perf_counter() - t0_decompress
+        decode_metrics = getattr(decompressor, "metrics", None) or {}
+        stage_timing = _exclusive_stage_timing(
+            decompression_time,
+            {
+                "model_inference": max(
+                    0.0,
+                    inference_time
+                    - _cuda_events_seconds(cuda_vocab_events)
+                    - _cuda_events_seconds(cuda_softmax_events)
+                    - score_copy_seconds,
+                ),
+                "vocabulary_selection": _cuda_events_seconds(cuda_vocab_events),
+                "softmax": _cuda_events_seconds(cuda_softmax_events),
+                "score_transfer": score_copy_seconds,
+                "frequency_or_cdf_construction": decode_metrics.get(
+                    "quantization_seconds", 0.0
+                ),
+                "inverse_cdf_and_range_update": decode_metrics.get(
+                    "kernel_seconds", 0.0
+                ),
+                "decoded_token_transfer": decoded_token_transfer_seconds,
+                "detokenization": detokenize_time,
+            },
+        )
 
         return reconstructed_tokens, detoken_string, {
             "args": args.__dict__,
@@ -786,8 +914,10 @@ def run_global_mask_decompression(
             "ac_decode_backend": decode_backend,
             "cuda_decode_metrics": getattr(decompressor, "metrics", None),
             "decoded_token_transfer_bytes": decoded_token_transfer_bytes,
+            "decoded_token_transfer_seconds": decoded_token_transfer_seconds,
             "data_copy_time": data_copy_time,
             "softmax_time": softmax_time,
+            "stage_timing": stage_timing,
             # Throughput
             "throughput_input_symbols_per_sec": args.first_n_tokens / decompression_time,
             "throughput_model_input_tokens_per_sec": input_tokens_cnt / decompression_time,
