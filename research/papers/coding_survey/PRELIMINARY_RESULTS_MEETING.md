@@ -23,6 +23,24 @@ and 0.4787 MiB/s decoding—5.81x and 4.91x the batch-256 rates. This is not a
 free optimization: its charged compression ratio is 5.498x instead of 7.682x
 because each of the 16,384 streams has less usable context and needs a seed.
 
+Six traditional codecs were run on the exact same first 10 MiB of `text8`,
+with seven in-memory CPU repetitions after warm-up and exact recovery after
+every decompression. Zstandard level 19 sets the registered threshold at
+$R^*=3.9369\times$; both LLM operating points clear it. Every conventional
+codec is faster than the LLM points in both directions: the compression gap
+ranges from modest for Brotli-11 to several orders of magnitude for LZ4, while
+decompression differs by at least three orders of magnitude. The result is a
+compression-ratio advantage rather than a throughput crossover.
+
+| Codec | Ratio | Compression (MiB/s) | Decompression (MiB/s) |
+|---|---:|---:|---:|
+| FSST8 | 2.074x | 205.452 | 3,002.786 |
+| LZ4 default | 1.813x | 483.048 | 3,152.674 |
+| gzip level 6 | 2.983x | 22.604 | 315.187 |
+| Zstandard level 3 | 3.032x | 234.818 | 1,494.594 |
+| Zstandard level 19 | **3.937x** | 2.508 | 1,511.642 |
+| Brotli quality 11 | 3.904x | 0.755 | 515.073 |
+
 ## Current optimization state
 
 | Optimization | Current evidence | Result | Remaining limit |

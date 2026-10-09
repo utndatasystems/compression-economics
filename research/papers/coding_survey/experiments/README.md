@@ -3,6 +3,85 @@
 See the [experiment tracker](EXPERIMENT_PLAN.md) for planned experiments,
 the completed Qwen/text8 CPU pilot, its GPU repeat, and ablations.
 
+## Traditional-codec frontier
+
+The rate-constrained frontier uses the exact first 10 MiB of `data/text8` and
+six preregistered CPU baselines: FSST8, LZ4 default, gzip level 6, Zstandard
+levels 3 and 19, and Brotli quality 11. The in-memory runner charges complete
+framed output, times compression and decompression separately, and checks every
+decompression byte-for-byte. FSST compression includes symbol-table training
+and export, and its archive includes that table.
+
+Build the small C ABI wrapper against a pinned checkout of the official FSST
+implementation, then run the benchmark:
+
+```bash
+git clone https://github.com/cwida/fsst.git /tmp/compression-economics-fsst
+g++ -std=c++17 -O3 -DNDEBUG -march=native -fPIC -shared \
+  -I/tmp/compression-economics-fsst \
+  research/papers/coding_survey/experiments/fsst8_wrapper.cpp \
+  /tmp/compression-economics-fsst/libfsst.cpp \
+  /tmp/compression-economics-fsst/fsst_avx512.cpp \
+  -o /tmp/libcoding_survey_fsst8.so
+FSST_REVISION=$(git -C /tmp/compression-economics-fsst rev-parse HEAD)
+.venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_traditional_codecs.py \
+  --fsst-library /tmp/libcoding_survey_fsst8.so \
+  --fsst-revision "$FSST_REVISION" \
+  --cpu 0
+```
+
+The Python environment must provide `brotli`, `zstandard`, and `lz4`. Raw JSON
+is written to `artifacts/papers/coding-survey/traditional-codecs/`.
+
+## External LLM baselines
+
+FineZip and Nacrith are executed from pinned upstream checkouts; their source is
+not vendored here. Both runners use the exact first 10 MiB of `data/text8`,
+exclude shared model/tokenizer weights from per-file size, time compression and
+decompression separately after model loading, and reject anything short of
+byte-exact recovery.
+
+FineZip's practical paper configuration is dynamic-context token ranks followed
+by bzip2; the arithmetic-coding ablation took roughly nine days for 10 MB and
+was not pursued by the authors. `benchmark_finezip.py` calls the upstream
+`ZipModel` rank generation and recovery unchanged, and packages its bzip2
+payload and decode parameters in a small `FZB1` accounting container. This is
+a repository-local wrapper, not an upstream FineZip interchange format. The
+matched comparison uses `HuggingFaceTB/SmolLM2-135M` without online LoRA
+memorization; it is therefore a FineZip-algorithm baseline, not a reproduction
+of the paper's fine-tuned Llama-3-8B headline number.
+
+Nacrith is run with its official NC05 archive and default ensemble settings.
+Its llama.cpp environment is intentionally separate from the locked project
+environment. Example H100 commands (pin and record exact upstream revisions):
+
+```bash
+git clone https://github.com/fazalmittu/FineZip.git /tmp/finezip
+git clone https://github.com/robtacconelli/Nacrith-GPU.git /tmp/nacrith
+
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_finezip.py \
+  --finezip-repo /tmp/finezip --dtype bfloat16 \
+  --batch-size 1024 --context-size 512
+
+/tmp/nacrith-venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_nacrith.py \
+  --nacrith-repo /tmp/nacrith \
+  --gguf /path/to/SmolLM2-135M-BF16.gguf --workers 8
+
+.venv/bin/python \
+  research/papers/coding_survey/experiments/summarize_llm_baselines.py \
+  artifacts/papers/coding-survey/llm-baselines/finezip-text8-first-10MiB.json \
+  artifacts/papers/coding-survey/llm-baselines/nacrith-text8-first-10MiB.json \
+  artifacts/papers/coding-survey/llm-baselines/text8-first-10MiB.json
+```
+
+The JSON records upstream revisions, source/model hashes, configuration,
+complete archive size/hash, cold model-load time, warm operation times,
+throughput, and exact-recovery status. FineZip and Nacrith use different
+inference engines, so their BF16 conversions are identified and hashed rather
+than assumed numerically identical.
+
 Keep survey-specific benchmark definitions and analysis here. Reusable coder
 implementations and trace measurements live in `src/`; raw traces, archives,
 profiles, and result JSON belong under the ignored

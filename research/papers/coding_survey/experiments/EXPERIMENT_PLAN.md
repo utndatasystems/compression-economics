@@ -143,7 +143,8 @@ Remaining work:
 | A06 | vLLM attention backends, tensor parallel layouts, vocabulary padding, worker vs dense probabilities. | Live GPU required; pin validated version and test count-level agreement before performance claims. |
 | A07 | Speculative decompression/coding and early exit. | Exploratory; define lossless fallback, charge rejected work/helper data, compare multistream decoding. |
 | A08 | More models, datasets, and adaptation. | After Qwen/text8, select additional model sizes/source types. Other architectures/LoRA only if supported and retained in scope; vLLM LoRA is not currently validated. |
-| A09 | Classical compression baselines and compression/throughput Pareto curves. | Baseline selection pending; same source bytes and accounting convention; disclose external model dependency. |
+| A09 | Classical compression baselines and compression/throughput Pareto curves. | **Six-baseline 10 MiB text8 run complete.** FSST8, LZ4 default, gzip-6, Zstandard-3/-19, and Brotli-11 each have seven timed compression/decompression repetitions and exact recovery. Zstandard-19 defines $R^*=3.9369\times$. The operating-point plot includes all points; broader datasets and the full LLM sweep remain pending. |
+| A10 | External LLM baselines on matched text8 bytes. | **FineZip and Nacrith 10 MiB runs complete.** Both use SmolLM2-135M/BF16 on one H100 and recover the exact source. FineZip rank+bzip2: 1.43634 bpb, 42.09 s encode, 40.75 s decode. Nacrith NC05 with eight workers: 1.25498 bpb, 1168.51 s encode, 1166.09 s decode. Complete per-file archives are charged; shared model/tokenizer weights are excluded. Raw JSON and archives are under `artifacts/papers/coding-survey/llm-baselines/`. |
 
 ## Evidence required for every reported condition
 
