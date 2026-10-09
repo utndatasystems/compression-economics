@@ -36,11 +36,11 @@ is written to `artifacts/papers/coding-survey/traditional-codecs/`.
 
 ## External LLM baselines
 
-FineZip and Nacrith are executed from pinned upstream checkouts; their source is
-not vendored here. Both runners use the exact first 10 MiB of `data/text8`,
-exclude shared model/tokenizer weights from per-file size, time compression and
-decompression separately after model loading, and reject anything short of
-byte-exact recovery.
+FineZip, LLMZip, and Nacrith are executed from pinned upstream checkouts; their
+source is not vendored here. All runners use the exact first 10 MiB of
+`data/text8`, exclude shared model/tokenizer weights from per-file size, time
+compression and decompression separately after model loading, and reject
+anything short of byte-exact recovery.
 
 FineZip's practical paper configuration is dynamic-context token ranks followed
 by bzip2; the arithmetic-coding ablation took roughly nine days for 10 MB and
@@ -54,15 +54,28 @@ of the paper's fine-tuned Llama-3-8B headline number.
 
 Nacrith is run with its official NC05 archive and default ensemble settings.
 Its llama.cpp environment is intentionally separate from the locked project
-environment. Example H100 commands (pin and record exact upstream revisions):
+environment. LLMZip uses the upstream 32-bit reference arithmetic coder and
+its fixed 511-token sliding context. Its repository-local adapter substitutes
+the same pinned Hugging Face model used by the other matched baselines and
+packages the payload and decode parameters in an `LZP1` container. Encoding
+and decoding both use batch size one: upstream explicitly marks its optional
+batched encoder as incompatible with decoding, and exact probability
+reproduction is mandatory for arithmetic coding.
+
+Example H100 commands (pin and record exact upstream revisions):
 
 ```bash
 git clone https://github.com/fazalmittu/FineZip.git /tmp/finezip
+git clone https://github.com/vcskaushik/LLMzip.git /tmp/llmzip
 git clone https://github.com/robtacconelli/Nacrith-GPU.git /tmp/nacrith
 
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_finezip.py \
   --finezip-repo /tmp/finezip --dtype bfloat16 \
   --batch-size 1024 --context-size 512
+
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_llmzip.py \
+  --llmzip-repo /tmp/llmzip --dtype bfloat16 --memory 511 \
+  --model-revision 93efa2f097d58c2a74874c7e644dbc9b0cee75a2
 
 /tmp/nacrith-venv/bin/python \
   research/papers/coding_survey/experiments/benchmark_nacrith.py \

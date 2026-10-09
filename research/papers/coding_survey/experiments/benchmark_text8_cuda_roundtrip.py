@@ -171,6 +171,11 @@ def main() -> None:
     parser.add_argument("--retain-tokens", type=int, default=64)
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument(
+        "--skip-workload-warmups",
+        action="store_true",
+        help="Skip the full-input encoder and decoder warm-up passes",
+    )
+    parser.add_argument(
         "--encoders",
         nargs="+",
         choices=ENCODERS,
@@ -270,27 +275,38 @@ def main() -> None:
 
     encoding_warmups = {}
     warm_archives = {}
-    print("Running encoding warm-ups...", flush=True)
-    for variant in encoders:
-        warm_archives[variant], encoding_warmups[variant] = run_encoder(variant)
+    if cli.skip_workload_warmups:
+        print("Skipping full-workload encoding warm-ups.", flush=True)
+    else:
+        print("Running encoding warm-ups...", flush=True)
+        for variant in encoders:
+            warm_archives[variant], encoding_warmups[variant] = run_encoder(variant)
     matched_encoders = tuple(
         variant
         for variant in encoders
         if variant not in {"python_full_logits", "cuda_v4"}
     )
-    reference = warm_archives[matched_encoders[0]][:3] if matched_encoders else None
-    if any(
+    reference = (
+        warm_archives[matched_encoders[0]][:3]
+        if matched_encoders and warm_archives
+        else None
+    )
+    if warm_archives and any(
         warm_archives[variant][:3] != reference for variant in matched_encoders[1:]
     ):
         raise AssertionError("encoding warm-ups produced different archives")
 
     encoding_samples = {variant: [] for variant in encoders}
     encoding_orders = _balanced_orders(encoders, cli.repeats)
-    optimized_archive = warm_archives.get(
-        "cuda_v4",
+    optimized_archive = (
         warm_archives.get(
-            "cuda_v3", warm_archives.get("cuda_v2", warm_archives[encoders[-1]])
-        ),
+            "cuda_v4",
+            warm_archives.get(
+                "cuda_v3", warm_archives.get("cuda_v2", warm_archives[encoders[-1]])
+            ),
+        )
+        if warm_archives
+        else None
     )
     for repeat, order in enumerate(encoding_orders, start=1):
         matched = {}
@@ -341,9 +357,12 @@ def main() -> None:
         return sample
 
     decoding_warmups = {}
-    print("Running decoding warm-ups...", flush=True)
-    for backend in decoders:
-        decoding_warmups[backend] = run_decoder(backend)
+    if cli.skip_workload_warmups:
+        print("Skipping full-workload decoding warm-ups.", flush=True)
+    else:
+        print("Running decoding warm-ups...", flush=True)
+        for backend in decoders:
+            decoding_warmups[backend] = run_decoder(backend)
 
     decoding_samples = {backend: [] for backend in decoders}
     decoding_orders = _balanced_orders(decoders, cli.repeats)
@@ -398,6 +417,7 @@ def main() -> None:
         "context_length": cli.context_length,
         "retain_tokens": cli.retain_tokens,
         "repeats": cli.repeats,
+        "full_workload_warmups_skipped": cli.skip_workload_warmups,
         "gpu": torch.cuda.get_device_name(device),
         "torch_version": torch.__version__,
         "torch_cuda_runtime": torch.version.cuda,

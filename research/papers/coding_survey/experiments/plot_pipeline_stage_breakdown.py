@@ -116,10 +116,44 @@ def _stacked(ax, names, aggregates, keys, labels, *, normalized):
                            edgecolors="black", zorder=5)
 
 
+def _row_major_legend(fig, handles, labels, *, ncol):
+    entries = list(zip(handles, labels))
+    rows = [entries[index:index + ncol] for index in range(0, len(entries), ncol)]
+    reordered = [
+        row[column]
+        for column in range(ncol)
+        for row in rows
+        if column < len(row)
+    ]
+    legend_handles, legend_labels = zip(*reordered)
+    fig.legend(
+        legend_handles,
+        legend_labels,
+        loc="outside lower center",
+        ncol=ncol,
+    )
+
+
+def _plot_phase(names, aggregates, keys, labels):
+    fig, axes = plt.subplots(1, 2, figsize=(13.2, 3.6), constrained_layout=True)
+    _stacked(axes[0], names, aggregates, keys, labels, normalized=False)
+    _stacked(axes[1], names, aggregates, keys, labels, normalized=True)
+    axes[0].set_title("(a) Absolute time")
+    axes[1].set_title("(b) Time share")
+    handles, legend_labels = axes[1].get_legend_handles_labels()
+    _row_major_legend(fig, handles, legend_labels, ncol=4)
+    return fig
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("--output-prefix", type=Path, required=True)
+    parser.add_argument(
+        "--figures-only",
+        action="store_true",
+        help="write only the two PDF figures, omitting PNG and diagnostics",
+    )
     args = parser.parse_args()
     report = json.loads(args.input.read_text())
     encoders = report["encoding"]["conditions"]
@@ -129,22 +163,22 @@ def main() -> None:
     encoding_keys = list(next(iter(encoding.values()))["shares"])
     decoding_keys = list(next(iter(decoding.values()))["shares"])
 
-    fig, axes = plt.subplots(2, 2, figsize=(13.2, 8.2), constrained_layout=True)
-    _stacked(axes[0, 0], encoders, encoding, encoding_keys, ENCODER_LABELS, normalized=False)
-    _stacked(axes[0, 1], encoders, encoding, encoding_keys, ENCODER_LABELS, normalized=True)
-    _stacked(axes[1, 0], decoders, decoding, decoding_keys, DECODER_LABELS, normalized=False)
-    _stacked(axes[1, 1], decoders, decoding, decoding_keys, DECODER_LABELS, normalized=True)
-    axes[0, 0].set_title("Encoding: absolute time")
-    axes[0, 1].set_title("Encoding: time share")
-    axes[1, 0].set_title("Decoding: absolute time")
-    axes[1, 1].set_title("Decoding: time share")
-    handles, legend_labels = axes[0, 1].get_legend_handles_labels()
-    handles2, legend_labels2 = axes[1, 1].get_legend_handles_labels()
-    by_label = dict(zip(legend_labels + legend_labels2, handles + handles2))
-    fig.legend(by_label.values(), by_label.keys(), loc="outside lower center", ncol=4)
     args.output_prefix.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(args.output_prefix.with_suffix(".pdf"), bbox_inches="tight")
-    fig.savefig(args.output_prefix.with_suffix(".png"), dpi=220, bbox_inches="tight")
+    for phase, names, values, keys, labels in (
+        ("compression", encoders, encoding, encoding_keys, ENCODER_LABELS),
+        ("decompression", decoders, decoding, decoding_keys, DECODER_LABELS),
+    ):
+        fig = _plot_phase(names, values, keys, labels)
+        phase_prefix = args.output_prefix.with_name(
+            f"{args.output_prefix.name}_{phase}"
+        )
+        fig.savefig(phase_prefix.with_suffix(".pdf"), bbox_inches="tight")
+        if not args.figures_only:
+            fig.savefig(phase_prefix.with_suffix(".png"), dpi=220, bbox_inches="tight")
+        plt.close(fig)
+
+    if args.figures_only:
+        return
 
     csv_path = args.output_prefix.with_name(args.output_prefix.name + "-values.csv")
     with csv_path.open("w", newline="") as handle:

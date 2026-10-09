@@ -20,8 +20,13 @@ DEFAULT_BASELINES = (
     REPO_ROOT
     / "artifacts/papers/coding-survey/traditional-codecs/text8-first-10MiB.json"
 )
+DEFAULT_EXTERNAL_BASELINES = (
+    REPO_ROOT
+    / "artifacts/papers/coding-survey/llm-baselines/text8-first-10MiB.json"
+)
 DEFAULT_INPUTS = (
-    ARTIFACT_DIR / "text8-first-10MiB-roundtrip-b256-c256-r100.json",
+    ARTIFACT_DIR / "text8-first-10MiB-roundtrip-b1024-c512-r256.json",
+    ARTIFACT_DIR / "text8-first-10MiB-roundtrip-b8192-c128-r64.json",
     ARTIFACT_DIR / "text8-first-10MiB-roundtrip-b16384.json",
 )
 DEFAULT_PDF = (
@@ -29,14 +34,17 @@ DEFAULT_PDF = (
     / "research/papers/coding_survey/manuscript/figures/"
     "optimization_operating_points.pdf"
 )
+LLMZIP_REPORTED_RATIO = 8 / 0.7101
+LLMZIP_PROJECTED_ENCODING_MIB_S = 0.000356
+X_MAX = 12.0
 
 
 def _load(path: Path) -> dict:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data["input_prefix_bytes"] != 10 * 1024 * 1024:
         raise ValueError(f"{path} is not a complete 10 MiB run")
-    if data["repeats"] != 3:
-        raise ValueError(f"{path} does not contain the expected three runs")
+    if data["repeats"] < 3:
+        raise ValueError(f"{path} contains fewer than three runs")
     if not data["encoding"]["exact_archive_match"]:
         raise ValueError(f"{path} has non-identical target-interval archives")
     if not data["decoding"]["exact_recovery"]:
@@ -57,24 +65,43 @@ def _load_baselines(path: Path, input_sha256: str) -> dict:
     return data
 
 
+def _load_external_baselines(path: Path, input_sha256: str) -> dict:
+    data = _load_json(path)
+    if data["input"]["bytes"] != 10 * 1024 * 1024:
+        raise ValueError(f"{path} is not a complete 10 MiB run")
+    if data["input"]["sha256"] != input_sha256:
+        raise ValueError(f"{path} does not use the matched source bytes")
+    if {row["codec"] for row in data["codecs"]} != {"finezip", "nacrith"}:
+        raise ValueError(f"{path} must contain FineZip and Nacrith")
+    if not all(row["validation"]["exact_byte_recovery"] for row in data["codecs"]):
+        raise ValueError(f"{path} contains a failed decoder")
+    return data
+
+
 def _load_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--inputs", nargs=2, type=Path, default=DEFAULT_INPUTS)
+    parser.add_argument("--inputs", nargs="+", type=Path, default=DEFAULT_INPUTS)
     parser.add_argument("--baselines", type=Path, default=DEFAULT_BASELINES)
+    parser.add_argument(
+        "--external-baselines",
+        type=Path,
+        default=DEFAULT_EXTERNAL_BASELINES,
+    )
     parser.add_argument("--pdf", type=Path, default=DEFAULT_PDF)
-    parser.add_argument("--png", type=Path, default=DEFAULT_PDF.with_suffix(".png"))
-    parser.add_argument("--dpi", type=int, default=600)
     args = parser.parse_args()
 
     rows = [_load(path) for path in args.inputs]
     rows.sort(key=lambda row: row["batch_size"])
-    if rows[0]["input_sha256"] != rows[1]["input_sha256"]:
+    if len({row["input_sha256"] for row in rows}) != 1:
         raise ValueError("LLM operating points use different source bytes")
     baselines = _load_baselines(args.baselines, rows[0]["input_sha256"])
+    external_baselines = _load_external_baselines(
+        args.external_baselines, rows[0]["input_sha256"]
+    )
 
     ratios = [row["representation"]["compression_ratio"] for row in rows]
     encoding = [
@@ -90,9 +117,9 @@ def main() -> None:
         {
             "font.family": "DejaVu Sans",
             "font.size": 8,
-            "axes.titlesize": 9,
+            "axes.titlesize": 8,
             "axes.labelsize": 8,
-            "axes.titleweight": "bold",
+            "axes.titleweight": "normal",
             "text.color": "#202124",
             "axes.labelcolor": "#202124",
             "xtick.color": "#5F6368",
@@ -111,6 +138,14 @@ def main() -> None:
         row["decompression_summary"]["median"]["source_mib_per_second"]
         for row in baselines["codecs"]
     ]
+    external_rows = external_baselines["codecs"]
+    external_ratios = [row["archive"]["compression_ratio"] for row in external_rows]
+    external_encoding = [
+        row["timing"]["compression_mib_per_second"] for row in external_rows
+    ]
+    external_decoding = [
+        row["timing"]["decompression_mib_per_second"] for row in external_rows
+    ]
     short_labels = {
         "fsst8": "FSST8",
         "lz4_default": "LZ4",
@@ -120,67 +155,131 @@ def main() -> None:
         "brotli_11": "Brotli-11",
     }
     r_star = baselines["rate_constraint"]["r_star"]
-    encode_gain = encoding[1] / encoding[0]
-    decode_gain = decoding[1] / decoding[0]
-    ratio_loss = 1.0 - ratios[1] / ratios[0]
-
-    fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.25), sharex=True)
+    fig, axes = plt.subplots(1, 2, figsize=(7.4, 3.0), sharex=True)
     panel_specs = (
         {
             "ax": axes[0],
             "title": "(a) Compression",
-            "llm_label": "LLM CUDA v2",
+            "llm_label": "Ours (CUDA)",
             "llm_values": encoding,
             "baseline_values": baseline_encoding,
+            "external_values": external_encoding,
             "color": "#4477AA",
             "llm_marker": "o",
             "baseline_marker": "^",
             "ylabel": "Compression throughput (MiB/s)",
-            "ylim": (0.06, 2000),
+            "ylim": (0.0002, 2000),
+            "show_projected_llmzip": True,
+            "llm_label_offsets": {
+                1024: (-3, 5),
+                8192: (3, 5),
+                16384: (-3, 5),
+            },
             "label_offsets": {
-                "fsst8": (5, -7),
-                "lz4_default": (5, 5),
-                "gzip_6": (-5, -7),
-                "zstd_3": (5, 5),
-                "zstd_19": (5, 5),
-                "brotli_11": (-5, -8),
+                "fsst8": (3, -4),
+                "lz4_default": (3, 3),
+                "gzip_6": (-3, -4),
+                "zstd_3": (3, 3),
+                "zstd_19": (3, 3),
+                "brotli_11": (-3, -5),
             },
         },
         {
             "ax": axes[1],
             "title": "(b) Decompression",
-            "llm_label": "LLM CUDA-CDF",
+            "llm_label": "Ours (CUDA)",
             "llm_values": decoding,
             "baseline_values": baseline_decoding,
-            "color": "#228833",
-            "llm_marker": "s",
-            "baseline_marker": "v",
+            "external_values": external_decoding,
+            "color": "#4477AA",
+            "llm_marker": "o",
+            "baseline_marker": "^",
             "ylabel": "Decompression throughput (MiB/s)",
-            "ylim": (0.06, 10000),
+            "ylim": (0.006, 10000),
+            "show_projected_llmzip": False,
+            "llm_label_offsets": {
+                1024: (-3, -6),
+                8192: (3, 6),
+                16384: (-3, 5),
+            },
             "label_offsets": {
-                "fsst8": (5, 5),
-                "lz4_default": (-5, -7),
-                "gzip_6": (-5, -7),
-                "zstd_3": (5, 5),
-                "zstd_19": (5, 5),
-                "brotli_11": (-5, -7),
+                "fsst8": (3, 3),
+                "lz4_default": (-3, -4),
+                "gzip_6": (-3, -4),
+                "zstd_3": (3, 3),
+                "zstd_19": (3, 3),
+                "brotli_11": (-3, -4),
             },
         },
     )
     for spec in panel_specs:
         ax = spec["ax"]
-        ax.plot(
+        ax.scatter(
             ratios,
             spec["llm_values"],
-            color=spec["color"],
+            s=42,
+            facecolors=spec["color"],
             marker=spec["llm_marker"],
-            markersize=6.5,
-            linewidth=1.5,
-            markeredgecolor="white",
-            markeredgewidth=0.8,
+            edgecolors="white",
+            linewidths=0.8,
             label=spec["llm_label"],
             zorder=3,
         )
+        winner_indices = [
+            index for index, row in enumerate(rows)
+            if row["batch_size"] in {1024, 16384}
+        ]
+        ax.scatter(
+            [ratios[index] for index in winner_indices],
+            [spec["llm_values"][index] for index in winner_indices],
+            s=78,
+            marker="o",
+            facecolors="none",
+            edgecolors="#B8860B",
+            linewidths=1.1,
+            zorder=5,
+        )
+        external_styles = {
+            "finezip": {"label": "FineZip", "marker": "D", "color": "#CC6677"},
+            "nacrith": {"label": "Nacrith", "marker": "X", "color": "#EE7733"},
+        }
+        for row, ratio, rate in zip(
+            external_rows, external_ratios, spec["external_values"]
+        ):
+            style = external_styles[row["codec"]]
+            ax.scatter(
+                [ratio],
+                [rate],
+                s=42,
+                marker=style["marker"],
+                facecolors=style["color"],
+                edgecolors="white",
+                linewidths=0.8,
+                label=style["label"],
+                zorder=4,
+            )
+        if spec["show_projected_llmzip"]:
+            ax.scatter(
+                [LLMZIP_REPORTED_RATIO],
+                [LLMZIP_PROJECTED_ENCODING_MIB_S],
+                s=58,
+                marker="*",
+                facecolors="#AA4499",
+                edgecolors="white",
+                linewidths=0.7,
+                label="LLMZip (projected)",
+                zorder=5,
+            )
+            ax.annotate(
+                "LLMZip projected",
+                xy=(LLMZIP_REPORTED_RATIO, LLMZIP_PROJECTED_ENCODING_MIB_S),
+                xytext=(-3, 5),
+                textcoords="offset points",
+                ha="right",
+                va="bottom",
+                fontsize=6.7,
+                color="#3C4043",
+            )
         ax.scatter(
             baseline_ratios,
             spec["baseline_values"],
@@ -206,6 +305,20 @@ def main() -> None:
                 fontsize=6.7,
                 color="#3C4043",
             )
+        for row, ratio, rate in zip(
+            external_rows, external_ratios, spec["external_values"]
+        ):
+            offset = (-3, -5) if row["codec"] == "finezip" else (3, 3)
+            ax.annotate(
+                "FineZip" if row["codec"] == "finezip" else "Nacrith",
+                xy=(ratio, rate),
+                xytext=offset,
+                textcoords="offset points",
+                ha="right" if offset[0] < 0 else "left",
+                va="top" if offset[1] < 0 else "bottom",
+                fontsize=6.7,
+                color="#3C4043",
+            )
         ax.axvline(
             r_star,
             color="#B06000",
@@ -214,54 +327,72 @@ def main() -> None:
             label=f"$R^*={r_star:.3f}\\times$",
             zorder=2,
         )
-        ax.axvspan(r_star, 8.1, color="#FFF4E5", alpha=0.35, zorder=0)
+        ax.axvspan(r_star, X_MAX, color="#FFF4E5", alpha=0.35, zorder=0)
         for index, row in enumerate(rows):
             batch = row["batch_size"]
-            context = row["context_length"]
-            offset = (-6, 31) if batch == 256 else (6, -9)
+            label = {
+                1024: "B1K · C512",
+                8192: "B8K · C128",
+                16384: "B16K · C128",
+            }[batch]
+            offset = spec["llm_label_offsets"][batch]
             ax.annotate(
-                f"batch {batch:,}, ctx {context}\n{ratios[index]:.3f}× ratio",
+                label,
                 xy=(ratios[index], spec["llm_values"][index]),
                 xytext=offset,
                 textcoords="offset points",
-                ha="right" if batch == 256 else "left",
-                va="bottom" if batch == 256 else "top",
+                ha="right" if offset[0] < 0 else "left",
+                va="bottom" if offset[1] > 0 else "top",
                 fontsize=6.5,
                 color="#202124",
-                arrowprops={
-                    "arrowstyle": "-",
-                    "color": "#9AA0A6",
-                    "linewidth": 0.6,
-                },
             )
-        ax.set_title(spec["title"], loc="left", pad=6)
+        ax.set_title(spec["title"], loc="center", pad=8)
         ax.set_ylabel(spec["ylabel"])
-        ax.set_xlim(1.55, 8.10)
+        ax.set_xlim(0, X_MAX)
+        ax.set_xticks(range(0, 13, 2), [f"{value}×" for value in range(0, 13, 2)])
         ax.set_yscale("log")
         ax.set_ylim(*spec["ylim"])
         ax.grid(color="#E8EAED", linewidth=0.65, which="both")
         ax.set_axisbelow(True)
         ax.spines[["top", "right"]].set_visible(False)
-        ax.legend(loc="upper right", frameon=False, fontsize=6.4)
+        ax.annotate(
+            "Better",
+            xy=(0.90, 0.84),
+            xytext=(0.73, 0.68),
+            xycoords="axes fraction",
+            textcoords="axes fraction",
+            ha="center",
+            va="center",
+            rotation=38,
+            fontsize=7.2,
+            fontweight="bold",
+            color="#37474F",
+            arrowprops={
+                "arrowstyle": "-|>",
+                "color": "#37474F",
+                "linewidth": 1.0,
+                "mutation_scale": 8,
+            },
+        )
 
-    fig.suptitle(
-        "Rate-constrained frontier on the same 10 MiB source",
-        x=0.08,
-        ha="left",
-        fontsize=10,
-        fontweight="bold",
+    handles, legend_labels = axes[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        legend_labels,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.06),
+        ncol=6,
+        frameon=False,
+        fontsize=6.4,
     )
-    fig.supxlabel("Compression ratio (original / charged archive)", y=0.06)
-    fig.text(
-        0.08,
-        0.01,
-        "Same text8 10 MiB bytes; LLM on H100 (3 runs), traditional codecs on CPU (7 runs); exact round trips",
-        ha="left",
-        va="bottom",
-        fontsize=7.0,
-        color="#5F6368",
+    fig.supxlabel(
+        "Compression ratio",
+        y=0.17,
+        fontsize=plt.rcParams["axes.labelsize"],
+        fontweight="normal",
+        color=plt.rcParams["axes.labelcolor"],
     )
-    fig.tight_layout(rect=(0.0, 0.11, 1.0, 0.94), pad=0.8, w_pad=1.2)
+    fig.tight_layout(rect=(0.0, 0.16, 1.0, 1.0), pad=0.8, w_pad=1.2)
 
     metadata = {
         "Title": "Rate-constrained LLM and traditional-codec operating points",
@@ -271,20 +402,9 @@ def main() -> None:
         "ModDate": datetime(2026, 10, 6, tzinfo=timezone.utc),
     }
     args.pdf.parent.mkdir(parents=True, exist_ok=True)
-    args.png.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.pdf, bbox_inches="tight", metadata=metadata)
-    fig.savefig(
-        args.png,
-        bbox_inches="tight",
-        dpi=args.dpi,
-        metadata={"Software": metadata["Author"]},
-    )
     plt.close(fig)
     print(f"Saved {args.pdf}")
-    print(f"Saved {args.png} at {args.dpi} DPI")
-    print(f"Encoding throughput gain: {encode_gain:.6f}x")
-    print(f"Decoding throughput gain: {decode_gain:.6f}x")
-    print(f"Compression-ratio reduction: {ratio_loss:.6%}")
 
 
 if __name__ == "__main__":

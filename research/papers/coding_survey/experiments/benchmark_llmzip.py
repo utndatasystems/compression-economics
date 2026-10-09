@@ -1,0 +1,368 @@
+#!/usr/bin/env python3
+"""Benchmark LLMZip arithmetic coding on an exact byte prefix.
+
+The adapter preserves LLMZip's fixed sliding context, probability-to-frequency
+rule, and reference arithmetic coder while using a Hugging Face causal LM.  A
+batch size of one is intentional: upstream marks batched encoding as
+incompatible with decoding, because arithmetic coding requires the encoder and
+decoder to reproduce identical probability tables.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import importlib.util
+import io
+import json
+import platform
+import struct
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+import torch
+import transformers
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_OUTPUT = (
+    REPO_ROOT
+    / "artifacts/papers/coding-survey/llm-baselines/llmzip-text8-first-10MiB.json"
+)
+MAGIC = b"LZP1"
+FREQUENCY_SCALE = 10_000_000
+
+
+class _NonClosingBytesIO(io.BytesIO):
+    """Let upstream BitOutputStream flush without hiding its bytes."""
+
+    def close(self) -> None:
+        pass
+
+
+def _sha256_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _git_revision(repository: Path) -> str:
+    return subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _gpu_name() -> str | None:
+    if not torch.cuda.is_available():
+        return None
+    return torch.cuda.get_device_name()
+
+
+def _load_arithmetic_coder(repository: Path):
+    source = repository / "AC/arithmeticcoding.py"
+    if not source.is_file():
+        raise FileNotFoundError(f"LLMZip arithmetic coder not found: {source}")
+    spec = importlib.util.spec_from_file_location("llmzip_arithmeticcoding", source)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load {source}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _dtype(name: str) -> torch.dtype:
+    return {
+        "float32": torch.float32,
+        "float16": torch.float16,
+        "bfloat16": torch.bfloat16,
+    }[name]
+
+
+def _cdf(logits: torch.Tensor) -> np.ndarray:
+    """Apply upstream's ``cumsum(prob * 1e7 + 1)`` quantizer."""
+
+    probabilities = torch.softmax(logits.float(), dim=-1)
+    probabilities_np = probabilities.cpu().numpy().reshape(-1)
+    cumulative = np.empty(probabilities_np.size + 1, dtype=np.uint64)
+    cumulative[0] = 0
+    cumulative[1:] = np.cumsum(probabilities_np * FREQUENCY_SCALE + 1)
+    return cumulative
+
+
+def _next_logits(model, context: torch.Tensor) -> torch.Tensor:
+    output = model(
+        input_ids=context,
+        use_cache=False,
+        logits_to_keep=1,
+        return_dict=True,
+    )
+    return output.logits[0, -1]
+
+
+def _progress(label: str, completed: int, total: int, last_percent: int) -> int:
+    percent = completed * 100 // total
+    if percent >= last_percent + 5 or completed == total:
+        print(f"{label}: {percent}% ({completed:,}/{total:,} tokens)", flush=True)
+        return percent
+    return last_percent
+
+
+@torch.inference_mode()
+def _encode(
+    model,
+    tokens: torch.Tensor,
+    bos_token_id: int,
+    memory: int,
+    arithmetic,
+) -> bytes:
+    payload_buffer = _NonClosingBytesIO()
+    bit_output = arithmetic.BitOutputStream(payload_buffer)
+    encoder = arithmetic.ArithmeticEncoder(32, bit_output)
+    device_tokens = tokens.to(device="cuda", dtype=torch.long)
+    bos = torch.tensor([[bos_token_id]], device="cuda", dtype=torch.long)
+    last_percent = -5
+    for index in range(device_tokens.numel()):
+        if index == 0:
+            context = bos
+        elif index < memory:
+            context = torch.cat((bos, device_tokens[:index].unsqueeze(0)), dim=1)
+        else:
+            context = device_tokens[index - memory : index].unsqueeze(0)
+        cumulative = _cdf(_next_logits(model, context))
+        encoder.write(cumulative, int(tokens[index].item()))
+        last_percent = _progress("Encoder", index + 1, device_tokens.numel(), last_percent)
+    encoder.finish()
+    bit_output.close()
+    return payload_buffer.getvalue()
+
+
+@torch.inference_mode()
+def _decode(
+    model,
+    payload: bytes,
+    token_count: int,
+    bos_token_id: int,
+    memory: int,
+    vocabulary_size: int,
+    arithmetic,
+) -> torch.Tensor:
+    bit_input = arithmetic.BitInputStream(io.BytesIO(payload))
+    decoder = arithmetic.ArithmeticDecoder(32, bit_input)
+    tokens = torch.empty(token_count, device="cuda", dtype=torch.long)
+    bos = torch.tensor([[bos_token_id]], device="cuda", dtype=torch.long)
+    last_percent = -5
+    for index in range(token_count):
+        if index == 0:
+            context = bos
+        elif index < memory:
+            context = torch.cat((bos, tokens[:index].unsqueeze(0)), dim=1)
+        else:
+            context = tokens[index - memory : index].unsqueeze(0)
+        cumulative = _cdf(_next_logits(model, context))
+        token = decoder.read(cumulative, vocabulary_size)
+        tokens[index] = token
+        last_percent = _progress("Decoder", index + 1, token_count, last_percent)
+    bit_input.close()
+    return tokens.cpu()
+
+
+def _write_archive(path: Path, metadata: dict, payload: bytes) -> None:
+    metadata_bytes = json.dumps(
+        metadata, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    with path.open("wb") as output:
+        output.write(MAGIC)
+        output.write(struct.pack(">I", len(metadata_bytes)))
+        output.write(metadata_bytes)
+        output.write(payload)
+
+
+def _read_archive(path: Path) -> tuple[dict, bytes]:
+    with path.open("rb") as source:
+        if source.read(4) != MAGIC:
+            raise ValueError("not an LZP1 archive")
+        metadata_size = struct.unpack(">I", source.read(4))[0]
+        metadata = json.loads(source.read(metadata_size))
+        payload = source.read()
+    if len(payload) != metadata["payload_bytes"]:
+        raise ValueError("LLMZip payload length disagrees with metadata")
+    return metadata, payload
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--llmzip-repo", type=Path, required=True)
+    parser.add_argument("--input", type=Path, default=REPO_ROOT / "data/text8")
+    parser.add_argument("--input-bytes", type=int, default=10 * 1024 * 1024)
+    parser.add_argument("--model", default="HuggingFaceTB/SmolLM2-135M")
+    parser.add_argument("--tokenizer")
+    parser.add_argument("--model-revision")
+    parser.add_argument(
+        "--dtype",
+        choices=("float32", "float16", "bfloat16"),
+        default="bfloat16",
+    )
+    parser.add_argument("--memory", type=int, default=511)
+    parser.add_argument("--work-dir", type=Path)
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
+    args = parser.parse_args()
+    if not torch.cuda.is_available():
+        parser.error("LLMZip benchmark requires a visible CUDA device")
+    if args.input_bytes < 1 or args.memory < 1:
+        parser.error("input-bytes and memory must be positive")
+
+    upstream = args.llmzip_repo.resolve()
+    arithmetic = _load_arithmetic_coder(upstream)
+    source = args.input.read_bytes()[: args.input_bytes]
+    if len(source) != args.input_bytes:
+        parser.error("input is smaller than the requested prefix")
+    text = source.decode("utf-8")
+    work_dir = args.work_dir or args.output.with_suffix("")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = work_dir / "llmzip.lzp"
+    if archive_path.exists():
+        parser.error(f"archive already exists: {archive_path}")
+
+    tokenizer_name = args.tokenizer or args.model
+    load_started = time.perf_counter()
+    tokenizer = AutoTokenizer.from_pretrained(
+        tokenizer_name,
+        revision=args.model_revision,
+        local_files_only=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model,
+        revision=args.model_revision,
+        dtype=_dtype(args.dtype),
+        local_files_only=True,
+    ).eval().cuda()
+    torch.cuda.synchronize()
+    model_load_seconds = time.perf_counter() - load_started
+    if tokenizer.bos_token_id is None:
+        parser.error("tokenizer must define a BOS token for LLMZip")
+
+    token_ids = tokenizer.encode(text, add_special_tokens=False)
+    if tokenizer.decode(token_ids).encode("utf-8") != source:
+        parser.error("tokenizer does not round-trip the input bytes")
+    tokens = torch.tensor(token_ids, dtype=torch.long)
+    warm_context = torch.tensor(
+        [[tokenizer.bos_token_id]], device="cuda", dtype=torch.long
+    )
+    with torch.inference_mode():
+        _next_logits(model, warm_context)
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+
+    started = time.perf_counter()
+    payload = _encode(
+        model,
+        tokens,
+        tokenizer.bos_token_id,
+        args.memory,
+        arithmetic,
+    )
+    torch.cuda.synchronize()
+    compression_seconds = time.perf_counter() - started
+
+    archive_metadata = {
+        "algorithm": "LLMZip fixed-window arithmetic coding",
+        "arithmetic_state_bits": 32,
+        "dtype": args.dtype,
+        "format": "LZP1",
+        "frequency_scale": FREQUENCY_SCALE,
+        "memory": args.memory,
+        "model": args.model,
+        "model_revision": args.model_revision,
+        "payload_bytes": len(payload),
+        "softmax_dtype": "float32",
+        "token_count": len(token_ids),
+        "tokenizer": tokenizer_name,
+    }
+    _write_archive(archive_path, archive_metadata, payload)
+    extracted, extracted_payload = _read_archive(archive_path)
+
+    started = time.perf_counter()
+    decoded_tokens = _decode(
+        model,
+        extracted_payload,
+        extracted["token_count"],
+        tokenizer.bos_token_id,
+        extracted["memory"],
+        len(tokenizer),
+        arithmetic,
+    )
+    decoded_text = tokenizer.decode(decoded_tokens.tolist())
+    torch.cuda.synchronize()
+    decompression_seconds = time.perf_counter() - started
+    recovered = decoded_text.encode("utf-8")
+    exact = recovered == source
+    if not exact:
+        (work_dir / "decoded-mismatch.bin").write_bytes(recovered)
+        raise AssertionError("LLMZip did not recover the exact input bytes")
+
+    archive_bytes = archive_path.stat().st_size
+    result = {
+        "schema_version": 1,
+        "codec": "llmzip",
+        "implementation": {
+            "repository": "https://github.com/vcskaushik/LLMzip",
+            "revision": _git_revision(upstream),
+            "adapter_archive": "LZP1 (repository-local accounting wrapper)",
+            "upstream_arithmetic_coder": "AC/arithmeticcoding.py",
+        },
+        "input": {
+            "path": str(args.input.resolve()),
+            "prefix_bytes": len(source),
+            "sha256": _sha256_bytes(source),
+        },
+        "model": {
+            "name": args.model,
+            "requested_revision": args.model_revision,
+            "tokenizer": tokenizer_name,
+            "dtype": args.dtype,
+            "external_weights_charged": False,
+        },
+        "configuration": {
+            "encoder_batch_size": 1,
+            "decoder_batch_size": 1,
+            "memory": args.memory,
+            "token_count": len(token_ids),
+            "frequency_rule": "uint64(cumsum(softmax(float32) * 1e7 + 1))",
+        },
+        "archive": {
+            "path": str(archive_path.resolve()),
+            "bytes": archive_bytes,
+            "sha256": _sha256_bytes(archive_path.read_bytes()),
+            "payload_bytes": len(payload),
+            "compression_ratio": len(source) / archive_bytes,
+            "bits_per_byte": 8 * archive_bytes / len(source),
+        },
+        "timing": {
+            "model_load_seconds": model_load_seconds,
+            "compression_seconds": compression_seconds,
+            "decompression_seconds": decompression_seconds,
+            "compression_mib_per_second": len(source) / compression_seconds / 2**20,
+            "decompression_mib_per_second": len(source) / decompression_seconds / 2**20,
+        },
+        "validation": {"exact_byte_recovery": exact},
+        "environment": {
+            "python": platform.python_version(),
+            "torch": torch.__version__,
+            "transformers": transformers.__version__,
+            "gpu": _gpu_name(),
+            "peak_torch_bytes": torch.cuda.max_memory_allocated(),
+        },
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(result, indent=2))
+
+
+if __name__ == "__main__":
+    main()
