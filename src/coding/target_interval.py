@@ -56,7 +56,6 @@ def exact_fixed_frequencies(probabilities, total=DEFAULT_TOTAL, *, validate=True
     """
     if probabilities.ndim != 2 or not 1 < probabilities.shape[1] < total:
         raise ValueError("expected a 2D alphabet smaller than the frequency total")
-    source_dtype = probabilities.dtype
     probabilities = probabilities.to(torch.float32)
     if validate and (
         not torch.isfinite(probabilities).all() or (probabilities < 0).any()
@@ -67,24 +66,12 @@ def exact_fixed_frequencies(probabilities, total=DEFAULT_TOTAL, *, validate=True
     # source-dtype-independent archive contract.
     probabilities64 = probabilities.to(torch.float64)
     mass = probabilities64.sum(dim=1, keepdim=True)
-    tolerance = 1e-5
-    if source_dtype.is_floating_point:
-        tolerance = max(tolerance, 2 * torch.finfo(source_dtype).eps)
-    if validate and (
-        (mass <= 0).any()
-        or not torch.isclose(
-            mass,
-            torch.ones_like(mass),
-            rtol=0.0,
-            atol=tolerance,
-        ).all()
-    ):
-        raise ValueError("probability rows must sum to one")
+    if validate and (mass <= 0).any():
+        raise ValueError("probability rows must have positive mass")
 
-    # Low-precision softmax output can have a representable row sum slightly
-    # different from one (notably for bfloat16). Normalize after validation so
-    # fixed-total allocation is well-defined and cannot become overfull merely
-    # because the distribution was rounded in its source dtype.
+    # The archive contract starts by normalizing float32 values. In particular,
+    # BF16 softmax rows copied through the host path need not retain a unit sum,
+    # and the CUDA v4 kernel accepts the same arbitrary positive row mass.
     probabilities = probabilities64 / mass
 
     alphabet = probabilities.shape[1]

@@ -64,10 +64,18 @@ def test_tensor_exact_fixed_frequencies_match_numpy(alphabet, total):
     assert np.array_equal(actual.numpy(), expected)
 
 
-def test_tensor_exact_fixed_frequencies_rejects_overfull_rows():
+def test_tensor_exact_fixed_frequencies_normalizes_nonunit_rows():
     row = np.array([[0.6, 0.6]], dtype=np.float32)
-    with pytest.raises(ValueError, match="sum to one"):
-        exact_fixed_frequencies(torch.tensor(row), 32, validate=True)
+    frequencies, normalized = exact_fixed_frequencies(
+        torch.tensor(row), 32, validate=True
+    )
+    assert frequencies.tolist() == [[16, 16]]
+    assert normalized.tolist() == [[0.5, 0.5]]
+
+
+def test_tensor_exact_fixed_frequencies_rejects_zero_mass():
+    with pytest.raises(ValueError, match="positive mass"):
+        exact_fixed_frequencies(torch.zeros((1, 2)), 32, validate=True)
 
 
 def test_tensor_exact_fixed_frequencies_accepts_bfloat16_rounding():
