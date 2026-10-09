@@ -357,13 +357,14 @@ def main() -> None:
         ax.spines[["top", "right"]].set_visible(False)
         ax.annotate(
             "Better",
-            xy=(0.90, 0.84),
-            xytext=(0.73, 0.68),
+            xy=(0.97, 0.95),
+            xytext=(0.82, 0.80),
             xycoords="axes fraction",
             textcoords="axes fraction",
             ha="center",
             va="center",
-            rotation=38,
+            rotation=45,
+            transform_rotates_text=True,
             fontsize=7.2,
             fontweight="bold",
             color="#37474F",
