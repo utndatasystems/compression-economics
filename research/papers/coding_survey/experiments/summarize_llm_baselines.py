@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and combine FineZip and Nacrith benchmark result JSON."""
+"""Validate and combine FineZip, LLMZip, and Nacrith result JSON."""
 
 from __future__ import annotations
 
@@ -11,15 +11,18 @@ from pathlib import Path
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("finezip", type=Path)
+    parser.add_argument("llmzip", type=Path)
     parser.add_argument("nacrith", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     rows = [
         json.loads(path.read_text(encoding="utf-8"))
-        for path in (args.finezip, args.nacrith)
+        for path in (args.finezip, args.llmzip, args.nacrith)
     ]
-    if {row["codec"] for row in rows} != {"finezip", "nacrith"}:
-        parser.error("inputs must contain one FineZip and one Nacrith result")
+    if {row["codec"] for row in rows} != {"finezip", "llmzip", "nacrith"}:
+        parser.error(
+            "inputs must contain one FineZip, one LLMZip, and one Nacrith result"
+        )
     hashes = {row["input"]["sha256"] for row in rows}
     sizes = {row["input"]["prefix_bytes"] for row in rows}
     if len(hashes) != 1 or len(sizes) != 1:

@@ -34,9 +34,7 @@ DEFAULT_PDF = (
     / "research/papers/coding_survey/manuscript/figures/"
     "optimization_operating_points.pdf"
 )
-LLMZIP_REPORTED_RATIO = 8 / 0.7101
-LLMZIP_PROJECTED_ENCODING_MIB_S = 0.000356
-X_MAX = 12.0
+X_MAX = 8.1
 
 
 def _load(path: Path) -> dict:
@@ -71,8 +69,12 @@ def _load_external_baselines(path: Path, input_sha256: str) -> dict:
         raise ValueError(f"{path} is not a complete 10 MiB run")
     if data["input"]["sha256"] != input_sha256:
         raise ValueError(f"{path} does not use the matched source bytes")
-    if {row["codec"] for row in data["codecs"]} != {"finezip", "nacrith"}:
-        raise ValueError(f"{path} must contain FineZip and Nacrith")
+    if {row["codec"] for row in data["codecs"]} != {
+        "finezip",
+        "llmzip",
+        "nacrith",
+    }:
+        raise ValueError(f"{path} must contain FineZip, LLMZip, and Nacrith")
     if not all(row["validation"]["exact_byte_recovery"] for row in data["codecs"]):
         raise ValueError(f"{path} contains a failed decoder")
     return data
@@ -169,7 +171,6 @@ def main() -> None:
             "baseline_marker": "^",
             "ylabel": "Compression throughput (MiB/s)",
             "ylim": (0.0002, 2000),
-            "show_projected_llmzip": True,
             "llm_label_offsets": {
                 1024: (-3, 5),
                 8192: (3, 5),
@@ -195,8 +196,7 @@ def main() -> None:
             "llm_marker": "o",
             "baseline_marker": "^",
             "ylabel": "Decompression throughput (MiB/s)",
-            "ylim": (0.006, 10000),
-            "show_projected_llmzip": False,
+            "ylim": (0.0002, 10000),
             "llm_label_offsets": {
                 1024: (-3, -6),
                 8192: (3, 6),
@@ -241,6 +241,7 @@ def main() -> None:
         )
         external_styles = {
             "finezip": {"label": "FineZip", "marker": "D", "color": "#CC6677"},
+            "llmzip": {"label": "LLMZip", "marker": "*", "color": "#AA4499"},
             "nacrith": {"label": "Nacrith", "marker": "X", "color": "#EE7733"},
         }
         for row, ratio, rate in zip(
@@ -257,28 +258,6 @@ def main() -> None:
                 linewidths=0.8,
                 label=style["label"],
                 zorder=4,
-            )
-        if spec["show_projected_llmzip"]:
-            ax.scatter(
-                [LLMZIP_REPORTED_RATIO],
-                [LLMZIP_PROJECTED_ENCODING_MIB_S],
-                s=58,
-                marker="*",
-                facecolors="#AA4499",
-                edgecolors="white",
-                linewidths=0.7,
-                label="LLMZip (projected)",
-                zorder=5,
-            )
-            ax.annotate(
-                "LLMZip projected",
-                xy=(LLMZIP_REPORTED_RATIO, LLMZIP_PROJECTED_ENCODING_MIB_S),
-                xytext=(-3, 5),
-                textcoords="offset points",
-                ha="right",
-                va="bottom",
-                fontsize=6.7,
-                color="#3C4043",
             )
         ax.scatter(
             baseline_ratios,
@@ -308,9 +287,14 @@ def main() -> None:
         for row, ratio, rate in zip(
             external_rows, external_ratios, spec["external_values"]
         ):
-            offset = (-3, -5) if row["codec"] == "finezip" else (3, 3)
+            offsets = {
+                "finezip": (-3, -5),
+                "llmzip": (-3, 5),
+                "nacrith": (3, 3),
+            }
+            offset = offsets[row["codec"]]
             ax.annotate(
-                "FineZip" if row["codec"] == "finezip" else "Nacrith",
+                external_styles[row["codec"]]["label"],
                 xy=(ratio, rate),
                 xytext=offset,
                 textcoords="offset points",
@@ -349,7 +333,7 @@ def main() -> None:
         ax.set_title(spec["title"], loc="center", pad=8)
         ax.set_ylabel(spec["ylabel"])
         ax.set_xlim(0, X_MAX)
-        ax.set_xticks(range(0, 13, 2), [f"{value}×" for value in range(0, 13, 2)])
+        ax.set_xticks(range(0, 9), [f"{value}×" for value in range(0, 9)])
         ax.set_yscale("log")
         ax.set_ylim(*spec["ylim"])
         ax.grid(color="#E8EAED", linewidth=0.65, which="both")

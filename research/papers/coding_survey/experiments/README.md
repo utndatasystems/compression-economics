@@ -85,15 +85,16 @@ git clone https://github.com/robtacconelli/Nacrith-GPU.git /tmp/nacrith
 .venv/bin/python \
   research/papers/coding_survey/experiments/summarize_llm_baselines.py \
   artifacts/papers/coding-survey/llm-baselines/finezip-text8-first-10MiB.json \
+  artifacts/papers/coding-survey/llm-baselines/llmzip-text8-first-10MiB.json \
   artifacts/papers/coding-survey/llm-baselines/nacrith-text8-first-10MiB.json \
   artifacts/papers/coding-survey/llm-baselines/text8-first-10MiB.json
 ```
 
 The JSON records upstream revisions, source/model hashes, configuration,
 complete archive size/hash, cold model-load time, warm operation times,
-throughput, and exact-recovery status. FineZip and Nacrith use different
-inference engines, so their BF16 conversions are identified and hashed rather
-than assumed numerically identical.
+throughput, and exact-recovery status. The three adapters use different
+inference paths, so their BF16 model realizations are identified rather than
+assumed numerically identical.
 
 Keep survey-specific benchmark definitions and analysis here. Reusable coder
 implementations and trace measurements live in `src/`; raw traces, archives,
