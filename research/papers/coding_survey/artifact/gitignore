@@ -1,0 +1,11 @@
+.cache/
+.venv/
+build/
+data/
+results/
+third_party/
+__pycache__/
+*.py[cod]
+*.so
+*.log
+*.job
