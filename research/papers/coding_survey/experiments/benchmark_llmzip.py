@@ -105,6 +105,20 @@ def _next_logits(model, context: torch.Tensor) -> torch.Tensor:
     return output.logits[0, -1]
 
 
+def _seed_token_id(tokenizer, requested: int | None) -> tuple[int, str]:
+    """Choose a deterministic initial context, including for BOS-less models."""
+
+    if requested is not None:
+        return requested, "explicit"
+    if tokenizer.bos_token_id is not None:
+        return tokenizer.bos_token_id, "bos"
+    if tokenizer.eos_token_id is not None:
+        return tokenizer.eos_token_id, "eos_fallback"
+    raise ValueError(
+        "tokenizer defines neither BOS nor EOS; pass --seed-token-id explicitly"
+    )
+
+
 def _progress(label: str, completed: int, total: int, last_percent: int) -> int:
     percent = completed * 100 // total
     if percent >= last_percent + 5 or completed == total:
@@ -117,7 +131,7 @@ def _progress(label: str, completed: int, total: int, last_percent: int) -> int:
 def _encode(
     model,
     tokens: torch.Tensor,
-    bos_token_id: int,
+    seed_token_id: int,
     memory: int,
     arithmetic,
 ) -> bytes:
@@ -125,13 +139,13 @@ def _encode(
     bit_output = arithmetic.BitOutputStream(payload_buffer)
     encoder = arithmetic.ArithmeticEncoder(32, bit_output)
     device_tokens = tokens.to(device="cuda", dtype=torch.long)
-    bos = torch.tensor([[bos_token_id]], device="cuda", dtype=torch.long)
+    seed = torch.tensor([[seed_token_id]], device="cuda", dtype=torch.long)
     last_percent = -5
     for index in range(device_tokens.numel()):
         if index == 0:
-            context = bos
+            context = seed
         elif index < memory:
-            context = torch.cat((bos, device_tokens[:index].unsqueeze(0)), dim=1)
+            context = torch.cat((seed, device_tokens[:index].unsqueeze(0)), dim=1)
         else:
             context = device_tokens[index - memory : index].unsqueeze(0)
         cumulative = _cdf(_next_logits(model, context))
@@ -147,7 +161,7 @@ def _decode(
     model,
     payload: bytes,
     token_count: int,
-    bos_token_id: int,
+    seed_token_id: int,
     memory: int,
     vocabulary_size: int,
     arithmetic,
@@ -155,13 +169,13 @@ def _decode(
     bit_input = arithmetic.BitInputStream(io.BytesIO(payload))
     decoder = arithmetic.ArithmeticDecoder(32, bit_input)
     tokens = torch.empty(token_count, device="cuda", dtype=torch.long)
-    bos = torch.tensor([[bos_token_id]], device="cuda", dtype=torch.long)
+    seed = torch.tensor([[seed_token_id]], device="cuda", dtype=torch.long)
     last_percent = -5
     for index in range(token_count):
         if index == 0:
-            context = bos
+            context = seed
         elif index < memory:
-            context = torch.cat((bos, tokens[:index].unsqueeze(0)), dim=1)
+            context = torch.cat((seed, tokens[:index].unsqueeze(0)), dim=1)
         else:
             context = tokens[index - memory : index].unsqueeze(0)
         cumulative = _cdf(_next_logits(model, context))
@@ -204,6 +218,11 @@ def main() -> None:
     parser.add_argument("--tokenizer")
     parser.add_argument("--model-revision")
     parser.add_argument(
+        "--seed-token-id",
+        type=int,
+        help="initial context token (defaults to BOS, then EOS for BOS-less models)",
+    )
+    parser.add_argument(
         "--dtype",
         choices=("float32", "float16", "bfloat16"),
         default="bfloat16",
@@ -244,18 +263,28 @@ def main() -> None:
     ).eval().cuda()
     torch.cuda.synchronize()
     model_load_seconds = time.perf_counter() - load_started
-    if tokenizer.bos_token_id is None:
-        parser.error("tokenizer must define a BOS token for LLMZip")
+    try:
+        seed_token_id, seed_token_source = _seed_token_id(
+            tokenizer, args.seed_token_id
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     token_ids = tokenizer.encode(text, add_special_tokens=False)
     if tokenizer.decode(token_ids).encode("utf-8") != source:
         parser.error("tokenizer does not round-trip the input bytes")
     tokens = torch.tensor(token_ids, dtype=torch.long)
-    warm_context = torch.tensor(
-        [[tokenizer.bos_token_id]], device="cuda", dtype=torch.long
-    )
+    warm_context = torch.tensor([[seed_token_id]], device="cuda", dtype=torch.long)
     with torch.inference_mode():
-        _next_logits(model, warm_context)
+        warm_logits = _next_logits(model, warm_context)
+    vocabulary_size = warm_logits.numel()
+    if not 0 <= seed_token_id < vocabulary_size:
+        parser.error(
+            f"seed token ID {seed_token_id} is outside model vocabulary "
+            f"[0, {vocabulary_size})"
+        )
+    if token_ids and max(token_ids) >= vocabulary_size:
+        parser.error("tokenizer emitted an ID outside the model vocabulary")
     torch.cuda.synchronize()
     torch.cuda.reset_peak_memory_stats()
 
@@ -263,7 +292,7 @@ def main() -> None:
     payload = _encode(
         model,
         tokens,
-        tokenizer.bos_token_id,
+        seed_token_id,
         args.memory,
         arithmetic,
     )
@@ -280,9 +309,12 @@ def main() -> None:
         "model": args.model,
         "model_revision": args.model_revision,
         "payload_bytes": len(payload),
+        "seed_token_id": seed_token_id,
+        "seed_token_source": seed_token_source,
         "softmax_dtype": "float32",
         "token_count": len(token_ids),
         "tokenizer": tokenizer_name,
+        "vocabulary_size": vocabulary_size,
     }
     _write_archive(archive_path, archive_metadata, payload)
     extracted, extracted_payload = _read_archive(archive_path)
@@ -292,9 +324,9 @@ def main() -> None:
         model,
         extracted_payload,
         extracted["token_count"],
-        tokenizer.bos_token_id,
+        extracted["seed_token_id"],
         extracted["memory"],
-        len(tokenizer),
+        extracted["vocabulary_size"],
         arithmetic,
     )
     decoded_text = tokenizer.decode(decoded_tokens.tolist())
@@ -332,7 +364,11 @@ def main() -> None:
             "encoder_batch_size": 1,
             "decoder_batch_size": 1,
             "memory": args.memory,
+            "seed_token_id": seed_token_id,
+            "seed_token_source": seed_token_source,
             "token_count": len(token_ids),
+            "tokenizer_size": len(tokenizer),
+            "model_vocabulary_size": vocabulary_size,
             "frequency_rule": "uint64(cumsum(softmax(float32) * 1e7 + 1))",
         },
         "archive": {
