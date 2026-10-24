@@ -1,28 +1,101 @@
-# Coding modules
+# Coding subsystem
 
-- `encoding.py`: arithmetic, ANS, Huffman, bit-packed rank, and PMATIC coders.
-- `encoding_utils.py`: shared probability quantization and PMATIC helpers. The `reference` and `vectorized_exact` methods produce the same integer CDF at fixed frequency total.
-- `multistream_ac.py`: portable MSAC archive and independent stream encoder/decoder.
-- `paired_ac.py`: MSAP reference layout with forward/backward byte packing and compatible terminal-byte sharing. Select it with `--encoding AC_MULTISTREAM --ac-layout paired` (also works with `AC_TARGET_INTERVAL`). The decoder currently reconstructs ordinary MSAC streams before decoding; the arithmetic coder still uses its fixed final bit.
-- `target_interval.py`: device-side float64 floor counts and compact target intervals (MSAC v2).
-- `parallel_ac.py`: optional Numba range-encoding kernel used by MSAC.
+## Modules
 
-Import these modules through `src.coding.*`. The frozen-trace comparison
-lives in `src/coding/trace_benchmark.py`; its runnable experiments are in
-`research/papers/cidr_2027/experiments/`.
+- `encoding.py` implements arithmetic, ANS, Huffman, bit-packed rank, and
+  PMATIC coders.
+- `encoding_utils.py` contains shared probability quantization.
+- `multistream_ac.py` and `paired_ac.py` implement the portable MSAC/MSAP
+  archives and independent arithmetic streams.
+- `parallel_ac.py` provides the optional Numba encoder.
+- `target_interval.py`, `device_ac.py`, and `cuda_ac.py` implement compact
+  target intervals and the device/CUDA backends.
+- `trace_benchmark.py` compares coders on an immutable probability trace.
 
-- `device_ac.py`: opt-in MSAC v2/v3 target-interval decoders. `--ac-decode-backend device` is the PyTorch reference; `--ac-decode-backend cuda` retains PyTorch CDF construction but fuses binary inverse lookup, arithmetic state update, bit consumption, and renormalization in one CUDA kernel. Both copy only decoded token IDs to host prompt buffers and support standard and paired layouts. The default remains `host`.
+Import maintained implementations through `src.coding.*`.
 
-- `cuda_ac.py` and `csrc/cuda_ac_*`: lazy-built, byte-exact CUDA encoders for
-  MSAC target intervals. Select them with `--ac-backend cuda` during
-  Transformer `AC_TARGET_INTERVAL` compression. The independent
-  `--target-interval-quantizer torch|cuda_fused|cuda_v3|cuda_v4` switch preserves the
-  original PyTorch interval construction as an ablation. CUDA v2 fuses integer
-  frequency calculation and target-CDF extraction; CUDA v3 additionally avoids
-  materializing a vocabulary-sized float64 probability tensor. CUDA v4 is the
-  advanced encoding path: one custom kernel performs exact fixed-total
-  normalization, residual assignment, stable symbol selection, and target-only
-  bound emission. A persistent multistream encoder then updates arithmetic
-  state on a dedicated CUDA stream, overlapping step `t` with subsequent model
-  inference and avoiding the complete interval trace. It uses the separately
-  versioned MSAC-v3 contract and reuses the batched CUDA inverse-CDF decoder.
+## Target-interval arithmetic coding
+
+`AC_TARGET_INTERVAL` transfers the known token's interval instead of a full
+probability vector during compression:
+
+```bash
+python main.py --mode compress --engine transformer \
+  --encoding AC_TARGET_INTERVAL --input_path data/text8 \
+  --output_path artifacts/runs/o3.bin
+python main.py --mode decompress --input_path artifacts/runs/o3.bin \
+  --output_path artifacts/runs/o3.txt
+```
+
+The Python encoder is the default. Use `--ac-backend numba_parallel
+--ac-threads 4` for compiled CPU encoding or `--ac-backend cuda` for the CUDA
+path. Transformer decompression selects `--ac-decode-backend host|device|cuda`;
+`host` remains the reference implementation.
+
+The optional vLLM engine captures intervals in its worker. It supports standard
+decoder-only inference without LoRA or speculative decompression. Archive
+creation and decoding must use matching model, tokenizer, vocabulary, precision,
+and context policies.
+
+### Archive contracts
+
+- MSAC v1 uses the original fixed-total distribution.
+- MSAC v2 flag 1 uses `floor_float64_v1`: normalize in float64, assign
+  `1 + floor(p * (nominal_total - alphabet_size))`, and store the resulting
+  per-row total. MPS is unsupported for this policy.
+- MSAC v3 flag 2 uses `fixed_total_stable_v2`, the deterministic fixed-total
+  policy used by CUDA v4.
+
+MSAC v2 CUDA variants v1--v3 must produce the same integer intervals and archive
+bytes as the reference. CUDA v4 uses its separately versioned contract. Existing
+v1 archives remain readable; old experimental dictionary payloads are not part
+of this compatibility promise.
+
+The outer GMMS archive stores seeds and model metadata but not model weights.
+Standard and paired layouts include stream counts, declared bit lengths,
+big-endian packed payloads, zero padding, and CRC32 checks. Malformed or
+exhausted streams must be rejected.
+
+## CUDA implementation and measurement
+
+`cuda_ac.py` and `csrc/cuda_ac_*` provide byte-exact supplied-interval encoding,
+fused target-interval construction, persistent CUDA-v4 encoding, and batched
+inverse-CDF decoding. CUDA v4 overlaps arithmetic coding with subsequent model
+inference on a dedicated stream; masking and softmax remain outside the custom
+kernel.
+
+Keep the host decoder as the validator and fallback. Correctness gates are exact
+integer intervals, byte-identical archives where contracts match, and exact
+token and UTF-8 recovery. Performance runs must exclude JIT compilation, warm
+the workload, synchronize timing boundaries, retain raw repetitions, and report
+complete compression and decompression separately from kernel-only timings.
+
+## Matched coder comparison
+
+The frozen-trace benchmark holds symbols and probabilities fixed and excludes
+model inference. A smoke run is:
+
+```bash
+.venv/bin/python research/papers/cidr_2027/experiments/evaluate_coders.py \
+  --synthetic-symbols 10000 --alphabet-size 256 \
+  --ans-block-size 256 --ans-lanes 4 \
+  --perturbation-scale 1e-8 --perturbation-scale 1e-6
+```
+
+A model trace NPZ must contain a probability matrix named `probabilities` and a
+one-dimensional integer target array named `symbols`:
+
+```bash
+.venv/bin/python research/papers/cidr_2027/experiments/evaluate_coders.py \
+  --trace artifacts/traces/qwen-text8.npz
+```
+
+Compare payload and complete archive sizes, framing or helper costs, exact
+recovery, and encode/decode time. Rank transforms are not probability coders;
+multistream results charge per-stream framing and padding but exclude model
+context seeds. Frozen traces establish coder behavior, not end-to-end model
+throughput or target-interval transfer savings.
+
+Remaining validation and ablations belong in the
+[coding-survey runbook](../../research/papers/coding_survey/README.md), not in a
+parallel implementation plan.

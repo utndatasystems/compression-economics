@@ -89,8 +89,8 @@ python src/train_adapter.py \
 
 Use `--encoding AC_TARGET_INTERVAL` with Transformers or the optional vLLM
 engine. The inference path exports a compact target interval per token.
-See [O3 usage and archive compatibility](docs/ac_target_interval.md) and
-the [active experiment tracker](research/papers/coding_survey/experiments/EXPERIMENT_PLAN.md).
+See the [coding implementation and archive reference](src/coding/README.md) and
+the [coding-survey runbook](research/papers/coding_survey/README.md).
 
 ## Key options
 - `--input_path`: Text file to compress (compress mode) or `.bin` to decompress.
@@ -331,6 +331,6 @@ python research/papers/neurips_2026/experiments/score_adversarial_payloads.py \
 
 ## Coding survey GPU experiments
 
-For a new NVIDIA server, follow the [GPU setup and experiment guide](research/papers/coding_survey/experiments/GPU_SETUP.md).
-The [CUDA arithmetic coder implementation plan](docs/cuda_arithmetic_coder_plan.md)
-records the MSAC v2 compatibility contract and profiling gates.
+For a new NVIDIA server, follow the [coding-survey runbook](research/papers/coding_survey/README.md).
+The [coding subsystem reference](src/coding/README.md) records the archive
+contracts, CUDA backends, and measurement gates.
