@@ -90,7 +90,7 @@ python src/train_adapter.py \
 Use `--encoding AC_TARGET_INTERVAL` with Transformers or the optional vLLM
 engine. The inference path exports a compact target interval per token.
 See [O3 usage and archive compatibility](docs/ac_target_interval.md) and
-[design choices and ablations](docs/ac_target_interval_todos.txt).
+the [active experiment tracker](research/papers/coding_survey/experiments/EXPERIMENT_PLAN.md).
 
 ## Key options
 - `--input_path`: Text file to compress (compress mode) or `.bin` to decompress.

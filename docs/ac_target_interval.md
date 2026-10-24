@@ -111,8 +111,8 @@ fixed-total coders. It has no live inference and cannot measure O3 transfer savi
 Compare O3 via live compression runs, and report its different quantization rule
 when comparing compression size.
 
-Design choices and possible ablations are tracked in
-[ac_target_interval_todos.txt](ac_target_interval_todos.txt).
+Remaining validation and ablations are tracked in the
+[coding survey experiment tracker](../research/papers/coding_survey/experiments/EXPERIMENT_PLAN.md).
 
 For Transformer decompression, `--ac-decode-backend device` selects the
 PyTorch state-machine reference and `--ac-decode-backend cuda` selects the
