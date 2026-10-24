@@ -49,7 +49,6 @@ for name in \
   summarize_llm_baselines.py \
   plot_optimization_operating_points.py \
   benchmark_speculative_full.py \
-  benchmark_speculative_replay.py \
   audit_speculative_numerics.py \
   benchmark_teacher_forcing.py; do
   copy_file "research/papers/coding_survey/experiments/$name"

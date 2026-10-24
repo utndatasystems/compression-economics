@@ -49,7 +49,7 @@ Other maintained entry points are:
 | Traditional codecs | `benchmark_traditional_codecs.py` |
 | FineZip, LLMZip, and Nacrith | `benchmark_finezip.py`, `benchmark_llmzip.py`, `benchmark_nacrith.py` |
 | Teacher-forced scoring | `benchmark_teacher_forcing.py` |
-| Speculative feasibility | `benchmark_speculative_replay.py`, `benchmark_speculative_full.py`, `audit_speculative_numerics.py` |
+| Speculative feasibility | `benchmark_speculative_full.py`, `audit_speculative_numerics.py` |
 
 All paths above are below `research/papers/coding_survey/experiments/`. Use each
 program's `--help` for its complete, current interface. Pinned commands for
