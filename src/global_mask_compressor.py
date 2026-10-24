@@ -16,6 +16,7 @@ import sys
 from src.coding.encoding import LLMCompressor, LLMDecompressor, choose_pmatic_r
 from src.coding.cuda_ac import CudaPipelinedACEncoder, encode_intervals_cuda
 from src.coding.multistream_ac import MultistreamACDecoder, MultistreamACEncoder
+from src.coding.target_interval import target_intervals_from_probs_tensor
 from src.coding.device_ac import (
     CudaCDFMultistreamACDecoder,
     DeviceMultistreamACDecoder,
@@ -164,6 +165,26 @@ def run_global_mask_compression(args):
     target_interval_quantizer = getattr(
         args, "target_interval_quantizer", "torch"
     )
+    target_interval_source = getattr(args, "target_interval_source", "captured")
+    full_logits_target_intervals = (
+        args.encoding == "AC_TARGET_INTERVAL"
+        and target_interval_source == "full_logits"
+    )
+    if target_interval_source not in {"captured", "full_logits"}:
+        raise ValueError("unknown target interval source")
+    if target_interval_source == "full_logits" and not full_logits_target_intervals:
+        raise ValueError(
+            "full-logits target intervals require AC_TARGET_INTERVAL encoding"
+        )
+    if full_logits_target_intervals and (
+        args.engine != "transformer"
+        or ac_backend != "python"
+        or target_interval_quantizer != "torch"
+    ):
+        raise ValueError(
+            "full-logits target intervals require the Transformer engine, "
+            "Python AC backend, and torch interval quantizer"
+        )
     if ac_backend == "cuda" and (
         args.encoding != "AC_TARGET_INTERVAL" or args.engine != "transformer"
     ):
@@ -331,7 +352,7 @@ def run_global_mask_compression(args):
                 inference_start = torch.cuda.Event(enable_timing=True)
                 inference_end = torch.cuda.Event(enable_timing=True)
                 inference_start.record()
-            if args.encoding == "AC_TARGET_INTERVAL":
+            if args.encoding == "AC_TARGET_INTERVAL" and not full_logits_target_intervals:
                 targets = [batches[i][token_idx + 1] if valid_mask[i] else token_predictor.tokens_list[0]
                            for i in range(args.batch_size)]
                 token_ids, probs_values, _data_copy_time, _softmax_time = token_predictor.run_batched_interval_inference(
@@ -366,7 +387,31 @@ def run_global_mask_compression(args):
 
             if args.engine in {"transformer", "ngram", "vllm"}:
                 if args.encoding == "AC_TARGET_INTERVAL":
-                    if cuda_interval_backend:
+                    if full_logits_target_intervals:
+                        started = time.perf_counter()
+                        lows, highs, totals, target_probabilities = (
+                            target_intervals_from_probs_tensor(
+                                probs_values,
+                                actual_next_tokens,
+                            )
+                        )
+                        interval_seconds += time.perf_counter() - started
+                        started = time.perf_counter()
+                        records = zip(
+                            lows.tolist(),
+                            highs.tolist(),
+                            totals.tolist(),
+                            target_probabilities.tolist(),
+                        )
+                        for idx, (low, high, total, probability) in enumerate(records):
+                            if valid_mask[idx]:
+                                llm_compressor.encode_interval(
+                                    idx, low, high, total
+                                )
+                                entropy += -np.log2(max(probability, 1e-300))
+                                probs_list.append(probability)
+                        ac_time += time.perf_counter() - started
+                    elif cuda_interval_backend:
                         for name in ("lows", "highs", "totals", "target_probs"):
                             if probs_values[name].device.type != "cuda":
                                 raise ValueError(
@@ -570,7 +615,9 @@ def run_global_mask_compression(args):
                 "softmax": softmax_device_seconds,
                 "score_or_interval_transfer": score_copy_seconds + interval_copy_seconds,
                 "frequency_or_interval_construction": (
-                    interval_device_seconds
+                    interval_seconds
+                    if full_logits_target_intervals
+                    else interval_device_seconds
                     if args.encoding == "AC_TARGET_INTERVAL"
                     else host_quantize_seconds
                 ),
@@ -641,7 +688,7 @@ def run_global_mask_compression(args):
             ),
             "msac_quantize_seconds": (
                 interval_seconds
-                if cuda_interval_backend
+                if cuda_interval_backend or full_logits_target_intervals
                 else llm_compressor.quantize_seconds
                 if args.encoding in {"AC_MULTISTREAM", "AC_TARGET_INTERVAL"}
                 else None
@@ -656,6 +703,11 @@ def run_global_mask_compression(args):
             "cuda_ac_metrics": cuda_ac_metrics or None,
             "target_interval_quantizer": (
                 target_interval_quantizer
+                if args.encoding == "AC_TARGET_INTERVAL"
+                else None
+            ),
+            "target_interval_source": (
+                target_interval_source
                 if args.encoding == "AC_TARGET_INTERVAL"
                 else None
             ),

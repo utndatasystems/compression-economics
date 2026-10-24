@@ -160,6 +160,16 @@ def get_main_args() -> argparse.Namespace:
             "target-only output and pipelines arithmetic coding with inference"
         ),
     )
+    parser.add_argument(
+        "--target-interval-source",
+        choices=["captured", "full_logits"],
+        default="captured",
+        help=(
+            "For MSAC-v2 compression, either capture target intervals beside "
+            "inference or transfer full probability rows and construct the same "
+            "floor-count intervals on the host"
+        ),
+    )
     parser.add_argument("--ac-threads", type=int, default=None, help="Maximum workers for numba_parallel MSAC encoding")
     parser.add_argument("--ac-layout", choices=["standard", "paired"], default="standard", help="MSAC byte layout; paired shares compatible terminal bytes")
     parser.add_argument(
@@ -205,6 +215,18 @@ def get_main_args() -> argparse.Namespace:
         )
     if args.encoding == "AC_TARGET_INTERVAL" and args.frequency_quantizer != "reference":
         parser.error("AC_TARGET_INTERVAL uses its versioned floor-count quantizer; fixed-total quantizer options do not apply")
+    if args.target_interval_source == "full_logits" and (
+        args.mode != "compress"
+        or args.engine != "transformer"
+        or args.encoding != "AC_TARGET_INTERVAL"
+        or args.ac_backend != "python"
+        or args.target_interval_quantizer != "torch"
+    ):
+        parser.error(
+            "--target-interval-source full_logits requires Transformer "
+            "AC_TARGET_INTERVAL compression with the Python AC backend and "
+            "the torch interval quantizer"
+        )
     if args.engine == "vllm" and args.spec_k is not None:
         parser.error("vLLM currently supports standard decompression only")
     if not 0 < args.gpu_memory_utilization <= 1 or args.tensor_parallel_size < 1:

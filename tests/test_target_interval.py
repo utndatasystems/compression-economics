@@ -248,7 +248,14 @@ def test_local_transformer_text_archive_roundtrip(
         reduce_tokens=True, is_mamba=False, is_seq2seq=False, first_n_tokens=None,
         batch_size=3, context_length=4, retain_tokens=2, use_kv_cache=True,
         ac_backend=backend, ac_threads=2, spec_k=None,
-        target_interval_quantizer=interval_quantizer)
+        target_interval_quantizer=interval_quantizer,
+        target_interval_source=(
+            "full_logits"
+            if backend == "python"
+            and interval_quantizer == "torch"
+            and decode_backend == "host"
+            else "captured"
+        ))
     seeds, payload, bitmap, stats, args = run_global_mask_compression(args)
     if backend == "cuda":
         assert stats["interval_transfer_bytes"] == 0
@@ -257,7 +264,24 @@ def test_local_transformer_text_archive_roundtrip(
         assert stats["target_interval_quantizer"] == interval_quantizer
         assert stats["interval_conversion_seconds"] > 0
     else:
-        assert stats["interval_transfer_bytes"] > 0
+        if args.target_interval_source == "full_logits":
+            assert stats["target_interval_source"] == "full_logits"
+            assert stats["msac_quantize_seconds"] > 0
+            assert stats["stage_timing"]["exclusive_seconds"][
+                "frequency_or_interval_construction"
+            ] > 0
+            captured_args = SimpleNamespace(**vars(args))
+            captured_args.target_interval_source = "captured"
+            captured_seeds, captured_payload, captured_bitmap, _, _ = (
+                run_global_mask_compression(captured_args)
+            )
+            assert (seeds, payload, bitmap) == (
+                captured_seeds,
+                captured_payload,
+                captured_bitmap,
+            )
+        else:
+            assert stats["interval_transfer_bytes"] > 0
     save_global_mask_file(args, seeds, payload, bitmap)
     args.mode = "decompress"
     args.ac_decode_backend = decode_backend

@@ -29,7 +29,8 @@ DEFAULT_PDF = (
 DEFAULT_PNG = DEFAULT_PDF.with_suffix(".png")
 
 LABELS = {
-    "python_full_logits": "Python full logits",
+    "python_full_logits": "Historical Python full logits (MSAC-v1)",
+    "python_full_logits_v2": "Python full logits",
     "python": "Python target intervals",
     "cuda_v1": "CUDA v1",
     "cuda_v2": "CUDA v2",
@@ -54,18 +55,22 @@ def _load(path: Path) -> dict:
     if not data["decoding"]["exact_recovery"]:
         raise ValueError("a decoder failed exact recovery")
     encoder_conditions = data["encoding"]["conditions"]
-    expected_v2 = ["python", "cuda_v1", "cuda_v2"]
-    expected_v3 = [*expected_v2, "cuda_v3"]
-    accepted = (
-        expected_v2,
-        expected_v3,
-        ["python_full_logits", *expected_v2],
-        ["python_full_logits", *expected_v3],
-    )
-    if encoder_conditions not in accepted:
+    required = {"python", "cuda_v1", "cuda_v2"}
+    canonical = [
+        "python_full_logits",
+        "python_full_logits_v2",
+        "python",
+        "cuda_v1",
+        "cuda_v2",
+        "cuda_v3",
+    ]
+    if (
+        not required.issubset(encoder_conditions)
+        or encoder_conditions != [name for name in canonical if name in encoder_conditions]
+    ):
         raise ValueError(
             "expected Python target intervals, CUDA v1/v2, optional CUDA v3, "
-            "and optional Python full logits"
+            "and optional historical or matched Python full logits"
         )
     if data["decoding"]["conditions"] != ["host", "device", "cuda"]:
         raise ValueError("expected host, device, and CUDA decoders")

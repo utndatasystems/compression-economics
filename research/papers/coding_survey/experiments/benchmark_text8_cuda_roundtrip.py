@@ -37,6 +37,7 @@ from src.prediction import TokenPredictor
 
 ENCODERS = (
     "python_full_logits",
+    "python_full_logits_v2",
     "python",
     "cuda_v1",
     "cuda_v2",
@@ -47,6 +48,8 @@ DECODERS = ("host", "device", "cuda")
 
 
 def _balanced_orders(conditions: tuple[str, ...], repeats: int) -> list[list[str]]:
+    if not conditions:
+        return []
     orders = []
     for repeat in range(repeats):
         offset = repeat % len(conditions)
@@ -58,7 +61,7 @@ def _balanced_orders(conditions: tuple[str, ...], repeats: int) -> list[list[str
 
 
 def _compression_args(cli: argparse.Namespace, source: str, token_count: int, variant: str):
-    ac_backend = "python" if variant in {"python_full_logits", "python"} else "cuda"
+    ac_backend = "python" if variant in {"python_full_logits", "python_full_logits_v2", "python"} else "cuda"
     return SimpleNamespace(
         mode="compress",
         input_path=None,
@@ -81,6 +84,9 @@ def _compression_args(cli: argparse.Namespace, source: str, token_count: int, va
             "cuda_v3": "cuda_v3",
             "cuda_v4": "cuda_v4",
         }.get(variant, "torch"),
+        target_interval_source=(
+            "full_logits" if variant == "python_full_logits_v2" else "captured"
+        ),
         ac_threads=None,
         ac_layout="standard",
         reduce_tokens=True,
@@ -151,6 +157,38 @@ def _decode_sample(stats: dict, source_bytes: int) -> dict:
     }
 
 
+def _begin_device_memory_measurement(device: torch.device) -> dict[str, int]:
+    """Reset CUDA allocator peaks and retain the live pre-run baseline."""
+    torch.cuda.synchronize(device)
+    torch.cuda.reset_peak_memory_stats(device)
+    return {
+        "baseline_device_memory_allocated_bytes": torch.cuda.memory_allocated(device),
+        "baseline_device_memory_reserved_bytes": torch.cuda.memory_reserved(device),
+    }
+
+
+def _end_device_memory_measurement(
+    device: torch.device, baseline: dict[str, int]
+) -> dict[str, int]:
+    """Return absolute and above-baseline PyTorch CUDA allocator peaks."""
+    torch.cuda.synchronize(device)
+    peak_allocated = torch.cuda.max_memory_allocated(device)
+    peak_reserved = torch.cuda.max_memory_reserved(device)
+    return {
+        **baseline,
+        "peak_device_memory_allocated_bytes": peak_allocated,
+        "peak_device_memory_reserved_bytes": peak_reserved,
+        "incremental_peak_device_memory_allocated_bytes": max(
+            0,
+            peak_allocated - baseline["baseline_device_memory_allocated_bytes"],
+        ),
+        "incremental_peak_device_memory_reserved_bytes": max(
+            0,
+            peak_reserved - baseline["baseline_device_memory_reserved_bytes"],
+        ),
+    }
+
+
 def _medians(samples: dict[str, list[dict]], keys: tuple[str, ...]) -> dict[str, dict]:
     return {
         condition: {
@@ -176,6 +214,11 @@ def main() -> None:
         help="Skip the full-input encoder and decoder warm-up passes",
     )
     parser.add_argument(
+        "--skip-encoding-warmup",
+        action="store_true",
+        help="Skip only encoder warm-ups while retaining decoder warm-ups",
+    )
+    parser.add_argument(
         "--encoders",
         nargs="+",
         choices=ENCODERS,
@@ -194,6 +237,11 @@ def main() -> None:
         choices=ENCODERS,
         help="Use this encoder's archive for all decoder comparisons",
     )
+    parser.add_argument(
+        "--encoding-only",
+        action="store_true",
+        help="write encoder results without running decoder warm-ups or measurements",
+    )
     parser.add_argument("--output", type=Path, required=True)
     cli = parser.parse_args()
     if not torch.cuda.is_available():
@@ -208,7 +256,7 @@ def main() -> None:
         parser.error("decoder-archive-encoder must also be selected in --encoders")
 
     encoders = tuple(cli.encoders)
-    decoders = tuple(cli.decoders)
+    decoders = () if cli.encoding_only else tuple(cli.decoders)
 
     source_raw = cli.input.read_bytes()[: cli.input_bytes]
     if len(source_raw) != cli.input_bytes:
@@ -262,20 +310,21 @@ def main() -> None:
 
     def run_encoder(variant: str):
         args = _compression_args(cli, source, len(expected_tokens), variant)
-        torch.cuda.synchronize(device)
+        memory_baseline = _begin_device_memory_measurement(device)
         with contextlib.redirect_stdout(io.StringIO()), torch.inference_mode():
             seeds, payload, bitmap, stats, args = pipeline.run_global_mask_compression(args)
-        torch.cuda.synchronize(device)
+        memory_metrics = _end_device_memory_measurement(device, memory_baseline)
         if stats["original_size_bytes"] != len(source_raw):
             raise AssertionError("compression source-byte count changed")
         sample = _encoding_sample(stats, seeds, payload, bitmap)
+        sample.update(memory_metrics)
         gc.collect()
         torch.cuda.empty_cache()
         return (seeds, payload, bitmap, args), sample
 
     encoding_warmups = {}
     warm_archives = {}
-    if cli.skip_workload_warmups:
+    if cli.skip_workload_warmups or cli.skip_encoding_warmup:
         print("Skipping full-workload encoding warm-ups.", flush=True)
     else:
         print("Running encoding warm-ups...", flush=True)
@@ -343,15 +392,16 @@ def main() -> None:
 
     def run_decoder(backend: str):
         decode_args.ac_decode_backend = backend
-        torch.cuda.synchronize(device)
+        memory_baseline = _begin_device_memory_measurement(device)
         with contextlib.redirect_stdout(io.StringIO()), torch.inference_mode():
             decoded, text, stats = pipeline.run_global_mask_decompression(
                 decode_args, seeds, payload, bitmap
             )
-        torch.cuda.synchronize(device)
+        memory_metrics = _end_device_memory_measurement(device, memory_baseline)
         if decoded != expected_tokens or text.encode("utf-8") != source_raw:
             raise AssertionError(f"{backend} decoder failed exact recovery")
         sample = _decode_sample(stats, len(source_raw))
+        sample.update(memory_metrics)
         gc.collect()
         torch.cuda.empty_cache()
         return sample
@@ -390,6 +440,12 @@ def main() -> None:
             "arithmetic_coding_seconds",
             "quantize_seconds",
             "range_encode_seconds",
+            "baseline_device_memory_allocated_bytes",
+            "baseline_device_memory_reserved_bytes",
+            "peak_device_memory_allocated_bytes",
+            "peak_device_memory_reserved_bytes",
+            "incremental_peak_device_memory_allocated_bytes",
+            "incremental_peak_device_memory_reserved_bytes",
         ),
     )
     decoding_medians = _medians(
@@ -401,6 +457,12 @@ def main() -> None:
             "inference_seconds",
             "arithmetic_seconds",
             "detokenize_seconds",
+            "baseline_device_memory_allocated_bytes",
+            "baseline_device_memory_reserved_bytes",
+            "peak_device_memory_allocated_bytes",
+            "peak_device_memory_reserved_bytes",
+            "incremental_peak_device_memory_allocated_bytes",
+            "incremental_peak_device_memory_reserved_bytes",
         ),
     )
     representation_bytes = len(payload) + len(bitmap) + 4 * len(seeds)
@@ -418,11 +480,20 @@ def main() -> None:
         "retain_tokens": cli.retain_tokens,
         "repeats": cli.repeats,
         "full_workload_warmups_skipped": cli.skip_workload_warmups,
+        "encoding_warmup_skipped": cli.skip_encoding_warmup,
+        "encoding_only": cli.encoding_only,
         "gpu": torch.cuda.get_device_name(device),
         "torch_version": torch.__version__,
         "torch_cuda_runtime": torch.version.cuda,
         "transformers_version": transformers.__version__,
         "numpy_version": np.__version__,
+        "device_memory_measurement": {
+            "allocator": "PyTorch CUDA caching allocator",
+            "unit": "bytes",
+            "scope": "complete encoder or decoder call after model loading and extension warm-up",
+            "absolute_peak": "maximum allocated or reserved bytes observed during the call",
+            "incremental_peak": "absolute peak minus the corresponding live pre-call baseline",
+        },
         "cpu": next(
             (
                 line.split(":", 1)[1].strip()
@@ -434,7 +505,8 @@ def main() -> None:
         "encoding": {
             "conditions": list(encoders),
             "definitions": {
-                "python_full_logits": "pre-target-capture host Python path transferring and quantizing the complete reduced-vocabulary probability matrix",
+                "python_full_logits": "historical MSAC-v1 host Python path transferring and quantizing the complete reduced-vocabulary probability matrix",
+                "python_full_logits_v2": "matched MSAC-v2 host Python path transferring full probability rows and constructing floor-count target intervals on the host",
                 "python": "pre-CUDA host Python target-interval and arithmetic encoder",
                 "cuda_v1": "PyTorch target-interval construction plus buffered CUDA arithmetic encoder",
                 "cuda_v2": "fused target-interval construction plus the same CUDA arithmetic encoder",
@@ -442,6 +514,7 @@ def main() -> None:
                 "cuda_v4": "custom fused exact fixed-total normalization, residual selection, target-only bounds, and persistent arithmetic coding overlapped with subsequent inference",
             },
             "full_logits_baseline_provenance": "preserved AC_MULTISTREAM path from revision 5a91a3f (the parent of c1cc347, which introduced target-interval capture)",
+            "matched_full_logits_baseline": "python_full_logits_v2 uses the same MSAC-v2 floor-count contract as Python target intervals and CUDA v1-v3",
             "python_baseline_provenance": "preserved pre-CUDA target-interval path from revision 009936d (immediately before d1dd294 added the first CUDA interval encoder)",
             "timing_scope": "live inference, interval construction, arithmetic coding, and final device-to-host transfer; excludes tokenization and model loading",
             "warmups": encoding_warmups,
@@ -478,6 +551,16 @@ def main() -> None:
                 if {"python_full_logits", "cuda_v2"}.issubset(encoding_medians)
                 else None
             ),
+            "cuda_v2_vs_python_full_logits_v2": (
+                {
+                    "speedup": encoding_medians["python_full_logits_v2"]["seconds"]
+                    / encoding_medians["cuda_v2"]["seconds"],
+                    "throughput_ratio": encoding_medians["cuda_v2"]["source_mib_per_second"]
+                    / encoding_medians["python_full_logits_v2"]["source_mib_per_second"],
+                }
+                if {"python_full_logits_v2", "cuda_v2"}.issubset(encoding_medians)
+                else None
+            ),
             "cuda_v3_vs_cuda_v2": (
                 {
                     "speedup": encoding_medians["cuda_v2"]["seconds"]
@@ -500,7 +583,7 @@ def main() -> None:
             ),
             "exact_archive_match": True,
             "archive_match_scope": list(matched_encoders),
-            "note": "The full-logits MSAC-v1 baseline and CUDA-v4 MSAC-v3 use fixed-total normalization; CUDA v1-v3 use the variable-total MSAC-v2 floor-count contract. Cross-version conditions are validated by exact round-trip rather than whole-archive equality.",
+            "note": "The historical full-logits MSAC-v1 baseline and CUDA-v4 MSAC-v3 use fixed-total normalization. Python full-logits-v2, Python target intervals, and CUDA v1-v3 use the variable-total MSAC-v2 floor-count contract and must be byte-identical. Cross-version conditions are validated by exact round-trip rather than whole-archive equality.",
         },
         "decoding": {
             "conditions": list(decoders),

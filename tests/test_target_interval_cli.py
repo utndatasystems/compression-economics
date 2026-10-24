@@ -55,6 +55,22 @@ def test_cuda_encoder_cli_contract(monkeypatch):
         get_main_args()
 
 
+def test_full_logits_target_interval_cli_contract(monkeypatch):
+    monkeypatch.setattr(sys, "argv", [
+        "main.py", "--mode", "compress", "--engine", "transformer",
+        "--encoding", "AC_TARGET_INTERVAL", "--ac-backend", "python",
+        "--target-interval-source", "full_logits",
+    ])
+    assert get_main_args().target_interval_source == "full_logits"
+
+    monkeypatch.setattr(sys, "argv", [
+        "main.py", "--mode", "compress", "--encoding", "AC_MULTISTREAM",
+        "--target-interval-source", "full_logits",
+    ])
+    with pytest.raises(SystemExit):
+        get_main_args()
+
+
 @pytest.mark.parametrize("quantizer", ["cuda_fused", "cuda_v3", "cuda_v4"])
 def test_fused_target_interval_cli_contract(monkeypatch, quantizer):
     monkeypatch.setattr(sys, "argv", [
