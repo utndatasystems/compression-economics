@@ -6,10 +6,11 @@ establish a general performance claim.
 
 New raw outputs belong under `artifacts/papers/coding-survey/`. Keep the
 existing CPU pilot in its original CIDR artifact directory. See the
-[experiment README](README.md) for runner commands and the
-[O3 design TODOs](../../../../docs/ac_target_interval_todos.txt) for related
-implementation choices. This document tracks experiments; that file tracks
-design decisions and possible implementation ablations.
+[experiment README](README.md) for runner commands. Durable target-interval
+format and implementation decisions are documented in
+[`docs/ac_target_interval.md`](../../../../docs/ac_target_interval.md) and
+[`src/coding/README.md`](../../../../src/coding/README.md); remaining
+experiments are tracked here.
 
 ## Status and priorities
 
@@ -21,6 +22,33 @@ design decisions and possible implementation ablations.
 Prioritize E03 instrumentation, E04, and E05 replication next. The sweep
 sizes below are proposed starting points; record changes here before expanding
 them.
+
+## Remaining target-interval work
+
+- [ ] Validate live vLLM/CUDA round trips and throughput. Pin the supported
+  vLLM version, record attention and tensor-parallel configuration, measure
+  worker synchronization and shared-memory or pinned-copy overhead, and report
+  measured model metadata when the runtime exposes it (E10).
+- [ ] Establish the numerical portability envelope across precision, device,
+  and engine. Compare float32 with float64, define any MPS policy, stress counts
+  near rounding boundaries, test tokenizer/model vocabulary-size mismatches,
+  and verify tensor-parallel and cross-device decoding rather than assuming
+  equivalent probabilities (E08, D5).
+- [ ] Complete the matched O1/O2/O3 factorial after resolving teacher-forced
+  BF16 interval disagreement. Speculative feasibility runners now exist, but
+  integrating speculative decoding with the target-interval archive contract
+  remains separate work (E11, A07).
+- [ ] Finish systems instrumentation and ablations: physical device-to-host
+  traffic, CUDA-event and worker-side timing, peak memory, active-tail-row
+  compaction, and prefix-scan or fused-CDF alternatives. Keep cold loading and
+  compilation separate from warm measurements (E03).
+- [ ] Extend validation beyond the current Qwen/text8 path: full versus masked
+  vocabularies, excerpt and batch-size sweeps, additional architectures, and
+  LoRA where the selected engine supports it (E05, E09, A08).
+
+The portable MSAC formats remain authoritative. Migration support for the old
+fast-AC dictionary payload is intentionally out of scope unless a concrete
+archive requires it.
 
 ## Core experiment inventory
 
@@ -36,8 +64,8 @@ them.
 | E08 | Probability mismatch and robust decoding. | Controlled encoder/decoder perturbations, seeds/scales, PMATIC helper budget and bits; exact recovery/failure rates. Study actual engine/device disagreement separately. | Synthetic perturbation machinery exists; systematic study pending. |
 | E09 | Full vocabulary vs observed-token mask. | Charge mask bytes; compare entropy, archive size, inference/conversion/coding cost. Separate post-logit masking from restricted output projection. | Mask path exists; sweep pending. Restricted projection needs implementation. |
 | E10 | Inference engine performance and reproducibility. | Transformers CPU/CUDA and optional vLLM CUDA; pin model/tokenizer, versions, dtype, attention backend, tensor parallel layout; verify complete archives. | CPU and live H100 Transformers paths validated; vLLM validation pending. TensorRT-LLM would require a separate port. |
-| E11 | O1/O2/O3 interactions. | Teacher-forced windows (O1), inference/coder overlap (O2), target interval capture (O3); 2×2×2 factorial with matched effective contexts and quantization. | O2/O3 are integrated in CUDA v4 with event-ordered inference/coder streams; O1 and the complete factorial ablation remain pending. |
-| E12 | KV cache and parallel sequence scoring. | Cache on/off; incremental vs teacher-forced/prefill scoring; identical context truncation/retention; verify distribution equivalence where claimed. | Cache path exists; matched study pending. Parallel scoring/window semantics need validation. |
+| E11 | O1/O2/O3 interactions. | Teacher-forced windows (O1), inference/coder overlap (O2), target interval capture (O3); 2×2×2 factorial with matched effective contexts and quantization. | O1 has a complete 10 MiB H100 width sweep: W16/W32/W64 give 4.25x/4.77x/5.07x scoring-plus-interval speedups, but BF16 interval agreement fails. O2/O3 are integrated in CUDA v4; the complete factorial remains pending behind the O1 numerics contract. |
+| E12 | KV cache and parallel sequence scoring. | Cache on/off; incremental vs teacher-forced/prefill scoring; identical context truncation/retention; verify distribution equivalence where claimed. | Context-matched runner and H100 sweep complete. At B256, teacher width raises incremental peak allocation from 6.61 GiB (W16) to 24.08 GiB (W64); an unbounded reset-segment window OOMs a 93 GiB H100. W1 is exact, but every measured multi-token BF16 path changes integer intervals and is not yet lossless-compatible. |
 
 ### Suggested sweep sizes
 
@@ -144,7 +172,7 @@ Remaining work:
 | A07 | Speculative decompression/coding and early exit. | Exploratory; define lossless fallback, charge rejected work/helper data, compare multistream decoding. |
 | A08 | More models, datasets, and adaptation. | After Qwen/text8, select additional model sizes/source types. Other architectures/LoRA only if supported and retained in scope; vLLM LoRA is not currently validated. |
 | A09 | Classical compression baselines and compression/throughput Pareto curves. | **Six-baseline 10 MiB text8 run complete.** FSST8, LZ4 default, gzip-6, Zstandard-3/-19, and Brotli-11 each have seven timed compression/decompression repetitions and exact recovery. Zstandard-19 defines $R^*=3.9369\times$. The operating-point plot includes all points; broader datasets and the full LLM sweep remain pending. |
-| A10 | External LLM baselines on matched text8 bytes. | **FineZip, LLMZip, and Nacrith 10 MiB runs complete.** All use SmolLM2-135M/BF16 on one H100 and recover the exact source. FineZip rank+bzip2: 1.43634 bpb, 42.09 s encode, 40.75 s decode. LLMZip AC with a fixed 511-token context and batch one: 1.03436 bpb, 25,957.85 s encode, 25,925.23 s decode. Nacrith NC05 with eight workers: 1.25498 bpb, 1168.51 s encode, 1166.09 s decode. Complete per-file archives are charged; shared model/tokenizer weights are excluded. Raw JSON and archives are under `artifacts/papers/coding-survey/llm-baselines/`. |
+| A10 | External LLM baselines on matched text8 bytes. | **FineZip, LLMZip, and Nacrith 10 MiB runs complete.** All use the pinned Qwen2.5-0.5B revision in BF16 on one H100 and recover the exact source. FineZip rank+bzip2: 1.37518 bpb, 45.22 s encode, 42.07 s decode. LLMZip AC with a fixed 511-token context and batch one: 0.97423 bpb, 23,095.98 s encode, 22,883.20 s decode. Nacrith NC05 with eight workers: 1.36307 bpb, 2007.82 s encode, 2005.19 s decode. Complete per-file archives are charged; shared model/tokenizer weights are excluded. Raw JSON and archives are under `artifacts/papers/coding-survey/llm-baselines/`. |
 
 ## Evidence required for every reported condition
 

@@ -48,9 +48,9 @@ was not pursued by the authors. `benchmark_finezip.py` calls the upstream
 `ZipModel` rank generation and recovery unchanged, and packages its bzip2
 payload and decode parameters in a small `FZB1` accounting container. This is
 a repository-local wrapper, not an upstream FineZip interchange format. The
-matched comparison uses `HuggingFaceTB/SmolLM2-135M` without online LoRA
-memorization; it is therefore a FineZip-algorithm baseline, not a reproduction
-of the paper's fine-tuned Llama-3-8B headline number.
+matched comparison uses the pinned `Qwen/Qwen2.5-0.5B` revision without online
+LoRA memorization; it is therefore a FineZip-algorithm baseline, not a
+reproduction of the paper's fine-tuned Llama-3-8B headline number.
 
 Nacrith is run with its official NC05 archive and default ensemble settings.
 Its llama.cpp environment is intentionally separate from the locked project
@@ -62,6 +62,16 @@ and decoding both use batch size one: upstream explicitly marks its optional
 batched encoder as incompatible with decoding, and exact probability
 reproduction is mandatory for arithmetic coding.
 
+All three matched runners use the paper's `Qwen/Qwen2.5-0.5B` model. LLMZip uses
+the tokenizer's EOS token as its deterministic initial context because Qwen2.5
+does not define a BOS token, and it codes over the model's full padded output
+vocabulary. Nacrith requires a BF16 GGUF converted from the same pinned Qwen
+revision plus that revision's `tokenizer.json` and `tokenizer_config.json`;
+passing only a Qwen GGUF is not sufficient because upstream otherwise silently
+uses its bundled SmolLM2 tokenizer. As with the SmolLM comparison, Hugging Face
+and llama.cpp are distinct numerical realizations and exact recovery must be
+checked independently.
+
 Example H100 commands (pin and record exact upstream revisions):
 
 ```bash
@@ -71,7 +81,10 @@ git clone https://github.com/robtacconelli/Nacrith-GPU.git /tmp/nacrith
 
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_finezip.py \
   --finezip-repo /tmp/finezip --dtype bfloat16 \
-  --batch-size 1024 --context-size 512
+  --batch-size 1024 --context-size 512 \
+  --model Qwen/Qwen2.5-0.5B \
+  --model-revision 060db6499f32faf8b98477b0a26969ef7d8b9987 \
+  --output artifacts/papers/coding-survey/llm-baselines/finezip-qwen-text8-first-10MiB.json
 
 .venv/bin/python research/papers/coding_survey/experiments/benchmark_llmzip.py \
   --llmzip-repo /tmp/llmzip --dtype bfloat16 --memory 511 \
@@ -82,11 +95,27 @@ git clone https://github.com/robtacconelli/Nacrith-GPU.git /tmp/nacrith
   --nacrith-repo /tmp/nacrith \
   --gguf /path/to/SmolLM2-135M-BF16.gguf --workers 8
 
+# Qwen LLMZip (use a separate output/work directory from the SmolLM run)
+.venv/bin/python research/papers/coding_survey/experiments/benchmark_llmzip.py \
+  --llmzip-repo /tmp/llmzip --dtype bfloat16 --memory 511 \
+  --model Qwen/Qwen2.5-0.5B \
+  --model-revision 060db6499f32faf8b98477b0a26969ef7d8b9987 \
+  --output artifacts/papers/coding-survey/llm-baselines/llmzip-qwen-text8-first-10MiB.json
+
+# Qwen Nacrith (tokenizer files and GGUF must come from the same revision)
+/tmp/nacrith-venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_nacrith.py \
+  --nacrith-repo /tmp/nacrith --workers 8 \
+  --model-name Qwen/Qwen2.5-0.5B \
+  --gguf /path/to/Qwen2.5-0.5B-BF16.gguf \
+  --tokenizer-dir /path/to/Qwen2.5-0.5B-tokenizer \
+  --output artifacts/papers/coding-survey/llm-baselines/nacrith-qwen-text8-first-10MiB.json
+
 .venv/bin/python \
   research/papers/coding_survey/experiments/summarize_llm_baselines.py \
-  artifacts/papers/coding-survey/llm-baselines/finezip-text8-first-10MiB.json \
-  artifacts/papers/coding-survey/llm-baselines/llmzip-text8-first-10MiB.json \
-  artifacts/papers/coding-survey/llm-baselines/nacrith-text8-first-10MiB.json \
+  artifacts/papers/coding-survey/llm-baselines/finezip-qwen-text8-first-10MiB.json \
+  artifacts/papers/coding-survey/llm-baselines/llmzip-qwen-text8-first-10MiB.json \
+  artifacts/papers/coding-survey/llm-baselines/nacrith-qwen-text8-first-10MiB.json \
   artifacts/papers/coding-survey/llm-baselines/text8-first-10MiB.json
 ```
 
@@ -96,10 +125,48 @@ throughput, and exact-recovery status. The three adapters use different
 inference paths, so their BF16 model realizations are identified rather than
 assumed numerically identical.
 
+Regenerate the complete operating-point figure and its LLM-only zoomed
+companion with:
+
+```bash
+.venv/bin/python \
+  research/papers/coding_survey/experiments/plot_optimization_operating_points.py
+```
+
+The script writes `optimization_operating_points.pdf` and
+`optimization_operating_points_llm_zoom.pdf` under the manuscript's
+`figures/` directory.
+
 Keep survey-specific benchmark definitions and analysis here. Reusable coder
 implementations and trace measurements live in `src/`; raw traces, archives,
 profiles, and result JSON belong under the ignored
 `artifacts/papers/coding-survey/` directory.
+
+## Inference/coder isolation
+
+The v3 isolation runner compares live model and compact interval inference with
+the normal buffered CUDA coder enabled or disabled. An untimed pass also saves
+the same integer intervals for a coder-only replay; the live and replayed
+archives must be byte-identical.
+
+```bash
+.venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_inference_coder_isolation.py \
+  --tokens 2048 --batch-size 16 --repeats 5 \
+  --save-trace artifacts/papers/coding-survey/cuda-ac/v3-trace-2048.npz \
+  --output artifacts/papers/coding-survey/cuda-ac/v3-isolation-2048.json
+
+.venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_inference_coder_isolation.py \
+  --coder-only \
+  --trace artifacts/papers/coding-survey/cuda-ac/v3-trace-2048.npz \
+  --repeats 50 \
+  --output artifacts/papers/coding-survey/cuda-ac/v3-coder-only-2048.json
+```
+
+The frozen result reports CUDA kernel time and synchronized wall time. The
+latter also charges launch, framing, and device-to-host transfer. Model loading,
+file I/O, and the trace-capture pass are excluded.
 
 ## First slice: independent AC streams
 
@@ -321,9 +388,13 @@ separately versioned fixed-total contract and must pass exact round-trip checks.
 The legacy names `cuda_torch` and `cuda_fused` remain accepted as aliases for
 `cuda_v1` and `cuda_v2`.
 
-The 10 MiB text8 round-trip comparison additionally includes the preserved
-pre-CUDA Python encoder and host decoder. The paper-matched quality setting is
-batch 256, context 256, and retain 100:
+The 10 MiB text8 round-trip comparison additionally includes two full-logits
+conditions. `python_full_logits` preserves the historical MSAC-v1 fixed-total
+path for provenance. `python_full_logits_v2` transfers the same dense
+probability rows but constructs MSAC-v2 floor-count intervals on the host; its
+archive must be byte-identical to `python` and CUDA v1--v3. The host, device,
+and CUDA decoders all consume one selected MSAC-v2 archive. The paper-matched
+quality setting is batch 256, context 256, and retain 100:
 
 ```bash
 .venv/bin/python \
@@ -340,6 +411,19 @@ The runner requires identical archives across all encoders and exact recovery
 from all decoders. The plot uses non-overlapping timing components: interval
 construction is subtracted from its enclosing inference timer before stacking.
 
+A small compatibility pilot that exercises only the previously missing
+matched baselines is:
+
+```bash
+.venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_text8_cuda_roundtrip.py \
+  --input-bytes 16384 --batch-size 16 --context-length 128 \
+  --retain-tokens 64 --repeats 1 --skip-workload-warmups \
+  --encoders python_full_logits_v2 python cuda_v3 \
+  --decoders host device cuda --decoder-archive-encoder cuda_v3 \
+  --output artifacts/papers/coding-survey/cuda-ac/msac-v2-baseline-pilot.json
+```
+
 The dedicated fusion microbenchmark holds the probability trace and CUDA
 arithmetic encoder constant. It reports device-event time for interval
 construction alone and for interval construction plus encoding:
@@ -350,3 +434,54 @@ construction alone and for interval construction plus encoding:
   --steps 4096 --streams 32 --alphabet 256 --repeats 50 \
   --output artifacts/papers/coding-survey/cuda-ac/fusion-kernel.json
 ```
+
+## Teacher-forced encoder scoring
+
+`benchmark_teacher_forcing.py` compares the decoder-compatible incremental
+KV-cache schedule with encoder-only teacher-forced prefill windows. The windows
+preserve the compressor's periodic context policy exactly: prompts grow to the
+configured context length, retain the same suffix at a reset, and only scores
+between two resets are combined. Both conditions process the same number of
+model-input tokens. In addition to timing, the runner requires equality of the
+integer target intervals seen by arithmetic coding; close floating-point
+probabilities alone are not enough for lossless decoding.
+
+```bash
+.venv/bin/python \
+  research/papers/coding_survey/experiments/benchmark_teacher_forcing.py \
+  --input data/text8 --tokens 2048 --batch-size 16 \
+  --context-length 256 --retain-tokens 128 --repeats 5 --device cuda \
+  --model Qwen/Qwen2.5-0.5B \
+  --model-revision 060db6499f32faf8b98477b0a26969ef7d8b9987 \
+  --output artifacts/papers/coding-survey/teacher-forcing/qwen-text8.json
+```
+
+The exact-10-MiB H100 sweep used Qwen2.5-0.5B/BF16, batch 256, context 256,
+retain 100, the 29,197-token source alphabet, and the current 2^18 reference
+frequency total. Values below are medians of three runs after one warm-up.
+Memory is incremental peak allocation above the loaded-model baseline. Timings
+cover model scoring and reference target-interval construction, excluding
+tokenization, model loading, and arithmetic coding.
+
+| Teacher width | Forward calls | Time (s) | Speedup vs incremental | Incremental peak |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 (incremental KV) | 8,056 | 96.82--97.12 | 1.00x | 1.30 GiB |
+| 16 | 517 | 22.83 | 4.25x | 6.61 GiB |
+| 32 | 259 | 20.15 | 4.77x | 12.40 GiB |
+| 64 | 155 | 19.11 | 5.07x | 24.08 GiB |
+
+An unbounded window, up to 156 scored positions between context resets,
+reached about 90.5 GiB of total device use and failed when the reference
+float64 quantizer requested another 14.2 GiB. This directly establishes that
+stream batch size and teacher width compete for memory.
+
+None of the multi-token BF16 conditions is currently decoder-compatible:
+roughly 2.049 million of 2.062 million integer target intervals differed from
+incremental decoding, with maximum target-probability differences near 0.22.
+A GPU W=1 control produced exactly identical probabilities and intervals, so
+the benchmark's context-reset schedule agrees with the incremental path; the
+remaining disagreement appears when model positions are evaluated in
+multi-token calls. The nearly identical aggregate quantized bit estimates must
+not be mistaken for lossless compatibility. Before integration, this needs an
+engine/numerics contract that makes multi-token encoder scores reproduce the
+decoder's one-token scores, or a coder explicitly robust to that mismatch.
