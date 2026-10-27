@@ -1,7 +1,9 @@
 # NeurIPS 2026 artifacts
 
 This directory mirrors the experiments and result groupings used by the paper.
-Raw artifacts are ignored by Git; this README and `manifest.json` are tracked.
+Bulky raw outputs are ignored by Git. The compact camera-ready MinProb source,
+decoded streams, and audit results are tracked alongside this README and
+`manifest.json` so the reported inputs cannot be lost again.
 
 ## Primary runs
 
@@ -15,6 +17,9 @@ Raw artifacts are ignored by Git; this README and `manifest.json` are tracked.
 
 ## Final and derived data
 
+- `camera-ready/minprob-h100-three-seed/`: the three complete, 10,000-token
+  MinProb runs used consistently by the camera-ready tables and figures,
+  including decoder-verified Qwen streams and codec/quantization audits.
 - `finalized/`: decoder-verified Qwen arithmetic streams used by paper bars.
 - `studies/tokenizer-fertility/`: tokenizer fertility experiment.
 - `studies/max-surprisal-length/`: N=32, 64, 128, and 1024 length study.

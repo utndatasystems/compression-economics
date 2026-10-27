@@ -1,0 +1,116 @@
+{
+  "metadata": {
+    "model_name": "Qwen/Qwen2.5-0.5B",
+    "fsst_commit": "e638d4cf8c26129d73c242a4127b42b975de5b63",
+    "brotli_quality": 11
+  },
+  "runs": [
+    {
+      "run_index": 0,
+      "start_token_ids": [
+        785
+      ],
+      "token_count": 10000,
+      "raw_size_bytes": 68534,
+      "prediction_bits_per_token": 28.357391283304143,
+      "fertility_bytes_per_token": 6.8534,
+      "model_ideal_bits_per_byte": 4.137297625146031,
+      "ac_bits_per_byte": 2.6261855429421894,
+      "encoded_sizes_bytes": {
+        "AC payload": 22497.875,
+        "Qwen + AC": 22831,
+        "Qwen token IDs": 22524,
+        "FSST": 50129,
+        "Brotli q11": 25250
+      },
+      "relative_size_percent": {
+        "AC payload": 32.82731928677737,
+        "Qwen + AC": 33.31339189307497,
+        "Qwen token IDs": 32.8654390521493,
+        "FSST": 73.14471649108472,
+        "Brotli q11": 36.843026818805264
+      },
+      "token_round_trip": true,
+      "fsst_round_trip": true,
+      "brotli_round_trip": true,
+      "qwen_token_round_trip": true,
+      "qwen_byte_round_trip": true
+    },
+    {
+      "run_index": 1,
+      "start_token_ids": [
+        32
+      ],
+      "token_count": 10000,
+      "raw_size_bytes": 69564,
+      "prediction_bits_per_token": 28.40244563122343,
+      "fertility_bytes_per_token": 6.9564,
+      "model_ideal_bits_per_byte": 4.08251471833999,
+      "ac_bits_per_byte": 2.5873009027657985,
+      "encoded_sizes_bytes": {
+        "AC payload": 22497.875,
+        "Qwen + AC": 22830,
+        "Qwen token IDs": 22524,
+        "FSST": 51081,
+        "Brotli q11": 25302
+      },
+      "relative_size_percent": {
+        "AC payload": 32.34126128457248,
+        "Qwen + AC": 32.81869932723823,
+        "Qwen token IDs": 32.37881662929101,
+        "FSST": 73.43022252889426,
+        "Brotli q11": 36.37226151457651
+      },
+      "token_round_trip": true,
+      "fsst_round_trip": true,
+      "brotli_round_trip": true,
+      "qwen_token_round_trip": true,
+      "qwen_byte_round_trip": true
+    },
+    {
+      "run_index": 2,
+      "start_token_ids": [
+        641
+      ],
+      "token_count": 10000,
+      "raw_size_bytes": 69173,
+      "prediction_bits_per_token": 28.317450910079803,
+      "fertility_bytes_per_token": 6.9173,
+      "model_ideal_bits_per_byte": 4.0933050706184195,
+      "ac_bits_per_byte": 2.6019256068119065,
+      "encoded_sizes_bytes": {
+        "AC payload": 22497.875,
+        "Qwen + AC": 22831,
+        "Qwen token IDs": 22524,
+        "FSST": 50928,
+        "Brotli q11": 25471
+      },
+      "relative_size_percent": {
+        "AC payload": 32.52407008514883,
+        "Qwen + AC": 33.00565249447038,
+        "Qwen token IDs": 32.561837711245715,
+        "FSST": 73.62410188946555,
+        "Brotli q11": 36.822170500050596
+      },
+      "token_round_trip": true,
+      "fsst_round_trip": true,
+      "brotli_round_trip": true,
+      "qwen_token_round_trip": true,
+      "qwen_byte_round_trip": true
+    }
+  ],
+  "aggregate": {
+    "prediction_bits_per_token": 28.35909594153579,
+    "fertility_bytes_per_token": 6.909033333333333,
+    "model_ideal_bits_per_byte": 4.104372471368147,
+    "ac_bits_per_byte": 2.6051373508399647,
+    "relative_size_percent": {
+      "AC payload": 32.56421688549956,
+      "Qwen + AC": 33.04591457159453,
+      "Qwen token IDs": 32.60203113089534,
+      "FSST": 73.39968030314817,
+      "Brotli q11": 36.67915294447746
+    },
+    "aggregation": "unweighted mean over three complete runs"
+  }
+}

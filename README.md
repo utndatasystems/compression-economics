@@ -22,7 +22,8 @@ next-token probabilities are encoded using arithmetic coding, range asymmetric n
 - `research/papers/`: paper-specific experiments, evaluations, manuscripts, and supplementary material.
 - `research/evaluation/`: shared result loaders, plots, notebooks, and reference data.
 - `tests/`: automated tests for maintained reusable code.
-- `research/papers/neurips_2026/`: manuscript, supplementary artifact metadata, experiments, evaluation, and tests for the current paper.
+- `research/papers/neurips_2026/`: supplementary artifact metadata, experiments,
+  evaluation, and a submodule containing the current paper's Overleaf LaTeX project.
 - `research/papers/coding_survey/`: coding survey notes and a submodule containing
   the separate Overleaf LaTeX project.
 - `research/papers/cidr_2027/`: configurations, evaluation code, and manuscript outputs

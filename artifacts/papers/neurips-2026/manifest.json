@@ -20,10 +20,11 @@
       "finalized_dataset": "random text"
     },
     "minprob-full-vocabulary": {
-      "raw": "runs/attacks/minprob/full-vocabulary/n10000/full/results.json",
-      "payloads": "runs/attacks/minprob/full-vocabulary/n10000/arithmetic_payloads.json",
-      "finalized": "finalized/qwen-bars/b10000/results.json",
-      "finalized_dataset": "token-level adversary"
+      "raw": "camera-ready/minprob-h100-three-seed/retained-source.json",
+      "finalized": "camera-ready/minprob-h100-three-seed/finalized/results.json",
+      "codec_results": "camera-ready/minprob-h100-three-seed/codec-results.json",
+      "quantization_results": "camera-ready/minprob-h100-three-seed/quantization-results.json",
+      "aggregation": "unweighted mean over three complete 10000-token runs"
     },
     "max-surprisal-per-byte": {
       "raw": "runs/attacks/max-surprisal-per-byte/full-vocabulary/n1024/results.json",
@@ -39,10 +40,11 @@
     "natural-text8-100000-token": "runs/natural-text/text8/n100000",
     "tokenizer-fertility": "studies/tokenizer-fertility/results.json",
     "max-surprisal-length": "studies/max-surprisal-length",
-    "arithmetic-quantization-sensitivity": "ablations/arithmetic-quantization/results.json"
+    "arithmetic-quantization-sensitivity": "camera-ready/minprob-h100-three-seed/quantization-results.json",
+    "max-surprisal-quantization-sensitivity": "ablations/arithmetic-quantization/results.json"
   },
   "derived": {
-    "compressor-robustness-audit": "derived/audit-tables/compressor_robustness_audit.csv",
+    "compressor-robustness-audit": "derived/audit-tables/compressor_robustness_camera_ready.csv",
     "text8-model-scatter": "derived/audit-tables/text8_model_scatter.csv"
   }
 }

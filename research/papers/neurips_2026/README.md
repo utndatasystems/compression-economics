@@ -4,9 +4,18 @@ This directory contains everything specific to the NeurIPS ML for Systems paper.
 Reusable compression implementations remain in `src/`; paper-specific
 commands live in `experiments/`.
 
+`manuscript/` is a separate Git submodule linked to the Overleaf-backed
+`Adversarial-Compression-CR` repository. Commit manuscript changes there before
+updating the submodule reference in this parent repository. Initialize it after
+cloning with:
+
+```bash
+git submodule update --init research/papers/neurips_2026/manuscript
+```
+
 ## Layout
 
-- `manuscript/`: LaTeX sources, included tables, and included figures.
+- `manuscript/`: submodule containing the LaTeX sources, included tables, and included figures.
 - `supplementary/`: metadata and locked environment for the anonymous code artifact; the ignored generated ZIP is written here.
 - `experiments/`: reproducible entry points for every paper experiment.
 - `evaluation/`: audited loaders, plotting code, notebook, and focused tests.
@@ -77,11 +86,39 @@ cmake --build /tmp/compression-economics-fsst/build --parallel
 
 ## Rebuild evaluation outputs
 
+Regenerate the three camera-ready MinProb sequences together on the same H100:
+
 ```bash
 HF_HUB_OFFLINE=1 .venv/bin/python \
-  research/papers/neurips_2026/evaluation/finalize_qwen_bars.py
+  research/papers/neurips_2026/experiments/generate_adversarial.py \
+  --model-name Qwen/Qwen2.5-0.5B \
+  --start-token-id 785 --start-token-id 32 --start-token-id 641 \
+  --total-length 10000 --context-length 1000 --retain-tokens 100 \
+  --candidate-mode full --checkpoint-every 250 \
+  --output-dir \
+    artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed
+```
+
+Then finalize and audit the streams and rebuild both included figures:
+
+```bash
 HF_HUB_OFFLINE=1 .venv/bin/python \
-  research/papers/neurips_2026/evaluation/quantization_sensitivity.py
+  research/papers/neurips_2026/evaluation/finalize_minprob_full_runs.py \
+  --input \
+    artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/full/results.json
+.venv/bin/python \
+  research/papers/neurips_2026/evaluation/evaluate_minprob_full_baselines.py \
+  --source \
+    artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/full/results.json \
+  --fsst-executable /tmp/compression-economics-fsst/build/fsst
+HF_HUB_OFFLINE=1 .venv/bin/python \
+  research/papers/neurips_2026/evaluation/quantization_sensitivity.py \
+  --minprob-input \
+    artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/retained-source.json \
+  --minprob-only \
+  --output \
+    artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/quantization-results.json
+.venv/bin/python research/papers/neurips_2026/evaluation/plot_compressor_robustness.py
 .venv/bin/python research/papers/neurips_2026/evaluation/plot_prediction_difficulty.py
 HF_HUB_OFFLINE=1 \
 FSST_EXECUTABLE=/tmp/compression-economics-fsst/build/fsst \
@@ -98,11 +135,14 @@ table or figure input.
 
 ## Primary execution platform
 
-The primary experiments ran on Ubuntu 24.04.1 LTS on one Intel Xeon Gold 5318Y
+The original experiments ran on Ubuntu 24.04.1 LTS on one Intel Xeon Gold 5318Y
 CPU (24 physical cores, 48 hardware threads) with 125 GiB RAM. No GPU was
 available on this machine. The installed key packages were PyTorch 2.10.0,
 Transformers 5.3.0, tokenizers 0.22.2, NumPy 2.4.3, and Brotli 1.2.0; `uv.lock`
-is authoritative for the complete environment.
+is authoritative for the complete environment. The camera-ready MinProb rows
+were regenerated as one three-seed batch on an NVIDIA H100 because greedy
+selection is sensitive to hardware-dependent floating-point differences. All
+camera-ready MinProb tables and figures use those same complete runs.
 
 ## Build the manuscript
 

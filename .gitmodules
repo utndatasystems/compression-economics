@@ -1,3 +1,6 @@
 [submodule "research/papers/coding_survey/manuscript"]
 	path = research/papers/coding_survey/manuscript
 	url = git@github.com:luisaneubauer/Latex---Coding-for-LLM-based-Compression-Survey.git
+[submodule "research/papers/neurips_2026/manuscript"]
+	path = research/papers/neurips_2026/manuscript
+	url = git@github.com:luisaneubauer/Adversarial-Compression-CR.git

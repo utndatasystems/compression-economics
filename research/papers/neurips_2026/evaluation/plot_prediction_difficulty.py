@@ -25,7 +25,7 @@ PAPER_VALUES = pd.DataFrame(
     [
         {
             "condition": "MinProb",
-            "prediction_bits_per_token": 29.04,
+            "prediction_bits_per_token": 28.36,
             "std_bits_per_token": 0.04,
             "single_run": False,
             "tokens": 10_000,

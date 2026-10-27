@@ -1,0 +1,55 @@
+{
+  "metadata": {
+    "model_name": "Qwen/Qwen2.5-0.5B",
+    "context_length": 1000,
+    "retain_tokens": 100,
+    "frequency_total": 262144,
+    "statesize": 32,
+    "selection": "complete-sequence",
+    "aggregation": "three independent seed runs"
+  },
+  "runs": [
+    {
+      "run_index": 0,
+      "start_token_ids": [
+        785
+      ],
+      "token_count": 10000,
+      "raw_size_bytes": 68534,
+      "decoded_sha256": "ff0630a5ecc3ccc6194dc47dc01e76c6a67a2f80bea3dbbc13da7963ced1681f",
+      "payload_bits": 179983,
+      "serialized_size_bytes": 22831,
+      "stream": "artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/finalized/run_00.qac",
+      "token_round_trip": true,
+      "byte_round_trip": true
+    },
+    {
+      "run_index": 1,
+      "start_token_ids": [
+        32
+      ],
+      "token_count": 10000,
+      "raw_size_bytes": 69564,
+      "decoded_sha256": "e8ba00ceb75f3bfcc5818aef7c5bd3ddfcda87ace140d85b6415477d742cc6b2",
+      "payload_bits": 179983,
+      "serialized_size_bytes": 22830,
+      "stream": "artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/finalized/run_01.qac",
+      "token_round_trip": true,
+      "byte_round_trip": true
+    },
+    {
+      "run_index": 2,
+      "start_token_ids": [
+        641
+      ],
+      "token_count": 10000,
+      "raw_size_bytes": 69173,
+      "decoded_sha256": "538c9380ac31b73af4243cbde4034e4b85ac471d1919eb95953d5a77f6e95d65",
+      "payload_bits": 179983,
+      "serialized_size_bytes": 22831,
+      "stream": "artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/finalized/run_02.qac",
+      "token_round_trip": true,
+      "byte_round_trip": true
+    }
+  ]
+}

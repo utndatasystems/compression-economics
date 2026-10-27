@@ -11,6 +11,17 @@ temp/*
 /artifacts/papers/neurips-2026/*
 !/artifacts/papers/neurips-2026/README.md
 !/artifacts/papers/neurips-2026/manifest.json
+!/artifacts/papers/neurips-2026/camera-ready/
+/artifacts/papers/neurips-2026/camera-ready/*
+!/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/
+/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/*
+!/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/retained-source.json
+!/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/codec-results.json
+!/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/quantization-results.json
+!/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/finalized/
+/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/finalized/*
+!/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/finalized/results.json
+!/artifacts/papers/neurips-2026/camera-ready/minprob-h100-three-seed/finalized/*.qac
 !/artifacts/papers/neurips-2026/ablations/
 !/artifacts/papers/neurips-2026/ablations/arithmetic-quantization/
 !/artifacts/papers/neurips-2026/ablations/arithmetic-quantization/results.json

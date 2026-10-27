@@ -36,6 +36,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--context-length", type=int, default=1000)
     parser.add_argument("--retain-tokens", type=int, default=100)
     parser.add_argument("--limit", type=int, help="Diagnostic predicted-token limit")
+    parser.add_argument(
+        "--minprob-input",
+        type=Path,
+        default=(
+            ARTIFACT_ROOT
+            / "runs/attacks/minprob/full-vocabulary/n10000/full/results.json"
+        ),
+    )
+    parser.add_argument(
+        "--minprob-only",
+        action="store_true",
+        help="Replay only MinProb, without requiring the MaxSurprisal artifact.",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     return parser.parse_args()
 
@@ -44,11 +57,10 @@ def read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def load_conditions() -> list[dict]:
-    minprob_path = ARTIFACT_ROOT / "runs/attacks/minprob/full-vocabulary/n10000/full/results.json"
+def load_conditions(args: argparse.Namespace) -> list[dict]:
+    minprob_path = args.minprob_input.resolve()
     max_path = ARTIFACT_ROOT / "runs/attacks/max-surprisal-per-byte/full-vocabulary/n1024/results.json"
     minprob = read_json(minprob_path)
-    max_payload = read_json(max_path)
     rows = [{
         "condition": "MinProb",
         "run_index": row["run_index"],
@@ -56,6 +68,9 @@ def load_conditions() -> list[dict]:
         "source": str(minprob_path.relative_to(REPO_ROOT)),
         "reported_model_surprisal_bits": row["summary"]["model_surprisal_bits"],
     } for row in minprob["runs"]]
+    if args.minprob_only:
+        return rows
+    max_payload = read_json(max_path)
     matches = [row for row in max_payload["runs"]
                if row["condition"] == "surprisal-per-byte" and row["run_index"] == 0]
     if len(matches) != 1:
@@ -190,7 +205,7 @@ def main() -> None:
     totals = args.frequency_total or [2**18, 2**22, 2**26, 2**30]
     if totals != sorted(set(totals)):
         raise ValueError("Frequency totals must be unique and increasing")
-    rows = load_conditions()
+    rows = load_conditions(args)
     predictor = TokenPredictor(make_predictor_args(SimpleNamespace(model_name=args.model_name)), bitmap_data=None)
     vocabulary_size = len(predictor.tokenizer)
     invalid = [total for total in totals if total < vocabulary_size]
