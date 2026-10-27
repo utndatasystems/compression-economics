@@ -6,6 +6,7 @@
 #include <cub/block/block_radix_sort.cuh>
 
 #include <cmath>
+#include <climits>
 #include <cstdint>
 #include <vector>
 
@@ -58,6 +59,12 @@ struct BitWriter {
     }
   }
 };
+
+// IEEE -0.0 compares equal to +0.0 and the fixed-total contract uses a stable
+// column-order tie break. Raw bits would rank -0.0 above positive finite values.
+__device__ __forceinline__ uint32_t nonnegative_float_key(float value) {
+  return value == 0.0f ? 0u : __float_as_uint(value);
+}
 
 __global__ void encode_intervals_kernel(
     const int64_t* __restrict__ lows,
@@ -458,7 +465,7 @@ __global__ void quantize_target_intervals_exact_kernel(
       const int64_t column = static_cast<int64_t>(threadIdx.x) * 4 + item;
       if (column < columns) {
         const float value = static_cast<float>(probabilities[row_offset + column]);
-        keys[item] = (static_cast<uint64_t>(__float_as_uint(value)) << 32) |
+        keys[item] = (static_cast<uint64_t>(nonnegative_float_key(value)) << 32) |
             static_cast<uint32_t>(0xffffffffu - static_cast<uint32_t>(column));
       } else {
         keys[item] = 0;
@@ -494,7 +501,7 @@ __global__ void quantize_target_intervals_exact_kernel(
       const uint32_t prefix = radix_prefix;
       for (int64_t column = threadIdx.x; column < columns; column += blockDim.x) {
         const float value = static_cast<float>(probabilities[row_offset + column]);
-        const uint32_t key = __float_as_uint(value);
+        const uint32_t key = nonnegative_float_key(value);
         if ((key & prefix_mask) == prefix) {
           atomicAdd(&histogram[(key >> shift) & 0xffu], 1u);
         }
@@ -521,7 +528,8 @@ __global__ void quantize_target_intervals_exact_kernel(
       int64_t seen = 0;
       for (int64_t column = 0; column < columns; ++column) {
         const float value = static_cast<float>(probabilities[row_offset + column]);
-        if (__float_as_uint(value) == cutoff_key && ++seen == cutoff_tie_count) {
+        if (nonnegative_float_key(value) == cutoff_key &&
+            ++seen == cutoff_tie_count) {
           cutoff_column = column;
           break;
         }
@@ -533,7 +541,7 @@ __global__ void quantize_target_intervals_exact_kernel(
   if (residual > 0 && columns > 1024) {
     for (int64_t column = threadIdx.x; column < columns; column += blockDim.x) {
       const float value = static_cast<float>(probabilities[row_offset + column]);
-      const uint32_t key = __float_as_uint(value);
+      const uint32_t key = nonnegative_float_key(value);
       const bool selected = key > cutoff_key ||
           (key == cutoff_key && column <= cutoff_column);
       if (selected && column < target) {
@@ -699,6 +707,17 @@ void check_input(const torch::Tensor& tensor, const char* name) {
   TORCH_CHECK(tensor.is_contiguous(), name, " must be contiguous");
 }
 
+void check_coder_settings(int64_t nominal_total, int64_t state_bits) {
+  TORCH_CHECK(state_bits >= 16 && state_bits <= 56,
+              "state_bits must be between 16 and 56");
+  TORCH_CHECK(nominal_total >= 1, "nominal_total must be positive");
+  const int64_t max_range = int64_t{1} << state_bits;
+  TORCH_CHECK(nominal_total <= (max_range >> 2) + 2,
+              "nominal_total is outside the arithmetic coder's range");
+  TORCH_CHECK(nominal_total <= INT64_MAX / max_range,
+              "arithmetic interval product exceeds signed 64-bit arithmetic");
+}
+
 }  // namespace
 
 std::vector<torch::Tensor> encode_intervals_cuda(
@@ -718,12 +737,12 @@ std::vector<torch::Tensor> encode_intervals_cuda(
               "low, high, and total tensors must have the same shape");
   TORCH_CHECK(counts.dim() == 1 && counts.size(0) == lows.size(1),
               "counts must contain one entry per stream");
+  TORCH_CHECK(lows.size(1) > 0,
+              "interval tensors must contain at least one stream");
   TORCH_CHECK(lows.device() == highs.device() && lows.device() == totals.device() &&
                   lows.device() == counts.device(),
               "all inputs must use the same CUDA device");
-  TORCH_CHECK(state_bits >= 16 && state_bits <= 56,
-              "state_bits must be between 16 and 56");
-  TORCH_CHECK(nominal_total >= 1, "nominal_total must be positive");
+  check_coder_settings(nominal_total, state_bits);
   TORCH_CHECK(workspace_bytes >= 1, "workspace_bytes must be positive");
 
   const c10::cuda::CUDAGuard device_guard(lows.device());
@@ -811,8 +830,10 @@ void encode_intervals_step_cuda(
                 "persistent encoder state must match stream count and device");
   }
   TORCH_CHECK(workspace.size(0) == streams &&
+                  workspace.size(1) > 0 &&
                   workspace.device() == interval_lows.device(),
               "workspace must contain one row per stream on the same device");
+  check_coder_settings(nominal_total, state_bits);
 
   const c10::cuda::CUDAGuard device_guard(interval_lows.device());
   constexpr int threads = 128;
@@ -904,6 +925,10 @@ std::vector<torch::Tensor> quantize_target_intervals_cuda(
   auto highs = torch::empty({rows}, int_options);
   auto totals = torch::empty({rows}, int_options);
   auto target_probabilities = torch::empty({rows}, probabilities.options());
+  if (rows == 0) {
+    return {lows, highs, totals, target_probabilities};
+  }
+  TORCH_CHECK(rows <= INT_MAX, "too many probability rows for a CUDA grid");
   constexpr int threads = 256;
   quantize_target_intervals_kernel<double><<<
       static_cast<int>(rows), threads, 0, at::cuda::getCurrentCUDAStream()>>>(
@@ -956,6 +981,10 @@ std::vector<torch::Tensor> quantize_target_intervals_compact_cuda(
   auto highs = torch::empty({rows}, int_options);
   auto totals = torch::empty({rows}, int_options);
   auto target_probabilities = torch::empty({rows}, double_options);
+  if (rows == 0) {
+    return {lows, highs, totals, target_probabilities};
+  }
+  TORCH_CHECK(rows <= INT_MAX, "too many probability rows for a CUDA grid");
   constexpr int threads = 256;
   AT_DISPATCH_FLOATING_TYPES_AND2(
       torch::kHalf,
@@ -1009,6 +1038,10 @@ std::vector<torch::Tensor> quantize_target_intervals_exact_cuda(
   auto highs = torch::empty({rows}, int_options);
   auto totals = torch::empty({rows}, int_options);
   auto target_probabilities = torch::empty({rows}, double_options);
+  if (rows == 0) {
+    return {lows, highs, totals, target_probabilities};
+  }
+  TORCH_CHECK(rows <= INT_MAX, "too many probability rows for a CUDA grid");
   constexpr int threads = 256;
   AT_DISPATCH_FLOATING_TYPES_AND2(
       torch::kHalf,
@@ -1069,6 +1102,8 @@ void decode_cdfs_cuda(
   TORCH_CHECK(cdfs.dim() == 2 && cdfs.size(1) >= 3,
               "cdfs must have shape [streams, alphabet + 1]");
   const int64_t streams = cdfs.size(0);
+  TORCH_CHECK(streams > 0,
+              "decoder tensors must contain at least one stream");
   TORCH_CHECK(payload.dim() == 2 && payload.size(0) == streams,
               "payload must contain one row per stream");
   for (const auto& tensor : {active, bit_counts, counts, lows, highs, codes,
@@ -1078,13 +1113,9 @@ void decode_cdfs_cuda(
     TORCH_CHECK(tensor.device() == cdfs.device(),
                 "all decoder tensors must use the same CUDA device");
   }
-  TORCH_CHECK(state_bits >= 16 && state_bits <= 56,
-              "state_bits must be between 16 and 56");
+  check_coder_settings(nominal_total, state_bits);
   TORCH_CHECK(nominal_total > cdfs.size(1) - 1,
               "nominal_total must exceed the alphabet size");
-  TORCH_CHECK((int64_t{1} << state_bits) <=
-                  ((INT64_MAX / nominal_total) + 1),
-              "decoder arithmetic exceeds signed 64-bit intermediates");
 
   const c10::cuda::CUDAGuard device_guard(cdfs.device());
   constexpr int threads = 128;

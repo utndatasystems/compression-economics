@@ -63,7 +63,7 @@ def _load_extension():
                     str(source_dir / "cuda_ac_kernel.cu"),
                 ],
                 extra_cflags=["-O3"],
-                extra_cuda_cflags=["-O3"],
+                extra_cuda_cflags=["-O3", "-lineinfo"],
                 verbose=os.environ.get("CUDA_AC_VERBOSE_BUILD") == "1",
             )
     return _EXTENSION
@@ -218,6 +218,8 @@ def target_intervals_from_probs_cuda_v4(
         not torch.isfinite(probabilities).all() or (probabilities < 0).any()
     ):
         raise ValueError("probabilities must be finite and nonnegative")
+    if validate and (probabilities > torch.finfo(torch.float32).max).any():
+        raise ValueError("probabilities must remain finite when converted to float32")
     targets = torch.as_tensor(
         targets, device=probabilities.device, dtype=torch.int64
     ).contiguous()
@@ -292,6 +294,10 @@ class CudaPipelinedACEncoder:
         state_bits: int = 32,
     ):
         _validate_settings(stream_count, state_bits, nominal_total)
+        if (1 << state_bits) * nominal_total > (1 << 63) - 1:
+            raise ValueError(
+                "arithmetic interval product exceeds signed 64-bit arithmetic"
+            )
         if max_steps < 0:
             raise ValueError("max_steps must be nonnegative")
         self.device = torch.device(device)
