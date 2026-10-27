@@ -4,53 +4,34 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.metadata
 import json
-import platform
-import subprocess
 import sys
 import time
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from research.papers.coding_survey.experiments.baseline_adapter import (
+    build_baseline_result,
+    git_revision,
+    gpu_name,
+    load_text_prefix,
+    prepare_work_archive,
+    runtime_environment,
+    sha256_file,
+    write_json,
+)
+
+
 DEFAULT_MODEL = "HuggingFaceTB/SmolLM2-135M"
 DEFAULT_OUTPUT = (
     REPO_ROOT
     / "artifacts/papers/coding-survey/llm-baselines/nacrith-text8-first-10MiB.json"
 )
-
-
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for block in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _git_revision(repository: Path) -> str:
-    return subprocess.run(
-        ["git", "-C", str(repository), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-
-
-def _gpu_name() -> str | None:
-    result = subprocess.run(
-        ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    return result.stdout.strip().splitlines()[0] if result.returncode == 0 else None
 
 
 def _load_local_tokenizer(tokenizer_dir: Path, requested_seed: int | None = None):
@@ -157,15 +138,13 @@ def main() -> None:
     if not (upstream / "parallel/compressor.py").is_file():
         parser.error("--nacrith-repo is not a Nacrith-GPU checkout")
 
-    source = args.input.read_bytes()[: args.input_bytes]
-    if len(source) != args.input_bytes:
-        parser.error("input is smaller than the requested prefix")
-    text = source.decode("utf-8")
-    work_dir = args.work_dir or args.output.with_suffix("")
-    work_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = work_dir / "nacrith.nc"
-    if archive_path.exists():
-        parser.error(f"archive already exists: {archive_path}")
+    try:
+        source, text = load_text_prefix(args.input, args.input_bytes)
+        work_dir, archive_path = prepare_work_archive(
+            args.output, args.work_dir, "nacrith.nc"
+        )
+    except (ValueError, FileExistsError) as error:
+        parser.error(str(error))
 
     sys.path.insert(0, str(upstream))
     try:
@@ -234,38 +213,33 @@ def main() -> None:
         (work_dir / "decoded-mismatch.bin").write_bytes(recovered)
         raise AssertionError("Nacrith did not recover the exact input bytes")
 
-    archive_bytes = len(archive)
-    result = {
-        "schema_version": 1,
-        "codec": "nacrith",
-        "implementation": {
+    result = build_baseline_result(
+        codec="nacrith",
+        implementation={
             "repository": "https://github.com/robtacconelli/Nacrith-GPU",
-            "revision": _git_revision(upstream),
+            "revision": git_revision(upstream),
             "format_magic": archive[:4].decode("ascii"),
             "adapter_fixes": [
                 "recreate decode-time context mixer at the GGUF vocabulary size"
             ],
         },
-        "input": {
-            "path": str(args.input.resolve()),
-            "prefix_bytes": len(source),
-            "sha256": _sha256_bytes(source),
-        },
-        "model": {
+        input_path=args.input,
+        source=source,
+        model={
             "name": args.model_name,
             "gguf_path": str(args.gguf.resolve()),
             "gguf_bytes": args.gguf.stat().st_size,
-            "gguf_sha256": _sha256_file(args.gguf),
+            "gguf_sha256": sha256_file(args.gguf),
             "tokenizer_dir": str(tokenizer_dir) if tokenizer_dir else "bundled",
             "tokenizer_json_sha256": (
-                _sha256_file(tokenizer_dir / "tokenizer.json")
+                sha256_file(tokenizer_dir / "tokenizer.json")
                 if tokenizer_dir
                 else None
             ),
             "vocabulary_size": vocabulary_size,
             "external_weights_charged": False,
         },
-        "configuration": {
+        configuration={
             "workers": args.workers,
             "seed_token_id": seed_token_id,
             "seed_token_source": seed_token_source,
@@ -277,31 +251,21 @@ def main() -> None:
             "temperature": 1.0,
             "lzp": False,
         },
-        "archive": {
-            "path": str(archive_path.resolve()),
-            "bytes": archive_bytes,
-            "sha256": _sha256_bytes(archive),
-            "compression_ratio": len(source) / archive_bytes,
-            "bits_per_byte": 8 * archive_bytes / len(source),
-        },
-        "timing": {
-            "model_load_seconds": model_load_seconds,
-            "compression_seconds": compression_seconds,
-            "decompression_seconds": decompression_seconds,
-            "compression_mib_per_second": len(source) / compression_seconds / 2**20,
-            "decompression_mib_per_second": len(source) / decompression_seconds / 2**20,
-        },
-        "validation": {"exact_byte_recovery": exact},
-        "environment": {
-            "python": platform.python_version(),
-            "llama_cpp_python": importlib.metadata.version("llama-cpp-python"),
-            "gpu_backend_requested": True,
-            "gpu_offload_supported": __import__("llama_cpp").llama_supports_gpu_offload(),
-            "gpu": _gpu_name(),
-        },
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        archive_path=archive_path,
+        model_load_seconds=model_load_seconds,
+        compression_seconds=compression_seconds,
+        decompression_seconds=decompression_seconds,
+        exact_byte_recovery=exact,
+        environment=runtime_environment(
+            llama_cpp_python=importlib.metadata.version("llama-cpp-python"),
+            gpu_backend_requested=True,
+            gpu_offload_supported=__import__(
+                "llama_cpp"
+            ).llama_supports_gpu_offload(),
+            gpu=gpu_name(),
+        ),
+    )
+    write_json(args.output, result)
     print(json.dumps(result, indent=2))
 
 

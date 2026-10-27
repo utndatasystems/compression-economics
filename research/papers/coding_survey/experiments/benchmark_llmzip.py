@@ -11,13 +11,9 @@ decoder to reproduce identical probability tables.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import importlib.util
 import io
 import json
-import platform
-import struct
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -29,6 +25,23 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from research.papers.coding_survey.experiments.baseline_adapter import (
+    build_baseline_result,
+    git_revision,
+    hugging_face_model_metadata,
+    load_text_prefix,
+    prepare_work_archive,
+    read_framed_archive,
+    torch_dtype,
+    torch_environment,
+    write_framed_archive,
+    write_json,
+)
+
+
 DEFAULT_OUTPUT = (
     REPO_ROOT
     / "artifacts/papers/coding-survey/llm-baselines/llmzip-text8-first-10MiB.json"
@@ -44,25 +57,6 @@ class _NonClosingBytesIO(io.BytesIO):
         pass
 
 
-def _sha256_bytes(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-def _git_revision(repository: Path) -> str:
-    return subprocess.run(
-        ["git", "-C", str(repository), "rev-parse", "HEAD"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-
-
-def _gpu_name() -> str | None:
-    if not torch.cuda.is_available():
-        return None
-    return torch.cuda.get_device_name()
-
-
 def _load_arithmetic_coder(repository: Path):
     source = repository / "AC/arithmeticcoding.py"
     if not source.is_file():
@@ -74,14 +68,6 @@ def _load_arithmetic_coder(repository: Path):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
-
-
-def _dtype(name: str) -> torch.dtype:
-    return {
-        "float32": torch.float32,
-        "float16": torch.float16,
-        "bfloat16": torch.bfloat16,
-    }[name]
 
 
 def _cdf(logits: torch.Tensor) -> np.ndarray:
@@ -186,29 +172,6 @@ def _decode(
     return tokens.cpu()
 
 
-def _write_archive(path: Path, metadata: dict, payload: bytes) -> None:
-    metadata_bytes = json.dumps(
-        metadata, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-    with path.open("wb") as output:
-        output.write(MAGIC)
-        output.write(struct.pack(">I", len(metadata_bytes)))
-        output.write(metadata_bytes)
-        output.write(payload)
-
-
-def _read_archive(path: Path) -> tuple[dict, bytes]:
-    with path.open("rb") as source:
-        if source.read(4) != MAGIC:
-            raise ValueError("not an LZP1 archive")
-        metadata_size = struct.unpack(">I", source.read(4))[0]
-        metadata = json.loads(source.read(metadata_size))
-        payload = source.read()
-    if len(payload) != metadata["payload_bytes"]:
-        raise ValueError("LLMZip payload length disagrees with metadata")
-    return metadata, payload
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--llmzip-repo", type=Path, required=True)
@@ -238,15 +201,13 @@ def main() -> None:
 
     upstream = args.llmzip_repo.resolve()
     arithmetic = _load_arithmetic_coder(upstream)
-    source = args.input.read_bytes()[: args.input_bytes]
-    if len(source) != args.input_bytes:
-        parser.error("input is smaller than the requested prefix")
-    text = source.decode("utf-8")
-    work_dir = args.work_dir or args.output.with_suffix("")
-    work_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = work_dir / "llmzip.lzp"
-    if archive_path.exists():
-        parser.error(f"archive already exists: {archive_path}")
+    try:
+        source, text = load_text_prefix(args.input, args.input_bytes)
+        work_dir, archive_path = prepare_work_archive(
+            args.output, args.work_dir, "llmzip.lzp"
+        )
+    except (ValueError, FileExistsError) as error:
+        parser.error(str(error))
 
     tokenizer_name = args.tokenizer or args.model
     load_started = time.perf_counter()
@@ -258,7 +219,7 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         args.model,
         revision=args.model_revision,
-        dtype=_dtype(args.dtype),
+        dtype=torch_dtype(args.dtype),
         local_files_only=True,
     ).eval().cuda()
     torch.cuda.synchronize()
@@ -316,8 +277,10 @@ def main() -> None:
         "tokenizer": tokenizer_name,
         "vocabulary_size": vocabulary_size,
     }
-    _write_archive(archive_path, archive_metadata, payload)
-    extracted, extracted_payload = _read_archive(archive_path)
+    write_framed_archive(archive_path, MAGIC, archive_metadata, payload)
+    extracted, extracted_payload = read_framed_archive(
+        archive_path, MAGIC, codec_label="LLMZip"
+    )
 
     started = time.perf_counter()
     decoded_tokens = _decode(
@@ -338,29 +301,23 @@ def main() -> None:
         (work_dir / "decoded-mismatch.bin").write_bytes(recovered)
         raise AssertionError("LLMZip did not recover the exact input bytes")
 
-    archive_bytes = archive_path.stat().st_size
-    result = {
-        "schema_version": 1,
-        "codec": "llmzip",
-        "implementation": {
+    result = build_baseline_result(
+        codec="llmzip",
+        implementation={
             "repository": "https://github.com/vcskaushik/LLMzip",
-            "revision": _git_revision(upstream),
+            "revision": git_revision(upstream),
             "adapter_archive": "LZP1 (repository-local accounting wrapper)",
             "upstream_arithmetic_coder": "AC/arithmeticcoding.py",
         },
-        "input": {
-            "path": str(args.input.resolve()),
-            "prefix_bytes": len(source),
-            "sha256": _sha256_bytes(source),
-        },
-        "model": {
-            "name": args.model,
-            "requested_revision": args.model_revision,
-            "tokenizer": tokenizer_name,
-            "dtype": args.dtype,
-            "external_weights_charged": False,
-        },
-        "configuration": {
+        input_path=args.input,
+        source=source,
+        model=hugging_face_model_metadata(
+            name=args.model,
+            requested_revision=args.model_revision,
+            tokenizer=tokenizer_name,
+            dtype=args.dtype,
+        ),
+        configuration={
             "encoder_batch_size": 1,
             "decoder_batch_size": 1,
             "memory": args.memory,
@@ -371,32 +328,17 @@ def main() -> None:
             "model_vocabulary_size": vocabulary_size,
             "frequency_rule": "uint64(cumsum(softmax(float32) * 1e7 + 1))",
         },
-        "archive": {
-            "path": str(archive_path.resolve()),
-            "bytes": archive_bytes,
-            "sha256": _sha256_bytes(archive_path.read_bytes()),
-            "payload_bytes": len(payload),
-            "compression_ratio": len(source) / archive_bytes,
-            "bits_per_byte": 8 * archive_bytes / len(source),
-        },
-        "timing": {
-            "model_load_seconds": model_load_seconds,
-            "compression_seconds": compression_seconds,
-            "decompression_seconds": decompression_seconds,
-            "compression_mib_per_second": len(source) / compression_seconds / 2**20,
-            "decompression_mib_per_second": len(source) / decompression_seconds / 2**20,
-        },
-        "validation": {"exact_byte_recovery": exact},
-        "environment": {
-            "python": platform.python_version(),
-            "torch": torch.__version__,
-            "transformers": transformers.__version__,
-            "gpu": _gpu_name(),
-            "peak_torch_bytes": torch.cuda.max_memory_allocated(),
-        },
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        archive_path=archive_path,
+        payload_bytes=len(payload),
+        model_load_seconds=model_load_seconds,
+        compression_seconds=compression_seconds,
+        decompression_seconds=decompression_seconds,
+        exact_byte_recovery=exact,
+        environment=torch_environment(
+            torch, transformers_version=transformers.__version__
+        ),
+    )
+    write_json(args.output, result)
     print(json.dumps(result, indent=2))
 
 

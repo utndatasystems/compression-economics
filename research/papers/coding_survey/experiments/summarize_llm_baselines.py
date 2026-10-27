@@ -4,8 +4,17 @@
 from __future__ import annotations
 
 import argparse
-import json
+import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[4]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from research.papers.coding_survey.experiments.baseline_adapter import (
+    combine_baseline_results,
+    write_json,
+)
 
 
 def main() -> None:
@@ -15,29 +24,14 @@ def main() -> None:
     parser.add_argument("nacrith", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    rows = [
-        json.loads(path.read_text(encoding="utf-8"))
-        for path in (args.finezip, args.llmzip, args.nacrith)
-    ]
-    if {row["codec"] for row in rows} != {"finezip", "llmzip", "nacrith"}:
-        parser.error(
-            "inputs must contain one FineZip, one LLMZip, and one Nacrith result"
+    try:
+        summary = combine_baseline_results(
+            (args.finezip, args.llmzip, args.nacrith)
         )
-    hashes = {row["input"]["sha256"] for row in rows}
-    sizes = {row["input"]["prefix_bytes"] for row in rows}
-    if len(hashes) != 1 or len(sizes) != 1:
-        parser.error("baseline inputs do not match")
-    if not all(row["validation"]["exact_byte_recovery"] for row in rows):
-        parser.error("a baseline failed exact byte recovery")
-    summary = {
-        "schema_version": 1,
-        "experiment": "coding-survey LLM baselines",
-        "input": {"bytes": sizes.pop(), "sha256": hashes.pop()},
-        "accounting": "complete per-file archive; shared model/tokenizer weights excluded",
-        "codecs": rows,
-    }
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+    except (KeyError, ValueError) as error:
+        parser.error(str(error))
+    write_json(args.output, summary)
+    rows = summary["codecs"]
     for row in sorted(rows, key=lambda item: item["codec"]):
         print(
             f'{row["codec"]:8s}  {row["archive"]["bytes"]:9d} bytes  '

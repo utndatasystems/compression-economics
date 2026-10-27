@@ -46,6 +46,7 @@ for name in \
   benchmark_finezip.py \
   benchmark_llmzip.py \
   benchmark_nacrith.py \
+  baseline_adapter.py \
   summarize_llm_baselines.py \
   plot_optimization_operating_points.py \
   benchmark_speculative_full.py \
