@@ -1,3 +1,30 @@
+# The arithmetic coding classes in this file (ArithmeticCoderBase,
+# ArithmeticEncoder, ArithmeticDecoder) are adapted from Project Nayuki's
+# "Reference arithmetic coding" (Python version, 2018), used under the MIT License:
+#   https://www.nayuki.io/page/reference-arithmetic-coding
+#   https://github.com/nayuki/Reference-arithmetic-coding
+#
+# Copyright (c) 2018 Project Nayuki. (MIT License)
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy of
+# this software and associated documentation files (the "Software"), to deal in
+# the Software without restriction, including without limitation the rights to
+# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+# the Software, and to permit persons to whom the Software is furnished to do so,
+# subject to the following conditions:
+# - The above copyright notice and this permission notice shall be included in
+#   all copies or substantial portions of the Software.
+# - The Software is provided "as is", without warranty of any kind, express or
+#   implied, including but not limited to the warranties of merchantability,
+#   fitness for a particular purpose and noninfringement. In no event shall the
+#   authors or copyright holders be liable for any claim, damages or other
+#   liability, whether in an action of contract, tort or otherwise, arising from,
+#   out of or in connection with the Software or the use or other dealings in the
+#   Software.
+#
+# Our changes: frequency tables replaced by cumulative-frequency arrays, input
+# validation disabled for speed. The rest of this file is original work.
+
 import numpy as np
 import math
 from collections import Counter
@@ -165,6 +192,7 @@ class BitInputStream:
 # =============================================================================
 # Arithmetic coding core
 # =============================================================================
+# Adapted from Project Nayuki's Reference arithmetic coding (MIT); see file header.
 
 class ArithmeticCoderBase(object):
     """
